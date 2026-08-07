@@ -36,16 +36,10 @@ FACTION_COLORS = {"hostile": "red", "friendly": "green", "neutral": "yellow"}
 
 
 def _add_to_inventory(player, item) -> None:
-    """添加物品到背包，同名称物品堆叠。"""
+    """添加物品到背包，同名称同类型物品堆叠计数。"""
     for existing in player.inventory:
         if existing.name == item.name and existing.item_type == item.item_type:
-            # 堆叠：合并数量（amount 字段）
-            try:
-                ea = int(existing.amount)
-                ia = int(item.amount)
-                existing.amount = str(ea + ia)
-            except (ValueError, TypeError):
-                pass
+            existing.count += item.count
             existing.weight += item.weight
             return
     player.inventory.append(item)
@@ -376,7 +370,7 @@ class RightPanel(Static):
         if p.inventory:
             item_lines = []
             for i, item in enumerate(p.inventory):
-                item_lines.append(f"  [{i+1}] {item.name} x{item.amount}")
+                item_lines.append(f"  [{i+1}] {item.name} x{item.count}")
                 if item.description:
                     item_lines.append(f"      {item.description[:20]}")
             available = max_h - len(lines) - 1
@@ -696,10 +690,11 @@ class MVPApp(App):
                     import core.entity as ent
                     berry = ent.Item.from_dict({
                         "name": "浆果", "item_type": "consumable",
-                        "effect": "restore_food", "amount": str(500 * b),
-                        "ap_cost": 1, "weight": 0.1 * b,
-                        "price": {"cp": 2 * b},
-                        "description": f"多汁的浆果，{b}颗"
+                        "effect": "restore_food", "amount": "500",
+                        "ap_cost": 1, "weight": 0.1,
+                        "price": {"cp": 2},
+                        "description": "多汁的浆果",
+                        "count": b,
                     })
                     _add_to_inventory(self._state.player, berry)
                     self._act_log.add(f"凯恩 从灌木丛摘到 {b} 个浆果")

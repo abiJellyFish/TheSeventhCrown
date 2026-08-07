@@ -240,13 +240,15 @@ class Item:
     price: dict = field(default_factory=dict)
     description: str = ""
     effect: str = ""
-    amount: str = ""                       # 效果量 (如 "6d4", "1d4")
+    amount: str = ""                       # 效果量 (如 "6d4", "15000")
     ap_cost: int = 0                       # 使用 AP 消耗
+    count: int = 1                         # 物品数量
 
     @classmethod
     def from_dict(cls, data: dict) -> "Item":
         return cls(
             name=data["name"],
+            count=data.get("count", 1),
             item_type=data.get("type", "misc"),
             weight=data.get("weight", 0.0),
             price=data.get("price", {}),
