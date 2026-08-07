@@ -44,6 +44,7 @@ class Creature:
     max_ap: int = 6
     speed: int = 1                        # 速度等级 (格子/钟摆)
     ac_base: int = 8                      # 天生 AC（不含敏捷）
+    char: str = "?"                       # 地图显示字符（ASCII 单个字符）
 
     # 属性
     stats: dict[str, int] = field(default_factory=lambda: dict(DEFAULT_STATS))
@@ -148,6 +149,7 @@ class Creature:
             max_ap=data.get("max_ap", 6),
             speed=data.get("speed", 1),
             ac_base=data.get("ac_base", data.get("ac", 8)),
+            char=data.get("char", "?"),
             stats=stats,
             vision_range=data.get("vision_range", 8),
             food_value=data.get("food_value", 15000),

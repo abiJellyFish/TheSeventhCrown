@@ -59,7 +59,8 @@
           "name": "地精角"
         }
       ]
-    }
+    },
+    "char": "g"
   },
   {
     "key": "long_ear_dog",
@@ -121,7 +122,8 @@
           "name": "犬毛"
         }
       ]
-    }
+    },
+    "char": "d"
   },
   {
     "key": "wild_boar",
@@ -184,7 +186,8 @@
           "name": "猪皮"
         }
       ]
-    }
+    },
+    "char": "w"
   },
   {
     "key": "skeleton",
@@ -247,7 +250,8 @@
           "name": "长剑"
         }
       ]
-    }
+    },
+    "char": "S"
   },
   {
     "key": "bird",
@@ -292,7 +296,8 @@
     "traits": [
       "flying(speed=2)"
     ],
-    "loot": {}
+    "loot": {},
+    "char": "b"
   },
   {
     "key": "squirrel",
@@ -337,7 +342,8 @@
     "traits": [
       "climbing(speed=2)"
     ],
-    "loot": {}
+    "loot": {},
+    "char": "s"
   },
   {
     "key": "cat",
@@ -382,7 +388,8 @@
     "traits": [
       "keen_smell"
     ],
-    "loot": {}
+    "loot": {},
+    "char": "c"
   },
   {
     "key": "village_elder",
@@ -441,7 +448,8 @@
           "name": "布制长袍"
         }
       ]
-    }
+    },
+    "char": "E"
   },
   {
     "key": "merchant",
@@ -510,7 +518,8 @@
           "name": "猪皮靴"
         }
       ]
-    }
+    },
+    "char": "M"
   },
   {
     "key": "villager",
@@ -562,6 +571,7 @@
           "amount": 2
         }
       ]
-    }
+    },
+    "char": "v"
   }
 ]

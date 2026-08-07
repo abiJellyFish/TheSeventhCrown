@@ -18,8 +18,6 @@ from core.dice import roll_d20
 from core.ai.engine import BehaviorEngine
 from core.rest import short_rest, long_rest
 from core.loader import DataLoader
-from render.textual.screens.character import CharacterScreen
-from render.textual.screens.inventory import InventoryScreen
 import os
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -334,8 +332,17 @@ class MapView(Static):
 
 class RightPanel(Static):
     state: GameState | None = None
+    view_mode: str = "default"  # "default" | "inventory" | "character"
+
     def render(self) -> str:
         if self.state is None: return ""
+        if self.view_mode == "inventory":
+            return self._render_inventory()
+        elif self.view_mode == "character":
+            return self._render_character()
+        return self._render_default()
+
+    def _render_default(self) -> str:
         p = self.state.player
         slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
         lines = [
@@ -350,6 +357,57 @@ class RightPanel(Static):
         ]
         if p.statuses:
             lines.append(f"[red]{' '.join(p.statuses)}[/]")
+        return "\n".join(lines)
+
+    def _render_inventory(self) -> str:
+        p = self.state.player
+        lines = [
+            "[bold]物品栏[/] [dim]— 按 I 或 Esc 返回[/]",
+            f"金币: {p.gp}GP {p.sp}SP {p.cp}CP",
+            "",
+            "── 装备 ──",
+        ]
+        slot_names = {
+            "head": "头部", "chest": "躯干", "arms": "双臂", "legs": "双腿",
+            "left_hand": "左手", "right_hand": "右手",
+            "accessory1": "饰品1", "accessory2": "饰品2", "accessory3": "饰品3",
+        }
+        for slot, label in slot_names.items():
+            item = p.equipment.get(slot)
+            lines.append(f"  {label}: {item.name if item else '无'}")
+
+        lines.append("")
+        lines.append("── 背包 ──")
+        if p.inventory:
+            for i, item in enumerate(p.inventory):
+                lines.append(f"  [{i+1}] {item.name} x{item.amount}")
+        else:
+            lines.append("  (空)")
+        return "\n".join(lines)
+
+    def _render_character(self) -> str:
+        p = self.state.player
+        lines = [
+            "[bold]角色面板[/] [dim]— 按 C 或 Esc 返回[/]",
+            f"{p.name}  人类 {p.char_class}  Lv.1",
+            "",
+            f"HP  [green]{p.hp}/{p.max_hp}[/]    MP  [blue]{p.mp}/{p.max_mp}[/]",
+            f"TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
+            f"AC  头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
+            f"SPD {p.speed}    INIT +{p.initiative_bonus()}",
+            "",
+            f"力量 {p.stat('str'):2d}  敏捷 {p.stat('dex'):2d}  体质 {p.stat('con'):2d}",
+            f"智力 {p.stat('int'):2d}  感知 {p.stat('wis'):2d}  魅力 {p.stat('cha'):2d}",
+            "",
+            "── 装备 ──",
+        ]
+        slot_names = {
+            "head": "头部", "chest": "躯干", "arms": "双臂", "legs": "双腿",
+            "left_hand": "左手", "right_hand": "右手",
+        }
+        for slot, label in slot_names.items():
+            item = p.equipment.get(slot)
+            lines.append(f"  {label}: {item.name if item else '无'}")
         return "\n".join(lines)
 
 
@@ -519,6 +577,12 @@ class MVPApp(App):
         handler = digit_actions.get(event.key)
         if handler:
             handler()
+            event.stop()
+            return
+        # Esc 返回右侧栏默认视图
+        if event.key == "escape" and self._right_panel.view_mode != "default":
+            self._right_panel.view_mode = "default"
+            self._right_panel.refresh()
             event.stop()
 
     # ── Input ──
@@ -872,8 +936,19 @@ class MVPApp(App):
     def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
     def action_show_actions(self): self._act_log.add("[动作] 此功能待开发")
     def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
-    def action_char_panel(self): self.push_screen(CharacterScreen(self._state.player))
-    def action_inventory(self): self.push_screen(InventoryScreen(self._state.player))
+    def action_char_panel(self):
+        if self._right_panel.view_mode == "character":
+            self._right_panel.view_mode = "default"
+        else:
+            self._right_panel.view_mode = "character"
+        self._right_panel.refresh()
+
+    def action_inventory(self):
+        if self._right_panel.view_mode == "inventory":
+            self._right_panel.view_mode = "default"
+        else:
+            self._right_panel.view_mode = "inventory"
+        self._right_panel.refresh()
     def action_spellbook(self): self._act_log.add("[法术书] 此功能待开发")
     def action_crafting(self): self._act_log.add("[制作] 此功能待开发")
     def action_cooking(self): self._act_log.add("[烹饪] 此功能待开发")
