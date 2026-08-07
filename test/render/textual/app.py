@@ -335,6 +335,24 @@ class MVPApp(App):
                   self._top_bar, self._act_log, self._scene_log]:
             if w: w.refresh()
 
+    def on_key(self, event) -> None:
+        """处理数字键（Textual binding 对数字键不生效，需手动分发）。"""
+        digit_actions = {
+            "0": self.action_interact,
+            "1": self.action_1,
+            "2": self.action_2,
+            "3": self.action_3,
+            "4": self.action_4,
+            "5": self.action_5,
+            "6": self.action_6,
+            "7": self.action_7,
+            "8": self.action_8,
+        }
+        handler = digit_actions.get(event.key)
+        if handler:
+            handler()
+            event.stop()
+
     # ── Input ──
 
     def action_focus_input(self) -> None:
@@ -615,16 +633,16 @@ class MVPApp(App):
     # ── Stub actions (待实现) ──
 
     def action_0(self): self.action_interact()
-    def action_2(self): self._act_log.add("此功能待开发")
-    def action_3(self): self._act_log.add("此功能待开发")
-    def action_4(self): self._act_log.add("此功能待开发")
-    def action_5(self): self._act_log.add("此功能待开发")
-    def action_6(self): self._act_log.add("此功能待开发")
-    def action_7(self): self._act_log.add("此功能待开发")
-    def action_8(self): self._act_log.add("此功能待开发")
-    def action_toggle_knockout(self): self._act_log.add("此功能待开发")
-    def action_show_actions(self): self._act_log.add("此功能待开发")
-    def action_show_spells(self): self._act_log.add("此功能待开发")
+    def action_2(self): self._act_log.add("[躲藏] 此功能待开发")
+    def action_3(self): self._act_log.add("[协助] 此功能待开发")
+    def action_4(self): self._act_log.add("[跳跃] 此功能待开发")
+    def action_5(self): self._act_log.add("[撤离] 此功能待开发")
+    def action_6(self): self._act_log.add("[回避] 此功能待开发")
+    def action_7(self): self._act_log.add("[推撞] 此功能待开发")
+    def action_8(self): self._act_log.add("[擒抱] 此功能待开发")
+    def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
+    def action_show_actions(self): self._act_log.add("[动作] 此功能待开发")
+    def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
 
     # ── Scene ──
 
