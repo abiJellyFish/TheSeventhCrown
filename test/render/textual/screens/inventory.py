@@ -34,6 +34,10 @@ class InventoryScreen(Screen):
     def compose(self):
         yield Static(self._render_panel(), id="inv-panel")
 
+    def on_mount(self) -> None:
+        widget = self.query_one("#inv-panel", Static)
+        widget.update(self._render_panel())
+
     def _render_panel(self) -> str:
         p = self._player
         lines = [

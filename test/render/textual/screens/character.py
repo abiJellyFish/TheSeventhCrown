@@ -36,6 +36,10 @@ class CharacterScreen(Screen):
     def compose(self):
         yield Static(self._render_panel(), id="char-panel")
 
+    def on_mount(self) -> None:
+        widget = self.query_one("#char-panel", Static)
+        widget.update(self._render_panel())
+
     def _render_panel(self) -> str:
         p = self._player
         lines = [

@@ -469,7 +469,17 @@ class MVPApp(App):
                 if not (0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height): continue
                 if self._state.map[nc, nr] == Terrain.DIFFICULT:
                     b = random.randint(1, 4)
-                    self._act_log.add(f"凯恩 从灌木丛摘到 {b} 个浆果"); self.refresh_all(); return
+                    import core.entity as ent
+                    berry = ent.Item.from_dict({
+                        "name": "浆果", "item_type": "consumable",
+                        "effect": "restore_food", "amount": str(500 * b),
+                        "ap_cost": 1, "weight": 0.1 * b,
+                        "price": {"cp": 2 * b},
+                        "description": f"多汁的浆果，{b}颗"
+                    })
+                    self._state.player.inventory.append(berry)
+                    self._act_log.add(f"凯恩 从灌木丛摘到 {b} 个浆果")
+                    self.refresh_all(); return
         self._act_log.add("凯恩 环顾四周，这里没什么特别的")
         self.refresh_all()
 
