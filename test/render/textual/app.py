@@ -16,7 +16,7 @@ from core.combat.initiative import roll_initiative
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers
 from core.dice import roll_d20
 from core.ai.engine import BehaviorEngine
-from core.rest import short_rest
+from core.rest import short_rest, long_rest
 from core.loader import DataLoader
 import os
 
@@ -33,6 +33,11 @@ TERRAIN_COLORS = {
     Terrain.WALL: "rgb(140,140,140)",
 }
 FACTION_COLORS = {"hostile": "red", "friendly": "green", "neutral": "yellow"}
+
+# 时间常量
+PENDULUMS_PER_DAY = 5000
+PENDULUMS_PER_MONTH = 50000     # 10 天
+PENDULUMS_PER_YEAR = 250000     # 5 月
 
 
 def _load_map(state: GameState, map_name: str) -> None:
@@ -100,11 +105,27 @@ class TopBar(Static):
     state: GameState | None = None
     def render(self) -> str:
         if self.state is None: return ""
-        loc = self.state.current_map or "???"
-        cb = " [red]COMBAT[/]" if self.state.in_combat else ""
-        return f" [bold]{loc}[/]  晴  午间{cb}"
-    def refresh_content(self) -> None:
-        self.update(self.render())
+        s = self.state
+        pc = s.clock.pendulum_count
+        day = (pc // PENDULUMS_PER_DAY) % 10 + 1
+        month = (pc // PENDULUMS_PER_MONTH) % 5 + 1
+        year = pc // PENDULUMS_PER_YEAR + 1
+
+        left = f"[bold]{s.current_map or '???'}[/]  晴"
+
+        if s.in_combat and s.combat_initiative:
+            names = []
+            for e in s.combat_initiative:
+                if e.hp <= 0: continue
+                nm = e.name
+                if e is s.combat_turn_entity: nm = f"[bold yellow]{nm}[/]"
+                names.append(nm)
+            center = " > ".join(names)
+        else:
+            center = ""
+
+        right = f"第{day}天 {month}月 {year}纪年 {pc}钟摆"
+        return f" {left}   {center}   {right}"
 
 
 class LeftPanel(Static):
@@ -115,16 +136,17 @@ class LeftPanel(Static):
             p = self.state.player
             filled = int(p.ap / max(p.max_ap, 1) * 10)
             lines.append(f"AP [{'|'*filled}{'.'*(10-filled)}]")
-            lines.append("[Shift+Tab]结束回合")
+            lines.append("S-Tab 结束回合")
         lines.extend([
-            "[0]交互 [1]探查  [2]躲藏 [3]协助",
-            "[4]跳跃 [5]撤离  [6]回避 [7]推撞",
-            "[8]擒抱 [ / ]击晕  [g]慢速 [G]疾走",
-            "[r]短休 [R]长休  [,]消磨 [A]动作",
-            "[S]法术 [Tab]交互 [X]观察 [Q]退出",
+            "[0]交互 [1]探查  [r]短休 [R]长休",
+            "[g]慢速 [G]疾走  [,]消磨 [X]观察",
+            "[Tab]交互 [Q]退出",
         ])
+        lines.append("")
+        lines.append("[dim]待实现: 2躲藏 3协助 4跳跃[/]")
+        lines.append("[dim]5撤离 6回避 7推撞 8擒抱[/]")
+        lines.append("[dim]/击晕 A动作 S法术[/]")
         return "\n".join(lines)
-    def refresh_content(self) -> None: self.update(self.render())
 
 
 class MapView(Static):
@@ -134,7 +156,6 @@ class MapView(Static):
         gmap = self.state.map
         pc, pr = self.state.player_pos
         fov = self.state.fov_cache
-        # 视口 = 视野直径 + 2 边距
         r = self.state.player.vision_range
         vw = min(r * 2 + 3, gmap.width)
         vh = min(r * 2 + 1, gmap.height)
@@ -164,7 +185,6 @@ class MapView(Static):
         text.append("\n")
         text.append("@玩家 g地精 d犬 w猪 S骷髅 b鸟 c猫 E长老 M商人 v村民", style="dim")
         return text
-    def refresh_content(self) -> None: self.update(self.render())
 
 
 class RightPanel(Static):
@@ -172,8 +192,9 @@ class RightPanel(Static):
     def render(self) -> str:
         if self.state is None: return ""
         p = self.state.player
+        slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
         lines = [
-            f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}",
+            f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头{p.total_ac('head')} 躯{p.total_ac('chest')} 臂{p.total_ac('arms')} 腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
@@ -185,7 +206,6 @@ class RightPanel(Static):
         if p.statuses:
             lines.append(f"[red]{' '.join(p.statuses)}[/]")
         return "\n".join(lines)
-    def refresh_content(self) -> None: self.update(self.render())
 
 
 class ActionLog(Static):
@@ -197,7 +217,6 @@ class ActionLog(Static):
         self.refresh()
     def render(self) -> str:
         return "\n".join(self.messages[-6:] if self.messages else [""])
-    def refresh_content(self) -> None: self.update(self.render())
 
 
 class SceneLog(Static):
@@ -213,23 +232,26 @@ class SceneLog(Static):
             self.messages = filtered; self.refresh()
     def render(self) -> str:
         return "\n".join(self.messages) if self.messages else ""
-    def refresh_content(self) -> None: self.update(self.render())
 
 
 # ═══════════════════════════════════════ App ═══════════════════════════════════════
 
 class MVPApp(App):
     CSS = """
-    * { margin: 0; padding: 0; }
-    #top { height: 1; border: solid #444444; }
-    #main { height: 4fr; }
-    #left { width: 2fr; border: solid #444444; }
-    MapView { width: 3fr; border: solid #444444; content-align: left top; }
-    #right { width: 2fr; border: solid #444444; }
+    * { margin: 0; padding: 0; overflow: hidden; }
+
+    #top { height: 1; border: solid #444444; padding: 0 1; }
+
+    #main { height: 4fr; min-height: 15; }
+    #left { width: 2fr; min-width: 14; border-right: solid #444444; padding: 0 1; }
+    MapView { width: 3fr; min-width: 20; content-align: left top; }
+    #right { width: 2fr; min-width: 18; border-left: solid #444444; padding: 0 1; }
+
     #input-bar { height: 1; border: solid #444444; }
-    #log-area { height: 1fr; }
-    #action-log { width: 1fr; border: solid #444444; }
-    #scene-log { width: 1fr; border: solid #444444; }
+
+    #log-area { height: 1fr; min-height: 6; border: solid #444444; }
+    #action-log { width: 1fr; min-width: 20; border-right: solid #444444; padding: 0 1; }
+    #scene-log { width: 1fr; min-width: 20; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -273,6 +295,7 @@ class MVPApp(App):
         self._input_bar: Input | None = None
         self._top_bar: TopBar | None = None
         self._save_data: dict | None = None
+        self._last_move: tuple[int, int] = (0, 0)
 
     def _create_game(self) -> None:
         stats = {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}
@@ -312,7 +335,7 @@ class MVPApp(App):
     def refresh_all(self) -> None:
         for w in [self._map_view, self._left_panel, self._right_panel,
                   self._top_bar, self._act_log, self._scene_log]:
-            if w: w.refresh_content()
+            if w: w.refresh()
 
     # ── Input ──
 
@@ -326,67 +349,6 @@ class MVPApp(App):
             self._act_log.add(f"> :{cmd}")
             self._act_log.add("此功能待开发")
         self._map_view.focus()
-
-    # ── Unimplemented stubs ──
-
-    def action_long_rest(self): self._act_log.add("此功能待开发")
-    def action_slow_speed(self): self._act_log.add("此功能待开发")
-    def action_dash(self): self._act_log.add("此功能待开发")
-    def action_0(self): self.action_interact()
-    def action_1(self): self._act_log.add("此功能待开发")
-    def action_2(self): self._act_log.add("此功能待开发")
-    def action_3(self): self._act_log.add("此功能待开发")
-    def action_4(self): self._act_log.add("此功能待开发")
-    def action_5(self): self._act_log.add("此功能待开发")
-    def action_6(self): self._act_log.add("此功能待开发")
-    def action_7(self): self._act_log.add("此功能待开发")
-    def action_8(self): self._act_log.add("此功能待开发")
-    def action_toggle_knockout(self): self._act_log.add("此功能待开发")
-    def action_wait(self): self._act_log.add("此功能待开发")
-    def action_show_actions(self): self._act_log.add("此功能待开发")
-    def action_show_spells(self): self._act_log.add("此功能待开发")
-
-    # ── Scene ──
-
-    def _refresh_scene(self) -> None:
-        fov = self._state.fov_cache
-        pc, pr = self._state.player_pos
-        lines = []
-        for creature, (ec, er) in self._state.entities:
-            if (ec, er) not in fov or creature.hp <= 0: continue
-            if creature is self._state.player: continue
-            desc = self._describe_creature(creature, (ec, er), pc, pr)
-            if desc: lines.append(desc)
-        if not lines: lines = [""]
-        if lines != getattr(self, '_last_scene', None):
-            self._last_scene = lines; self._scene_log.set_scene(lines)
-
-    def _describe_creature(self, c: Creature, pos: tuple[int, int],
-                            pc: int, pr: int) -> str:
-        ec, er = pos
-        dist = max(abs(ec - pc), abs(er - pr))
-        enemy_count = 1 if dist <= c.vision_range else 0
-        ally_count = sum(1 for o, _ in self._state.entities
-                         if o.faction == c.faction and o.hp > 0 and o is not c)
-        ratio = c.hp / max(c.max_hp, 1) * (ally_count + 1) / max(enemy_count, 1)
-        try: action, _ = _ai_engine.decide(c, enemy_count, ally_count, ratio)
-        except Exception: action = "idle"
-
-        r = c.hp / max(c.max_hp, 1)
-        if r <= 0: hp = "瘫倒在地，"
-        elif r < 0.2: hp = "伤痕累累，"
-        elif r < 0.5: hp = "身上带伤，"
-        else: hp = ""
-
-        act_map = {
-            "flee": "惊慌失措地试图逃窜", "surrender": "举起双手投降",
-            "attack": "死死盯着凯恩" if enemy_count else "警惕地巡视四周",
-            "advance": "向前逼近" if enemy_count else "来回踱步",
-            "defend": "摆出防御姿态", "patrol": "漫无目的地游荡",
-            "hunt": "低头寻觅着食物", "idle": "静静地站在原地",
-            "sleep": "蜷缩着打盹",
-        }
-        return f"{c.name} {hp}{act_map.get(action, '待在原地')}"
 
     # ── Movement ──
 
@@ -414,7 +376,11 @@ class MVPApp(App):
                 self._refresh_scene(); self.refresh_all(); return
         if self._state.move_player(nc, nr):
             if self._state.in_combat: self._state.player.ap -= 1
+            elif self._state.slow_mode:
+                # 慢速模式额外消耗钟摆
+                self._state.clock.tick_action(1.0)
             _update_fov(self._state); self._refresh_scene(); self.refresh_all()
+            self._last_move = (dc, dr)
 
     def action_move_up(self): self._move_player(0, -1)
     def action_move_down(self): self._move_player(0, 1)
@@ -451,6 +417,8 @@ class MVPApp(App):
                 if self._state.map[nc, nr] == Terrain.DIFFICULT:
                     b = random.randint(1, 4)
                     self._act_log.add(f"凯恩 从灌木丛摘到 {b} 个浆果"); self.refresh_all(); return
+        self._act_log.add("凯恩 环顾四周，这里没什么特别的")
+        self.refresh_all()
 
     def _interact_creature(self, c: Creature, pos: tuple[int, int]) -> None:
         if c.faction == "hostile":
@@ -554,6 +522,125 @@ class MVPApp(App):
                     self._act_log.add(f"{npc.name} 向前逼近")
         else: self._act_log.add(f"{npc.name} 警惕地盯着凯恩")
         self._next_turn(); self.refresh_all()
+
+    # ── Long Rest ──
+
+    def action_long_rest(self) -> None:
+        if self._state.in_combat: self._act_log.add("战斗中无法长休"); return
+        r = long_rest(self._state.player, self._state.clock, self._state.map, self._state.player_pos)
+        self._act_log.add(f"凯恩 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']})")
+        self.refresh_all()
+
+    # ── Speed modes ──
+
+    def action_slow_speed(self) -> None:
+        self._state.slow_mode = not self._state.slow_mode
+        if self._state.slow_mode:
+            self._act_log.add("慢速模式 — 每一步更为谨慎，消耗更多时间")
+        else:
+            self._act_log.add("恢复正常速度")
+        self.refresh_all()
+
+    def action_dash(self) -> None:
+        if self._state.in_combat:
+            self._act_log.add("战斗中无法疾走")
+            return
+        dc, dr = self._last_move
+        if dc == 0 and dr == 0:
+            self._act_log.add("凯恩 原地踱步")
+            return
+        self._move_player(dc, dr)
+
+    # ── Search ──
+
+    def action_1(self) -> None:
+        """探查相邻格。"""
+        if self._state.in_combat: self._act_log.add("战斗中无法探查"); return
+        pc, pr = self._state.player_pos
+        found = []
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if dc == 0 and dr == 0: continue
+                nc, nr = pc + dc, pr + dr
+                if not (0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height): continue
+                if (nc, nr) not in self._state.fov_cache: continue
+                ent = self._state.get_entity_at(nc, nr)
+                if ent and ent is not self._state.player:
+                    found.append(ent.name)
+                elif self._state.map[nc, nr] == Terrain.DIFFICULT:
+                    found.append("灌木丛")
+                elif self._state.map[nc, nr] == Terrain.WALL:
+                    found.append("墙壁")
+        if found:
+            self._act_log.add(f"凯恩 环顾四周: {', '.join(found)}")
+        else:
+            self._act_log.add("凯恩 环顾四周，没有特别的东西")
+        self.refresh_all()
+
+    # ── Wait ──
+
+    def action_wait(self) -> None:
+        if self._state.in_combat: self._act_log.add("战斗中无法消磨时间"); return
+        for _ in range(30):
+            self._state.clock.tick_action(1.0)
+        self._act_log.add("时间流逝...")
+        self.refresh_all()
+
+    # ── Stub actions (待实现) ──
+
+    def action_0(self): self.action_interact()
+    def action_2(self): self._act_log.add("此功能待开发")
+    def action_3(self): self._act_log.add("此功能待开发")
+    def action_4(self): self._act_log.add("此功能待开发")
+    def action_5(self): self._act_log.add("此功能待开发")
+    def action_6(self): self._act_log.add("此功能待开发")
+    def action_7(self): self._act_log.add("此功能待开发")
+    def action_8(self): self._act_log.add("此功能待开发")
+    def action_toggle_knockout(self): self._act_log.add("此功能待开发")
+    def action_show_actions(self): self._act_log.add("此功能待开发")
+    def action_show_spells(self): self._act_log.add("此功能待开发")
+
+    # ── Scene ──
+
+    def _refresh_scene(self) -> None:
+        fov = self._state.fov_cache
+        pc, pr = self._state.player_pos
+        lines = []
+        for creature, (ec, er) in self._state.entities:
+            if (ec, er) not in fov or creature.hp <= 0: continue
+            if creature is self._state.player: continue
+            desc = self._describe_creature(creature, (ec, er), pc, pr)
+            if desc: lines.append(desc)
+        if not lines: lines = [""]
+        if lines != getattr(self, '_last_scene', None):
+            self._last_scene = lines; self._scene_log.set_scene(lines)
+
+    def _describe_creature(self, c: Creature, pos: tuple[int, int],
+                            pc: int, pr: int) -> str:
+        ec, er = pos
+        dist = max(abs(ec - pc), abs(er - pr))
+        enemy_count = 1 if dist <= c.vision_range else 0
+        ally_count = sum(1 for o, _ in self._state.entities
+                         if o.faction == c.faction and o.hp > 0 and o is not c)
+        ratio = c.hp / max(c.max_hp, 1) * (ally_count + 1) / max(enemy_count, 1)
+        try: action, _ = _ai_engine.decide(c, enemy_count, ally_count, ratio)
+        except Exception: action = "idle"
+
+        r = c.hp / max(c.max_hp, 1)
+        if r <= 0: hp = "瘫倒在地，"
+        elif r < 0.2: hp = "伤痕累累，"
+        elif r < 0.5: hp = "身上带伤，"
+        else: hp = ""
+
+        act_map = {
+            "flee": "惊慌失措地试图逃窜", "surrender": "举起双手投降",
+            "attack": "死死盯着凯恩" if enemy_count else "警惕地巡视四周",
+            "advance": "向前逼近" if enemy_count else "来回踱步",
+            "defend": "摆出防御姿态", "patrol": "漫无目的地游荡",
+            "hunt": "低头寻觅着食物", "idle": "静静地站在原地",
+            "sleep": "蜷缩着打盹",
+        }
+        return f"{c.name} {hp}{act_map.get(action, '待在原地')}"
 
     # ── Rest ──
 

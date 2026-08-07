@@ -44,6 +44,9 @@ class GameState:
     observe_mode: bool = False
     observe_cursor: tuple[int, int] = (0, 0)
 
+    # 慢速模式
+    slow_mode: bool = False
+
     def __post_init__(self):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.PASSABLE)
         self.clock.set_npc_advance_callback(self._advance_npcs)
