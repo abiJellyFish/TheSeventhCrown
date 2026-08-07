@@ -24,6 +24,7 @@ class GameState:
     map_exits: list[dict] = field(default_factory=list)
     loot_spots: list[dict] = field(default_factory=list)
     bed_positions: set[tuple[int, int]] = field(default_factory=set)
+    door_states: dict[tuple[int, int], bool] = field(default_factory=dict)
 
     # 实体
     entities: list[tuple[Creature, tuple[int, int]]] = field(default_factory=list)

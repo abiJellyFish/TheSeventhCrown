@@ -62,6 +62,12 @@ def _load_map(state: GameState, map_name: str) -> None:
     state.loot_spots = data.get("loot_spots", [])
     beds = data.get("terrain", {}).get("beds", [])
     state.bed_positions = {tuple(b) for b in beds}
+    doors = data.get("terrain", {}).get("doors", [])
+    state.door_states = {tuple(d["pos"]): d.get("open", False) for d in doors}
+    # 初始将关闭的门所在格设为 WALL
+    for pos, is_open in state.door_states.items():
+        if not is_open:
+            state.map[pos] = Terrain.WALL
 
 
 def _generate_plains(state: GameState) -> None:
@@ -88,6 +94,7 @@ def _generate_plains(state: GameState) -> None:
     ]
     state.loot_spots = []
     state.bed_positions = set()
+    state.door_states = {}
 
 
 def _update_fov(state: GameState) -> None:
@@ -181,9 +188,15 @@ class MapView(Static):
                     text.append("@", style="bold bright_cyan")
                 else:
                     t = gmap[col, row]
-                    ch = {".": ".", "#": "#", '"': '"'}.get(
-                        {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t], ".")
-                    text.append(ch, style=TERRAIN_COLORS.get(t, ""))
+                    # 门渲染
+                    if (col, row) in self.state.door_states:
+                        is_open = self.state.door_states[(col, row)]
+                        ch = "_" if is_open else "]"
+                        text.append(ch, style="yellow")
+                    else:
+                        ch = {".": ".", "#": "#", '"': '"'}.get(
+                            {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t], ".")
+                        text.append(ch, style=TERRAIN_COLORS.get(t, ""))
             if row < min(oy + vh, gmap.height) - 1:
                 text.append("\n")
         text.append("\n")
@@ -450,6 +463,21 @@ class MVPApp(App):
     def action_interact(self) -> None:
         if self._state.in_combat: self._player_attack(); return
         pc, pr = self._state.player_pos
+        # 门交互
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                door_pos = (pc + dc, pr + dr)
+                if door_pos in self._state.door_states:
+                    is_open = self._state.door_states[door_pos]
+                    if is_open:
+                        self._state.door_states[door_pos] = False
+                        self._state.map[door_pos] = Terrain.WALL
+                        self._act_log.add("门关上了")
+                    else:
+                        self._state.door_states[door_pos] = True
+                        self._state.map[door_pos] = Terrain.PASSABLE
+                        self._act_log.add("门打开了")
+                    self.refresh_all(); return
         # 床交互
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):

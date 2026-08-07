@@ -29,6 +29,11 @@
       [11, 4],
       [22, 3]
     ],
+    "doors": [
+      {"pos": [4, 5], "open": false},
+      {"pos": [11, 5], "open": false},
+      {"pos": [22, 4], "open": false}
+    ],
     "water": [[18,10],[18,11],[18,12]],
     "difficult": []
   },
