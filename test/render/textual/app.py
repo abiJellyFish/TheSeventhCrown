@@ -357,7 +357,8 @@ class RightPanel(Static):
         p = self.state.player
         max_h = self.size.height
         lines = [
-            f"[bold]物品栏[/] [dim]I/Esc返回[/]  金币: {p.gp}GP",
+            f"[bold]物品栏[/] [dim]I/Esc返回  输入 :I序号 使用[/]",
+            f"金币: {p.gp}GP",
             "── 装备 ──",
         ]
         body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
@@ -598,8 +599,48 @@ class MVPApp(App):
         self._input_bar.disabled = True
         if cmd:
             self._act_log.add(f"> :{cmd}")
-            self._act_log.add("此功能待开发")
+            if cmd.startswith("I") and self._right_panel.view_mode == "inventory":
+                self._use_item(cmd)
+            else:
+                self._act_log.add("此功能待开发")
         self._map_view.focus()
+
+    def _use_item(self, cmd: str) -> None:
+        """使用物品：I + 序号，如 I1 使用第 1 个物品。"""
+        try:
+            idx = int(cmd[1:]) - 1
+            inv = self._state.player.inventory
+            if 0 <= idx < len(inv):
+                item = inv[idx]
+                if item.count > 1:
+                    item.count -= 1
+                else:
+                    inv.pop(idx)
+                self._act_log.add(f"凯恩 使用了 {item.name}")
+                self._apply_item_effect(item)
+            else:
+                self._act_log.add("物品序号无效")
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :I序号  如 :I1 使用第1个物品")
+        self._right_panel.refresh()
+
+    def _apply_item_effect(self, item) -> None:
+        """根据物品 effect 字段应用效果（MVP: 仅处理数值型）。"""
+        eff = item.effect
+        amt = item.amount
+        p = self._state.player
+        try:
+            val = int(amt)
+        except (ValueError, TypeError):
+            val = 0  # 骰子字符串如 "6d4" 暂不解析
+        if eff == "heal" and val > 0:
+            p.hp = min(p.max_hp, p.hp + val)
+            self._act_log.add(f"  恢复了 {val} 点生命")
+        elif eff == "restore_mp" and val > 0:
+            p.mp = min(p.max_mp, p.mp + val)
+            self._act_log.add(f"  恢复了 {val} 点精神")
+        elif eff == "restore_food":
+            self._act_log.add(f"  恢复了 {val or '一定'} 饮食值")
 
     # ── Movement ──
 
