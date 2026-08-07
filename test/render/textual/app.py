@@ -376,12 +376,15 @@ class RightPanel(Static):
 
         lines.append("── 背包 ──")
         if p.inventory:
-            # 预留 3 行给标题/金币/分隔线，剩余填物品
             item_lines = []
             for i, item in enumerate(p.inventory):
                 item_lines.append(f"  [{i+1}] {item.name} x{item.amount}")
             available = max_h - len(lines) - 1
-            lines.extend(item_lines[-available:] if available > 0 else item_lines[-3:])
+            if len(item_lines) > available and available > 0:
+                lines.extend(item_lines[:available - 1])
+                lines.append(f"  [dim]... 共{len(item_lines)}项[/]")
+            else:
+                lines.extend(item_lines[-available:] if available > 0 else item_lines[-3:])
         else:
             lines.append("  (空)")
         return "\n".join(lines)
