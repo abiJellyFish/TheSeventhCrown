@@ -18,6 +18,8 @@ from core.dice import roll_d20
 from core.ai.engine import BehaviorEngine
 from core.rest import short_rest, long_rest
 from core.loader import DataLoader
+from render.textual.screens.character import CharacterScreen
+from render.textual.screens.inventory import InventoryScreen
 import os
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -195,7 +197,7 @@ class RightPanel(Static):
         lines = [
             f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
-            f"AC 头{p.total_ac('head')} 躯{p.total_ac('chest')} 臂{p.total_ac('arms')} 腿{p.total_ac('legs')}",
+            f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
             "",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
@@ -321,6 +323,17 @@ class MVPApp(App):
                        "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
                        "ap_cost": 3, "weight": 2.0}
         self._state.player.equipment["right_hand"] = ent.Weapon.from_dict(sword_data)
+        # 预置初始物品
+        self._state.player.inventory.extend([
+            ent.Item.from_dict({"name": "治疗药水", "item_type": "consumable",
+                               "effect": "heal", "amount": "6d4", "ap_cost": 1,
+                               "weight": 0.5, "price": {"gp": 2},
+                               "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值"}),
+            ent.Item.from_dict({"name": "一包口粮", "item_type": "consumable",
+                               "effect": "restore_food", "amount": "15000", "ap_cost": 1,
+                               "weight": 1.0, "price": {"cp": 50},
+                               "description": "几块晒干的兽肉和浆果，食用恢复饮食值"}),
+        ])
         _update_fov(self._state)
 
     def compose(self) -> ComposeResult:
@@ -656,8 +669,8 @@ class MVPApp(App):
     def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
     def action_show_actions(self): self._act_log.add("[动作] 此功能待开发")
     def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
-    def action_char_panel(self): self._act_log.add("[角色面板] 此功能待开发")
-    def action_inventory(self): self._act_log.add("[物品栏] 此功能待开发")
+    def action_char_panel(self): self.push_screen(CharacterScreen(self._state.player))
+    def action_inventory(self): self.push_screen(InventoryScreen(self._state.player))
     def action_spellbook(self): self._act_log.add("[法术书] 此功能待开发")
     def action_crafting(self): self._act_log.add("[制作] 此功能待开发")
     def action_cooking(self): self._act_log.add("[烹饪] 此功能待开发")
