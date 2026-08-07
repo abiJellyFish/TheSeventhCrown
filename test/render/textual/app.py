@@ -179,11 +179,13 @@ class MapView(Static):
         gmap = self.state.map
         pc, pr = self.state.player_pos
         fov = self.state.fov_cache
-        vw, vh = 40, 18
+        vw, vh = 30, 14
 
-        # 视口跟随
-        ox = max(0, min(pc - vw // 2, gmap.width - vw))
-        oy = max(0, min(pr - vh // 2, gmap.height - vh))
+        # 玩家始终居中（地图边界时贴边）
+        ox = pc - vw // 2
+        oy = pr - vh // 2
+        ox = max(0, min(ox, gmap.width - vw))
+        oy = max(0, min(oy, gmap.height - vh))
 
         text = Text()
         for row in range(oy, min(oy + vh, gmap.height)):
@@ -248,6 +250,8 @@ class ActionLog(Static):
     messages: list[str] = []
 
     def add(self, msg: str) -> None:
+        if self.messages and self.messages[-1] == msg:
+            return
         self.messages.append(msg)
         if len(self.messages) > 200:
             self.messages = self.messages[-100:]
@@ -269,11 +273,14 @@ class SceneLog(Static):
         self.refresh()
 
     def set_scene(self, lines: list[str]) -> None:
-        self.messages = lines
-        self.refresh()
+        # 只保留非空行
+        filtered = [l for l in lines if l]
+        if filtered != self.messages:
+            self.messages = filtered
+            self.refresh()
 
     def render(self) -> str:
-        return "\n".join(self.messages[-5:] if self.messages else [""])
+        return "\n".join(self.messages) if self.messages else ""
 
 
 # ═══════════════════════════════════════════════════
@@ -378,53 +385,45 @@ class MVPApp(App):
     # ── Scene description ──
 
     def _refresh_scene(self) -> None:
+        """更新场景描述。仅在实体位置变化后调用，不重复生成相同内容。"""
         fov = self._state.fov_cache
-        pc, pr = self._state.player_pos
         lines = []
         # FOV 内生物描述
+        seen = set()
         for creature, (ec, er) in self._state.entities:
             if (ec, er) not in fov or creature.hp <= 0:
                 continue
             if creature is self._state.player:
                 continue
+            key = (creature.name, ec, er)
+            if key in seen:
+                continue
+            seen.add(key)
             desc = self._describe_creature(creature)
             if desc:
                 lines.append(desc)
-        # 随机环境氛围
-        if random.random() < 0.2:
-            ambient = random.choice([
-                "树枝沙沙作响",
-                "一阵微风吹过草地",
-                "远处传来鸟鸣",
-                "空气中弥漫着泥土的气息",
-            ])
-            lines.append(ambient)
         if not lines:
-            lines.append("周围一片宁静")
-        self._scene_log.set_scene(lines)
+            lines.append("")
+        # 仅在内容变化时更新，避免重复刷新
+        if lines != getattr(self, '_last_scene', None):
+            self._last_scene = lines
+            self._scene_log.set_scene(lines)
 
     def _describe_creature(self, c: Creature) -> str:
-        """生成生物当前动作/神情描述。"""
-        if c.faction == "hostile":
-            actions = [
-                f"{c.name} 紧握着武器，警惕地环顾四周",
-                f"{c.name} 咧嘴露出黄牙，低吼着",
-                f"{c.name} 挥舞着手中的武器",
-            ]
-            return random.choice(actions)
-        elif c.faction == "friendly":
-            return f"{c.name} 安静地站着"
-        else:
-            if c.name == "野猪":
-                return random.choice(["野猪 低头拱着地面觅食", "野猪 抬起头嗅了嗅空气"])
-            if c.name == "鸟":
-                return random.choice(["一只鸟 在枝头跳跃", "一只鸟 振翅飞过"])
-            if c.name == "松鼠":
-                return "松鼠 在草丛间窜来窜去"
-            if c.name == "猫":
-                return random.choice(["猫 慵懒地舔着爪子", "猫 竖起耳朵看向这边"])
-            return f"{c.name} 在附近徘徊"
-        return ""
+        """生物当前描述（固定描述，不随机变化）。"""
+        desc_map = {
+            "地精打手": "地精打手 紧握着武器，警惕地环顾四周",
+            "长耳犬": "长耳犬 低吼着，露出锋利的獠牙",
+            "野猪": "野猪 低头拱着地面觅食",
+            "骷髅": "骷髅 手持长剑，空洞的眼眶中闪烁着幽光",
+            "鸟": "一只鸟 在枝头跳跃",
+            "松鼠": "松鼠 在草丛间窜来窜去",
+            "猫": "猫 慵懒地舔着爪子",
+            "村庄长老": "村庄长老 拄着长杖，目光深邃",
+            "商人": "商人 整理着货物",
+            "村民": "村民 忙碌着自己的事",
+        }
+        return desc_map.get(c.name, f"{c.name} 在附近徘徊")
 
     # ── Movement ──
 
