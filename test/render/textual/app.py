@@ -215,7 +215,9 @@ class ActionLog(Static):
         if len(self.messages) > 200: self.messages = self.messages[-100:]
         self.refresh()
     def render(self) -> str:
-        return "\n".join(self.messages[-6:] if self.messages else [""])
+        if not self.messages: return ""
+        h = self.size.height
+        return "\n".join(self.messages[-h:])
 
 
 class SceneLog(Static):
@@ -230,7 +232,9 @@ class SceneLog(Static):
         if filtered != self.messages:
             self.messages = filtered; self.refresh()
     def render(self) -> str:
-        return "\n".join(self.messages) if self.messages else ""
+        if not self.messages: return ""
+        h = self.size.height
+        return "\n".join(self.messages[-h:])
 
 
 # ═══════════════════════════════════════ App ═══════════════════════════════════════
@@ -241,14 +245,14 @@ class MVPApp(App):
 
     #top { height: 1; border: solid #444444; padding: 0 1; }
 
-    #main { height: 4fr; min-height: 15; }
+    #main { height: 3fr; min-height: 15; }
     #left { width: 2fr; min-width: 14; border-right: solid #444444; padding: 0 1; }
     MapView { width: 3fr; min-width: 20; content-align: left top; }
     #right { width: 2fr; min-width: 18; border-left: solid #444444; padding: 0 1; }
 
     #input-bar { height: 1; border: solid #444444; }
 
-    #log-area { height: 1fr; min-height: 6; border: solid #444444; }
+    #log-area { height: 2fr; min-height: 6; border: solid #444444; }
     #action-log { width: 1fr; min-width: 20; border-right: solid #444444; padding: 0 1; }
     #scene-log { width: 1fr; min-width: 20; padding: 0 1; }
     """
