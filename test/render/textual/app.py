@@ -247,10 +247,6 @@ class MVPApp(App):
                        "ap_cost": 3, "properties": ["versatile(1d10)"], "weight": 2.0}
         self._state.player.equipment["right_hand"] = ent.Weapon.from_dict(sword_data)
 
-        self._log.add("=== 欢迎来到 MVP 原型 ===")
-        self._log.add("村庄长老需要你前往地城取回红宝石")
-        self._log.add("[方向键/WASD] 移动  [Tab] 攻击/交互  [R] 休息  [Q] 退出")
-
     def compose(self) -> ComposeResult:
         self._create_game()
         yield Header()
@@ -265,6 +261,11 @@ class MVPApp(App):
                 self._log = LogPanel()
                 yield self._log
         yield Footer()
+
+    def on_mount(self) -> None:
+        self._log.add("=== 欢迎来到 MVP 原型 ===")
+        self._log.add("村庄长老需要你前往地城取回红宝石")
+        self._log.add("[方向键/WASD] 移动  [Tab] 攻击/交互  [R] 休息  [Q] 退出")
 
     def refresh_all(self) -> None:
         self._map_view.refresh()
