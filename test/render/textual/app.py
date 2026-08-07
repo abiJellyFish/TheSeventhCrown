@@ -132,6 +132,18 @@ def _build_world(state: GameState) -> None:
             state.add_entity(c, (cx, cy))
 
     # ── 平原游荡生物 ──
+    # 固定区域：村庄 (3,20)-(23,35) / 树林 (35,15)-(65,45) / 营地 (68,10)-(78,25)
+    RESERVED_ZONES = [
+        (vx, vy, 21, 16),   # 村庄
+        (fx, fy, 30, 30),   # 树林
+        (gx, gy, 9, 15),    # 营地
+    ]
+    def _in_reserved(px: int, py: int) -> bool:
+        for rx, ry, rw, rh in RESERVED_ZONES:
+            if rx <= px < rx + rw and ry <= py < ry + rh:
+                return True
+        return False
+
     creatures = ["bird", "squirrel", "cat", "long_ear_dog", "wild_boar"]
     for _ in range(15):
         key = random.choice(creatures)
@@ -141,16 +153,18 @@ def _build_world(state: GameState) -> None:
             for _ in range(20):
                 px = random.randint(0, w - 1)
                 py = random.randint(0, h - 1)
-                if state.map[px, py] == Terrain.PASSABLE:
+                if state.map[px, py] == Terrain.PASSABLE and not _in_reserved(px, py):
                     state.add_entity(c, (px, py))
                     break
 
     # ── 平原灌木 ──
     for _ in range(60):
-        bx = random.randint(0, w - 1)
-        by = random.randint(0, h - 1)
-        if state.map[bx, by] == Terrain.PASSABLE:
-            state.map[bx, by] = Terrain.DIFFICULT
+        for _ in range(20):
+            bx = random.randint(0, w - 1)
+            by = random.randint(0, h - 1)
+            if state.map[bx, by] == Terrain.PASSABLE and not _in_reserved(bx, by):
+                state.map[bx, by] = Terrain.DIFFICULT
+                break
 
     state.map_exits = []
     state.loot_spots = []
@@ -271,7 +285,7 @@ class TopBar(Static):
             return len(Text.from_markup(t).plain)
 
         if s.in_combat and s.combat_initiative:
-            names = []
+            names = ["[red]战斗中[/]"]
             for e in s.combat_initiative:
                 if e.hp <= 0: continue
                 nm = e.name
@@ -532,6 +546,7 @@ class MVPApp(App):
         Binding("8", "action_8", "擒抱", priority=True),
         Binding("slash", "toggle_knockout", "击晕", priority=True),
         Binding("comma", "wait", "消磨时间", priority=True),
+        Binding("shift+tab", "end_turn", "结束回合", priority=True),
         Binding("A", "show_actions", "动作", priority=True),
         Binding("S", "show_spells", "法术", priority=True),
         Binding("f5", "quick_save", "存档", priority=True),
@@ -712,6 +727,8 @@ class MVPApp(App):
                 self._state.clock.tick_action(1.0)
             _update_fov(self._state); self._refresh_scene(); self.refresh_all()
             self._last_move = (dc, dr)
+            # NPC 自主行为
+            self._tick_npcs()
             # 走进地下城入口
             if (not self._state.in_dungeon and self._state.dungeon_entrance
                     and self._state.player_pos == self._state.dungeon_entrance):
@@ -721,6 +738,40 @@ class MVPApp(App):
     def action_move_down(self): self._move_player(0, 1)
     def action_move_left(self): self._move_player(-1, 0)
     def action_move_right(self): self._move_player(1, 0)
+
+    def action_end_turn(self) -> None:
+        """手动结束当前回合（Shift+Tab）。"""
+        if self._state.in_combat and self._state.combat_turn_entity is self._state.player:
+            self._state.player.ap = 0
+            self._next_turn()
+        else:
+            self._act_log.add("现在不是你的回合")
+
+    # ── NPC 自主行为 ──
+
+    def _tick_npcs(self) -> None:
+        """探索模式下 NPC 自主行为：敌对检测 + 随机游荡。"""
+        if self._state.in_combat:
+            return
+        pc, pr = self._state.player_pos
+        for creature, (ec, er) in list(self._state.entities):
+            if creature is self._state.player or creature.hp <= 0:
+                continue
+            # 敌对生物：FOV 内发现玩家 → 开战
+            if creature.faction == "hostile" and (ec, er) in self._state.fov_cache:
+                self._act_log.add(f"{creature.name} 发现了凯恩!")
+                self._start_combat(creature)
+                return
+            # 随机游荡
+            if random.random() < 0.25:
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = ec + dx, er + dy
+                if self._state.map.within_bounds(nx, ny):
+                    self._state.move_entity(creature, ec, er, nx, ny)
+        self.refresh_all()
 
     # ── Observe ──
 
