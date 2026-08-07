@@ -138,14 +138,12 @@ class LeftPanel(Static):
             lines.append(f"AP [{'|'*filled}{'.'*(10-filled)}]")
             lines.append("S-Tab 结束回合")
         lines.extend([
-            "[0]交互 [1]探查  [r]短休 [R]长休",
-            "[g]慢速 [G]疾走  [,]消磨 [X]观察",
-            "[Tab]交互 [Q]退出",
+            "[0]交互 [1]探查  [2]躲藏 [3]协助",
+            "[4]跳跃 [5]撤离  [6]回避 [7]推撞",
+            "[8]擒抱 [ / ]击晕  [g]慢速 [G]疾走",
+            "[r]短休 [R]长休  [,]消磨 [A]动作",
+            "[S]法术 [X]观察 [Q]退出",
         ])
-        lines.append("")
-        lines.append("[dim]待实现: 2躲藏 3协助 4跳跃[/]")
-        lines.append("[dim]5撤离 6回避 7推撞 8擒抱[/]")
-        lines.append("[dim]/击晕 A动作 S法术[/]")
         return "\n".join(lines)
 
 
@@ -260,7 +258,6 @@ class MVPApp(App):
         Binding("down,s", "move_down", "", priority=True),
         Binding("left,a", "move_left", "", priority=True),
         Binding("right,d", "move_right", "", priority=True),
-        Binding("tab", "interact", "交互", priority=True),
         Binding("x", "toggle_observe", "观察", priority=True),
         Binding("r", "short_rest", "短休", priority=True),
         Binding("R", "long_rest", "长休", priority=True),
@@ -423,12 +420,38 @@ class MVPApp(App):
     def _interact_creature(self, c: Creature, pos: tuple[int, int]) -> None:
         if c.faction == "hostile":
             self._act_log.add(f"凯恩 拔剑冲向 {c.name}!"); self._start_combat(c)
-        elif c.faction == "friendly":
+        else:
             self._act_log.add(f"凯恩 向 {c.name} 搭话")
-            if c.name == "村庄长老": self._act_log.add("长老: 冒险者，请前往地城取回红宝石")
-            elif c.name == "商人": self._act_log.add("商人: 看看我的货物 (交易待开发)")
-            else: self._act_log.add(f"{c.name}: 你好，冒险者")
-        else: self._act_log.add(self._describe_creature(c, pos, *self._state.player_pos))
+            self._act_log.add(self._get_npc_dialogue(c))
+
+    def _get_npc_dialogue(self, c: Creature) -> str:
+        """基于 AI 状态生成 NPC 对话，不硬编码角色名。"""
+        enemy_count = 0
+        ally_count = sum(1 for o, _ in self._state.entities
+                         if o.faction == c.faction and o.hp > 0 and o is not c)
+        ratio = c.hp / max(c.max_hp, 1) * (ally_count + 1)
+        try:
+            action, _ = _ai_engine.decide(c, enemy_count, ally_count, ratio)
+        except Exception:
+            action = "idle"
+
+        brave = getattr(c, "bravery_tier", "medium") or "medium"
+
+        DIALOGUE = {
+            "patrol": {"low": "这一带最近不太平...", "medium": "我在巡逻，一切正常", "high": "放心吧，有我在"},
+            "hunt": {"low": "希望能找到点吃的...", "medium": "今天的猎物跑得真快", "high": "刚猎到一只肥美的兔子"},
+            "idle": {"low": "嗯...你好", "medium": "你好，旅行者", "high": "欢迎！有什么需要帮忙的吗"},
+            "sleep": {"low": "呼...别吵...", "medium": "呼...呼...", "high": "打了个盹，精神不错"},
+            "flee": {"low": "我得走了！", "medium": "这里不安全", "high": "你也快离开这"},
+            "defend": {"low": "别过来...", "medium": "小心为上", "high": "退后！"},
+            "advance": {"low": "别靠近我...", "medium": "你来这里做什么", "high": "嘿，站住"},
+            "attack": {"low": "不...不要过来！", "medium": "你是在挑衅吗", "high": "想打架吗"},
+            "inspect": {"low": "好像有点不对劲...", "medium": "让我看看...", "high": "仔细检查中"},
+            "surrender": {"low": "饶了我吧！", "medium": "我投降，别动手", "high": "好吧好吧，你赢了"},
+        }
+        tier = brave if brave in ("low", "medium", "high") else "medium"
+        action_dialogues = DIALOGUE.get(action, DIALOGUE["idle"])
+        return f"{c.name}: {action_dialogues.get(tier, action_dialogues['medium'])}"
 
     def _loot_corpse(self, c: Creature) -> None:
         if getattr(c, '_looted', False): self._act_log.add("已经搜刮过了"); return
