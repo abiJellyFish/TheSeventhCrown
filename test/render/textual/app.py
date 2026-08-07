@@ -117,7 +117,7 @@ class LeftPanel(Static):
         lines.extend([
             "[0]交互 [1]探查  [2]躲藏 [3]协助",
             "[4]跳跃 [5]撤离  [6]回避 [7]推撞",
-            "[8]擒抱 [/]击晕  [g]慢速 [G]疾走",
+            "[8]擒抱 [ / ]击晕  [g]慢速 [G]疾走",
             "[r]短休 [R]长休  [,]消磨 [A]动作",
             "[S]法术 [Tab]交互 [X]观察 [Q]退出",
         ])
@@ -215,14 +215,13 @@ class MVPApp(App):
     CSS = """
     #top { height: 1; border: solid #444444; }
     #main { height: 1fr; }
-    #left { width: 18; border: solid #444444; }
-    MapView { width: 1fr; border: solid #444444; content-align: left top; }
-    #right { width: 28; border: solid #444444; }
+    #left { width: 22; border: solid #444444; }
+    MapView { width: 22; border: solid #444444; content-align: left top; }
+    #right { width: 1fr; border: solid #444444; }
     #input-bar { height: 1; border: solid #444444; }
-    #log-area { height: 8; }
+    #log-area { height: 10; }
     #action-log { width: 1fr; border: solid #444444; }
     #scene-log { width: 1fr; border: solid #444444; }
-    Static { padding: 0 1; }
     """
 
     BINDINGS = [
