@@ -232,15 +232,37 @@ def _update_fov(state: GameState) -> None:
 
 class TopBar(Static):
     state: GameState | None = None
+
+    @staticmethod
+    def _get_location(s) -> str:
+        if s.in_dungeon:
+            return "地下城1层"
+        px, py = s.player_pos
+        if 3 <= px <= 23 and 20 <= py <= 35:
+            return "小村庄"
+        if 35 <= px <= 65 and 15 <= py <= 45:
+            return "树林"
+        if 68 <= px <= 78 and 10 <= py <= 25:
+            return "营地"
+        return "平原"
+
     def render(self) -> str:
         if self.state is None: return ""
         s = self.state
+        width = self.size.width
         pc = s.clock.pendulum_count
         day = (pc // PENDULUMS_PER_DAY) % 10 + 1
         month = (pc // PENDULUMS_PER_MONTH) % 5 + 1
         year = pc // PENDULUMS_PER_YEAR + 1
 
-        left = f"[bold]{s.current_map or '???'}[/]  晴"
+        map_name = s.current_map or "???"
+        location = self._get_location(s)
+        left = f" [bold]{map_name}[/] {location}  晴"
+
+        right = f"{pc}钟摆 第{day}天 {month}月 {year}纪年 "
+
+        def visible_len(t: str) -> int:
+            return len(Text.from_markup(t).plain)
 
         if s.in_combat and s.combat_initiative:
             names = []
@@ -250,11 +272,11 @@ class TopBar(Static):
                 if e is s.combat_turn_entity: nm = f"[bold yellow]{nm}[/]"
                 names.append(nm)
             center = " > ".join(names)
+            pad = max(1, width - visible_len(left) - visible_len(center) - visible_len(right) - 3)
+            return f"{left}  {center}{' ' * pad}{right}"
         else:
-            center = ""
-
-        right = f"第{day}天 {month}月 {year}纪年 {pc}钟摆"
-        return f" {left}   {center}   {right}"
+            pad = max(1, width - visible_len(left) - visible_len(right) - 2)
+            return f"{left}{' ' * pad}{right}"
 
 
 class LeftPanel(Static):
