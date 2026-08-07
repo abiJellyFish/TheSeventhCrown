@@ -368,13 +368,17 @@ class RightPanel(Static):
         ]
         body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
         hands = [("left_hand","左手"),("right_hand","右手")]
+        accs = [("accessory1","饰品1"),("accessory2","饰品2"),("accessory3","饰品3")]
         lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in body))
         lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in hands))
+        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in accs))
         lines.append("── 背包 ──")
         if p.inventory:
             item_lines = []
             for i, item in enumerate(p.inventory):
                 item_lines.append(f"  [{i+1}] {item.name} x{item.amount}")
+                if item.description:
+                    item_lines.append(f"      {item.description[:20]}")
             available = max_h - len(lines) - 1
             if available >= len(item_lines):
                 lines.extend(item_lines)
@@ -393,14 +397,24 @@ class RightPanel(Static):
         lines = [
             f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
-            f"AC 头{p.total_ac('head')} 躯{p.total_ac('chest')} 臂{p.total_ac('arms')} 腿{p.total_ac('legs')}  SPD {p.speed}  INIT +{p.initiative_bonus()}",
-            f"力{p.stat('str'):2d} 敏{p.stat('dex'):2d} 体{p.stat('con'):2d} 智{p.stat('int'):2d} 感{p.stat('wis'):2d} 魅{p.stat('cha'):2d}",
-            "── 装备 ──",
+            f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
+            "",
         ]
+        for key, label in [("str","力量"),("dex","敏捷"),("con","体质"),("int","智力"),("wis","感知"),("cha","魅力")]:
+            val = p.stat(key); adj = p.stat_adjust(key)
+            sign = "+" if adj >= 0 else ""
+            lines.append(f"  {label}: {val} ({sign}{adj})")
+        lines.append("")
+        lines.append("── 装备 ──")
         body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
         hands = [("left_hand","左手"),("right_hand","右手")]
+        accs = [("accessory1","饰品1"),("accessory2","饰品2"),("accessory3","饰品3")]
         lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in body))
         lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in hands))
+        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in accs))
+        if p.statuses:
+            lines.append(f"[red]状态: {' '.join(p.statuses)}[/]")
         return "\n".join(lines[:max_h])
 
 
