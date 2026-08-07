@@ -468,14 +468,14 @@ class MVPApp(App):
     CSS = """
     * { margin: 0; padding: 0; overflow: hidden; }
 
-    #top { height: 1; border: solid #444444; padding: 0 1; }
+    #top { height: 3; border: solid #444444; padding: 0 1; }
 
     #main { height: 3fr; min-height: 15; }
     #left { width: 2fr; min-width: 14; height: 100%; border-right: solid #444444; padding: 0 1; }
     MapView { width: 3fr; min-width: 20; content-align: center middle; }
     #right { width: 2fr; min-width: 18; height: 100%; border-left: solid #444444; padding: 0 1; }
 
-    #input-bar { height: 1; border: solid #444444; }
+    #input-bar { height: 3; border: solid #444444; }
 
     #log-area { height: 2fr; min-height: 6; border: solid #444444; }
     #action-log { width: 1fr; min-width: 20; height: 100%; border-right: solid #444444; padding: 0 1; content-align: left top; }
