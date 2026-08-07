@@ -138,11 +138,11 @@ class LeftPanel(Static):
             lines.append(f"AP [{'|'*filled}{'.'*(10-filled)}]")
             lines.append("S-Tab 结束回合")
         lines.extend([
-            "[0]交互 [1]探查  [2]躲藏 [3]协助",
-            "[4]跳跃 [5]撤离  [6]回避 [7]推撞",
-            "[8]擒抱 [ / ]击晕  [g]慢速 [G]疾走",
-            "[r]短休 [R]长休  [,]消磨 [A]动作",
-            "[S]法术 [X]观察 [Q]退出",
+            "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
+            "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
+            "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
+            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]动作",
+            "[[S]]法术 [[X]]观察 [[Q]]退出",
         ])
         return "\n".join(lines)
 
@@ -317,7 +317,7 @@ class MVPApp(App):
             self._left_panel = LeftPanel(id="left"); yield self._left_panel
             self._map_view = MapView(); yield self._map_view
             self._right_panel = RightPanel(id="right"); yield self._right_panel
-        self._input_bar = Input(placeholder=": 输入命令 (按 Esc 退出输入)", id="input-bar")
+        self._input_bar = Input(placeholder=": 输入命令 (按 Esc 退出输入)", id="input-bar", disabled=True)
         yield self._input_bar
         with Horizontal(id="log-area"):
             self._act_log = ActionLog(id="action-log"); yield self._act_log
@@ -338,11 +338,13 @@ class MVPApp(App):
     # ── Input ──
 
     def action_focus_input(self) -> None:
+        self._input_bar.disabled = False
         self._input_bar.focus()
 
-    def _on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_input_submitted(self, event: Input.Submitted) -> None:
         cmd = event.value.strip()
         self._input_bar.value = ""
+        self._input_bar.disabled = True
         if cmd:
             self._act_log.add(f"> :{cmd}")
             self._act_log.add("此功能待开发")
