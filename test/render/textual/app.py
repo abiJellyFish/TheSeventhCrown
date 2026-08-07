@@ -39,9 +39,9 @@ _ai_engine = BehaviorEngine({
 # ═══════════════════════════════════════════════════
 
 TERRAIN_COLORS = {
-    Terrain.PASSABLE: "dark_grey",
+    Terrain.PASSABLE: "dark_gray",
     Terrain.DIFFICULT: "green",
-    Terrain.WALL: "grey",
+    Terrain.WALL: "gray",
 }
 
 FACTION_COLORS = {
@@ -284,15 +284,15 @@ class MVPApp(App):
     """MVP 游戏。"""
 
     CSS = """
-    #top { height: 1; border: solid grey; }
+    #top { height: 1; border: solid gray; }
     #main { height: 1fr; }
-    #left { width: 16; border: solid grey; }
-    MapView { width: 1fr; border: solid grey; content-align: left top; }
-    #right { width: 24; border: solid grey; }
-    #input-bar { height: 1; border: solid grey; }
+    #left { width: 16; border: solid gray; }
+    MapView { width: 1fr; border: solid gray; content-align: left top; }
+    #right { width: 24; border: solid gray; }
+    #input-bar { height: 1; border: solid gray; }
     #log-area { height: 6; }
-    #action-log { width: 1fr; border: solid grey; }
-    #scene-log { width: 1fr; border: solid grey; }
+    #action-log { width: 1fr; border: solid gray; }
+    #scene-log { width: 1fr; border: solid gray; }
     """
 
     BINDINGS = [
