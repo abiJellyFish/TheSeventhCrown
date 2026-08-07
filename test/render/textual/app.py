@@ -363,28 +363,26 @@ class RightPanel(Static):
         p = self.state.player
         max_h = self.size.height
         lines = [
-            "[bold]物品栏[/] [dim]— I/Esc 返回[/]",
-            f"金币: {p.gp}GP {p.sp}SP {p.cp}CP  |  ",
+            f"[bold]物品栏[/] [dim]I/Esc返回[/]  金币: {p.gp}GP",
+            "── 装备 ──",
         ]
-        # 装备一行
-        eq_parts = []
-        for slot, label in [("head","头"),("chest","躯"),("arms","臂"),("legs","腿"),
-                            ("left_hand","左"),("right_hand","右")]:
-            item = p.equipment.get(slot)
-            eq_parts.append(f"{label}:{item.name if item else '-'}")
-        lines[1] += " ".join(eq_parts)
-
+        body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
+        hands = [("left_hand","左手"),("right_hand","右手")]
+        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in body))
+        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in hands))
         lines.append("── 背包 ──")
         if p.inventory:
             item_lines = []
             for i, item in enumerate(p.inventory):
                 item_lines.append(f"  [{i+1}] {item.name} x{item.amount}")
             available = max_h - len(lines) - 1
-            if len(item_lines) > available and available > 0:
+            if available >= len(item_lines):
+                lines.extend(item_lines)
+            elif available > 1:
                 lines.extend(item_lines[:available - 1])
                 lines.append(f"  [dim]... 共{len(item_lines)}项[/]")
             else:
-                lines.extend(item_lines[-available:] if available > 0 else item_lines[-3:])
+                lines.extend(item_lines[:max(1, available)])
         else:
             lines.append("  (空)")
         return "\n".join(lines)
@@ -393,19 +391,16 @@ class RightPanel(Static):
         p = self.state.player
         max_h = self.size.height
         lines = [
-            "[bold]角色面板[/] [dim]— C/Esc 返回[/]",
-            f"{p.name}  人类 {p.char_class}  Lv.1",
+            f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
-            f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
-            f"力量{p.stat('str'):2d} 敏捷{p.stat('dex'):2d} 体质{p.stat('con'):2d} 智力{p.stat('int'):2d} 感知{p.stat('wis'):2d} 魅力{p.stat('cha'):2d}",
-            "",
+            f"AC 头{p.total_ac('head')} 躯{p.total_ac('chest')} 臂{p.total_ac('arms')} 腿{p.total_ac('legs')}  SPD {p.speed}  INIT +{p.initiative_bonus()}",
+            f"力{p.stat('str'):2d} 敏{p.stat('dex'):2d} 体{p.stat('con'):2d} 智{p.stat('int'):2d} 感{p.stat('wis'):2d} 魅{p.stat('cha'):2d}",
             "── 装备 ──",
         ]
-        for slot, label in [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿"),
-                            ("left_hand","左手"),("right_hand","右手")]:
-            item = p.equipment.get(slot)
-            lines.append(f"  {label}: {item.name if item else '无'}")
+        body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
+        hands = [("left_hand","左手"),("right_hand","右手")]
+        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in body))
+        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in hands))
         return "\n".join(lines[:max_h])
 
 
