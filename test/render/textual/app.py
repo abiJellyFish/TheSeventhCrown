@@ -198,9 +198,9 @@ class RightPanel(Static):
             f"AC 头{p.total_ac('head')} 躯{p.total_ac('chest')} 臂{p.total_ac('arms')} 腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
             "",
-            "[角色面板] [物品栏] [法术书]",
-            "[制作] [烹饪] [炼药]",
-            "[H]高度 [M]地图 [E]系统",
+            "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
+            "[[Z]]制作 [[K]]烹饪 [[Y]]炼药",
+            "[[H]]高度 [[M]]地图 [[E]]系统",
         ]
         if p.statuses:
             lines.append(f"[red]{' '.join(p.statuses)}[/]")
@@ -284,6 +284,15 @@ class MVPApp(App):
         Binding("f5", "quick_save", "存档", priority=True),
         Binding("f9", "quick_load", "读档", priority=True),
         Binding("colon", "focus_input", "", priority=True),
+        Binding("C", "char_panel", "角色面板", priority=True),
+        Binding("I", "inventory", "物品栏", priority=True),
+        Binding("B", "spellbook", "法术书", priority=True),
+        Binding("Z", "crafting", "制作", priority=True),
+        Binding("K", "cooking", "烹饪", priority=True),
+        Binding("Y", "alchemy", "炼药", priority=True),
+        Binding("H", "height_view", "高度", priority=True),
+        Binding("M", "map_overview", "地图", priority=True),
+        Binding("E", "system_menu", "系统", priority=True),
     ]
 
     def __init__(self):
@@ -647,6 +656,15 @@ class MVPApp(App):
     def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
     def action_show_actions(self): self._act_log.add("[动作] 此功能待开发")
     def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
+    def action_char_panel(self): self._act_log.add("[角色面板] 此功能待开发")
+    def action_inventory(self): self._act_log.add("[物品栏] 此功能待开发")
+    def action_spellbook(self): self._act_log.add("[法术书] 此功能待开发")
+    def action_crafting(self): self._act_log.add("[制作] 此功能待开发")
+    def action_cooking(self): self._act_log.add("[烹饪] 此功能待开发")
+    def action_alchemy(self): self._act_log.add("[炼药] 此功能待开发")
+    def action_height_view(self): self._act_log.add("[高度] 此功能待开发")
+    def action_map_overview(self): self._act_log.add("[地图] 此功能待开发")
+    def action_system_menu(self): self._act_log.add("[系统] 此功能待开发")
 
     # ── Scene ──
 
