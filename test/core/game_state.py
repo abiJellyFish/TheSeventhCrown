@@ -29,6 +29,7 @@ class GameState:
     dungeon_exit: tuple[int, int] | None = None
     in_dungeon: bool = False
     world_state: dict | None = None
+    location_map: dict[tuple[int, int], str] = field(default_factory=dict)
 
     # 实体
     entities: list[tuple[Creature, tuple[int, int]]] = field(default_factory=list)

@@ -155,6 +155,18 @@ def _build_world(state: GameState) -> None:
     state.map_exits = []
     state.loot_spots = []
 
+    # 位置 → 地名哈希表（O(1) 查询，无分支）
+    state.location_map = {}
+    for x in range(vx, vx + 21):
+        for y in range(vy, vy + 16):
+            state.location_map[(x, y)] = "小村庄"
+    for x in range(fx, fx + 30):
+        for y in range(fy, fy + 30):
+            state.location_map.setdefault((x, y), "树林")
+    for x in range(gx, gx + 9):
+        for y in range(gy, gy + 15):
+            state.location_map[(x, y)] = "营地"
+
 
 def _build_dungeon(state: GameState) -> None:
     """BSP 生成地下城 (30×20)。"""
@@ -165,7 +177,7 @@ def _build_dungeon(state: GameState) -> None:
     state.bed_positions = set()
     state.door_states = {}
     state.map_exits = []
-    random.seed(123)
+    state.location_map = {}  # 地下城全部标记为地下城1层
 
     # 挖掘 3-5 个房间 + 走廊
     rooms = []
@@ -235,16 +247,10 @@ class TopBar(Static):
 
     @staticmethod
     def _get_location(s) -> str:
+        """O(1) 哈希表查询，无分支。"""
         if s.in_dungeon:
             return "地下城1层"
-        px, py = s.player_pos
-        if 3 <= px <= 23 and 20 <= py <= 35:
-            return "小村庄"
-        if 35 <= px <= 65 and 15 <= py <= 45:
-            return "树林"
-        if 68 <= px <= 78 and 10 <= py <= 25:
-            return "营地"
-        return "平原"
+        return s.location_map.get(s.player_pos, "平原")
 
     def render(self) -> str:
         if self.state is None: return ""
@@ -833,6 +839,7 @@ class MVPApp(App):
             "map": self._state.map, "entities": self._state.entities,
             "player_pos": self._state.player_pos, "current_map": self._state.current_map,
             "bed_positions": self._state.bed_positions, "door_states": self._state.door_states,
+            "location_map": self._state.location_map,
         }
         _build_dungeon(self._state)
         self._state.in_dungeon = True
@@ -850,6 +857,7 @@ class MVPApp(App):
             self._state.current_map = ws["current_map"]
             self._state.bed_positions = ws["bed_positions"]
             self._state.door_states = ws["door_states"]
+            self._state.location_map = ws.get("location_map", {})
         self._state.in_dungeon = False
         self._act_log.add("凯恩 回到了地面")
         self._end_combat(); _update_fov(self._state)
