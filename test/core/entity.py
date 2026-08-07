@@ -70,6 +70,24 @@ class Creature:
     # 状态标记
     statuses: list[str] = field(default_factory=list)
 
+    # ---- AI 字段 ----
+    template_name: str = ""               # AI 行为模板名
+    bravery_tier: str = "medium"          # "low" | "medium" | "high"
+    aggression_tier: str = "medium"       # "low" | "medium" | "high"
+    schedule: str = "idle"               # 当前日程
+
+    def meets_condition(self, cond: str) -> bool:
+        """检查硬过滤条件。"""
+        if cond == "can_move":
+            return "incapacitated" not in self.statuses
+        if cond == "has_weapon":
+            return True  # MVP 暂定都有武器
+        if cond == "has_healing_potion":
+            return False  # MVP NPC 不带药水
+        if cond == "enemy_can_communicate":
+            return self.language != ""
+        return True
+
     # ---- 预留字段 ----
     ally_slot: Any = None                 # None = 未入队; 入队后设为槽位索引
 
