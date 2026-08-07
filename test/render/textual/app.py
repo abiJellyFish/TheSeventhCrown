@@ -103,6 +103,8 @@ class TopBar(Static):
         loc = self.state.current_map or "???"
         cb = " [red]COMBAT[/]" if self.state.in_combat else ""
         return f" [bold]{loc}[/]  晴  午间{cb}"
+    def refresh_content(self) -> None:
+        self.update(self.render())
 
 
 class LeftPanel(Static):
@@ -122,6 +124,7 @@ class LeftPanel(Static):
             "[S]法术 [Tab]交互 [X]观察 [Q]退出",
         ])
         return "\n".join(lines)
+    def refresh_content(self) -> None: self.update(self.render())
 
 
 class MapView(Static):
@@ -161,6 +164,7 @@ class MapView(Static):
         text.append("\n")
         text.append("@玩家 g地精 d犬 w猪 S骷髅 b鸟 c猫 E长老 M商人 v村民", style="dim")
         return text
+    def refresh_content(self) -> None: self.update(self.render())
 
 
 class RightPanel(Static):
@@ -181,6 +185,7 @@ class RightPanel(Static):
         if p.statuses:
             lines.append(f"[red]{' '.join(p.statuses)}[/]")
         return "\n".join(lines)
+    def refresh_content(self) -> None: self.update(self.render())
 
 
 class ActionLog(Static):
@@ -192,6 +197,7 @@ class ActionLog(Static):
         self.refresh()
     def render(self) -> str:
         return "\n".join(self.messages[-6:] if self.messages else [""])
+    def refresh_content(self) -> None: self.update(self.render())
 
 
 class SceneLog(Static):
@@ -207,12 +213,14 @@ class SceneLog(Static):
             self.messages = filtered; self.refresh()
     def render(self) -> str:
         return "\n".join(self.messages) if self.messages else ""
+    def refresh_content(self) -> None: self.update(self.render())
 
 
 # ═══════════════════════════════════════ App ═══════════════════════════════════════
 
 class MVPApp(App):
     CSS = """
+    * { margin: 0; padding: 0; }
     #top { height: 1; border: solid #444444; }
     #main { height: 4fr; }
     #left { width: 2fr; border: solid #444444; }
@@ -304,7 +312,7 @@ class MVPApp(App):
     def refresh_all(self) -> None:
         for w in [self._map_view, self._left_panel, self._right_panel,
                   self._top_bar, self._act_log, self._scene_log]:
-            if w: w.refresh()
+            if w: w.refresh_content()
 
     # ── Input ──
 
