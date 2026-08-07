@@ -216,7 +216,7 @@ class ActionLog(Static):
         self.refresh()
     def render(self) -> str:
         if not self.messages: return ""
-        h = self.size.height
+        h = max(self.size.height, 6)
         return "\n".join(self.messages[-h:])
 
 
@@ -233,7 +233,7 @@ class SceneLog(Static):
             self.messages = filtered; self.refresh()
     def render(self) -> str:
         if not self.messages: return ""
-        h = self.size.height
+        h = max(self.size.height, 6)
         return "\n".join(self.messages[-h:])
 
 
@@ -253,8 +253,8 @@ class MVPApp(App):
     #input-bar { height: 1; border: solid #444444; }
 
     #log-area { height: 2fr; min-height: 6; border: solid #444444; }
-    #action-log { width: 1fr; min-width: 20; border-right: solid #444444; padding: 0 1; }
-    #scene-log { width: 1fr; min-width: 20; padding: 0 1; }
+    #action-log { width: 1fr; min-width: 20; height: 100%; border-right: solid #444444; padding: 0 1; content-align: left top; }
+    #scene-log { width: 1fr; min-width: 20; height: 100%; padding: 0 1; content-align: left top; }
     """
 
     BINDINGS = [
