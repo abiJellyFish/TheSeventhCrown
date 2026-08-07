@@ -36,8 +36,13 @@ class GameState:
     current_turn_index: int = 0
     combat_turn_entity: Creature | None = None
 
-    # 光照
+    # 光照与视野
     light_map: Grid | None = None
+    fov_cache: set = field(default_factory=set)       # 当前 FOV 可见格集合
+
+    # 观察模式
+    observe_mode: bool = False
+    observe_cursor: tuple[int, int] = (0, 0)
 
     def __post_init__(self):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.PASSABLE)
