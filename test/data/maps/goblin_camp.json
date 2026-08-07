@@ -1,0 +1,31 @@
+{
+  "name": "地精营地",
+  "width": 15,
+  "height": 12,
+  "terrain": {
+    "walls": [[0,0],[1,0],[2,0],[0,1],[2,1],[0,2],[1,2],[2,2]],
+    "water": [],
+    "difficult": [[5,5],[6,5],[5,6],[6,6]],
+    "fire": [[6,3]]
+  },
+  "entities": [
+    {"key": "long_ear_dog", "pos": [4, 3]},
+    {"key": "long_ear_dog", "pos": [8, 4]},
+    {"key": "long_ear_dog", "pos": [7, 7]},
+    {"key": "goblin_brawler", "pos": [6, 4]},
+    {"key": "goblin_brawler", "pos": [10, 3]},
+    {"key": "goblin_brawler", "pos": [9, 6]},
+    {"key": "goblin_brawler", "pos": [5, 8]}
+  ],
+  "loot_spots": [
+    {"name": "地精的储藏室", "pos": [3, 5], "items": [
+      {"name": "金币", "amount": 4},
+      {"name": "一包口粮", "amount": 6},
+      {"name": "圆盾"},
+      {"name": "铁质头盔"}
+    ]}
+  ],
+  "exits": [
+    {"to": "plains", "at": [7, 11], "direction": "south"}
+  ]
+}

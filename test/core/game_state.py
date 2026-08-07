@@ -1,6 +1,7 @@
 """GameState —— 全局游戏状态，持有地图、实体、时间、战斗状态。"""
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from core.entity import Creature, Player
 from core.grid import Grid
@@ -19,6 +20,9 @@ class GameState:
 
     # 地图
     map: Grid[Terrain] = field(init=False)
+    current_map: str = ""
+    map_exits: list[dict] = field(default_factory=list)
+    loot_spots: list[dict] = field(default_factory=list)
 
     # 实体
     entities: list[tuple[Creature, tuple[int, int]]] = field(default_factory=list)
@@ -30,6 +34,7 @@ class GameState:
     in_combat: bool = False
     combat_initiative: list[Creature] = field(default_factory=list)
     current_turn_index: int = 0
+    combat_turn_entity: Creature | None = None
 
     # 光照
     light_map: Grid | None = None
@@ -63,8 +68,20 @@ class GameState:
             return True
         return False
 
+    def move_entity(self, creature: Creature, from_col: int, from_row: int,
+                    to_col: int, to_row: int) -> bool:
+        """移动非玩家实体。"""
+        if can_enter(to_col, to_row, self.map, self.entities,
+                     from_col, from_row):
+            # 更新位置
+            for i, (c, (ec, er)) in enumerate(self.entities):
+                if c is creature and (ec, er) == (from_col, from_row):
+                    self.entities[i] = (c, (to_col, to_row))
+                    return True
+        return False
+
     # ---- NPC 推进 ----
 
     def _advance_npcs(self, delta: float) -> None:
         """每钟摆 NPC 行动结算（探索模式）。MVP: 只随机游荡，不做复杂 AI。"""
-        pass  # 在渲染层/主循环中实现具体移动逻辑
+        pass
