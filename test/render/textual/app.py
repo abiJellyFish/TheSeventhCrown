@@ -158,7 +158,7 @@ class LeftPanel(Static):
         lines.append("[2]躲藏   [3]协助")
         lines.append("[4]跳跃   [5]撤离")
         lines.append("[6]回避   [7]推撞")
-        lines.append("[8]擒抱   [/]击晕")
+        lines.append("[8]擒抱   [ / ] 击晕")
         lines.append("[g]慢速   [G]疾走")
         lines.append("[r]短休   [R]长休")
         lines.append("[,]消磨时间")
@@ -232,11 +232,11 @@ class RightPanel(Static):
             f"SPD: {p.speed}  INIT: +{p.initiative_bonus()}",
             f"负重: 轻便",
             "",
-            f"[dim][角色面板] [物品栏][/]",
-            f"[dim][法术书] [制作][/]",
-            f"[dim][烹饪] [炼药][/]",
+            f"[dim][角色面板] [物品栏][/dim]",
+            f"[dim][法术书] [制作][/dim]",
+            f"[dim][烹饪] [炼药][/dim]",
             "",
-            f"[dim][H]高度 [M]地图 [E]系统[/]",
+            f"[dim][H]高度 [M]地图 [E]系统[/dim]",
         ]
         if p.statuses:
             lines.append(f"[red]{' '.join(p.statuses)}[/]")
