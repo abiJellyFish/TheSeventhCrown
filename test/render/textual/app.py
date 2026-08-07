@@ -214,12 +214,12 @@ class SceneLog(Static):
 class MVPApp(App):
     CSS = """
     #top { height: 1; border: solid #444444; }
-    #main { height: 1fr; }
-    #left { width: 22; border: solid #444444; }
-    MapView { width: 22; border: solid #444444; content-align: left top; }
-    #right { width: 1fr; border: solid #444444; }
+    #main { height: 4fr; }
+    #left { width: 2fr; border: solid #444444; }
+    MapView { width: 3fr; border: solid #444444; content-align: left top; }
+    #right { width: 2fr; border: solid #444444; }
     #input-bar { height: 1; border: solid #444444; }
-    #log-area { height: 10; }
+    #log-area { height: 1fr; }
     #action-log { width: 1fr; border: solid #444444; }
     #scene-log { width: 1fr; border: solid #444444; }
     """
