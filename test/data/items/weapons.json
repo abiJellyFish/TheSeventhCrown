@@ -1,0 +1,91 @@
+[
+  {
+    "name": "徒手打击",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 1,
+    "properties": ["light"],
+    "weight": 0.0,
+    "description": "出拳、踢腿、头锤"
+  },
+  {
+    "name": "短棒",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 2,
+    "properties": ["versatile(1d6)"],
+    "weight": 1.0,
+    "price": {"sp": 30}
+  },
+  {
+    "name": "长剑",
+    "weapon_type": "melee",
+    "category": "martial",
+    "damage": "1d8",
+    "damage_type": "slashing",
+    "attack_stat": "str",
+    "ap_cost": 3,
+    "properties": ["versatile(1d10)"],
+    "weight": 2.0,
+    "price": {"gp": 3, "sp": 50}
+  },
+  {
+    "name": "短弓",
+    "weapon_type": "ranged",
+    "category": "martial",
+    "damage": "1d6",
+    "damage_type": "piercing",
+    "attack_stat": "dex",
+    "ap_cost": 2,
+    "range_normal": 8,
+    "range_max": 14,
+    "properties": ["ammo", "two_handed"],
+    "weight": 1.0,
+    "price": {"gp": 1, "sp": 50}
+  },
+  {
+    "name": "匕首",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "piercing",
+    "attack_stat": "str_or_dex",
+    "ap_cost": 2,
+    "range_normal": 4,
+    "range_max": 6,
+    "properties": ["light", "thrown(4/6)"],
+    "weight": 0.5,
+    "price": {"gp": 2}
+  },
+  {
+    "name": "火把",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 2,
+    "properties": ["light_5", "ignite_surface"],
+    "special_damage": {"amount": "1d4", "type": "fire", "condition": "lit"},
+    "weight": 1.0,
+    "price": {"sp": 40}
+  },
+  {
+    "name": "长杖",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 2,
+    "properties": ["versatile(1d10)"],
+    "weight": 1.5,
+    "price": {"gp": 1, "sp": 50}
+  }
+]

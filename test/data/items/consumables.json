@@ -1,0 +1,115 @@
+[
+  {
+    "name": "治疗药水",
+    "type": "consumable",
+    "effect": "heal",
+    "amount": "6d4",
+    "ap_cost": 1,
+    "weight": 0.5,
+    "price": {"gp": 2},
+    "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值"
+  },
+  {
+    "name": "魔力药水",
+    "type": "consumable",
+    "effect": "restore_mp",
+    "amount": "50",
+    "ap_cost": 1,
+    "weight": 0.5,
+    "price": {"gp": 2, "sp": 50},
+    "description": "喝掉这瓶清澈蓝色液体的生物恢复 50 点精神值"
+  },
+  {
+    "name": "空玻璃瓶",
+    "type": "misc",
+    "effect": "start_fire",
+    "ap_cost": 2,
+    "weight": 0.1,
+    "price": {"sp": 30},
+    "description": "透明瓶身可聚焦阳光生火"
+  },
+  {
+    "name": "一瓶水",
+    "type": "consumable",
+    "effect": "restore_food",
+    "amount": "200",
+    "ap_cost": 1,
+    "weight": 0.1,
+    "price": {"sp": 35},
+    "becomes": "空玻璃瓶"
+  },
+  {
+    "name": "一包口粮",
+    "type": "consumable",
+    "effect": "restore_food",
+    "amount": "15000",
+    "ap_cost": 1,
+    "weight": 1.0,
+    "price": {"cp": 50},
+    "description": "几块晒干的兽肉和浆果"
+  },
+  {
+    "name": "一包草药",
+    "type": "consumable",
+    "effect": "heal",
+    "amount": "1d4",
+    "ap_cost": 1,
+    "weight": 0.1,
+    "price": {"sp": 10},
+    "description": "涂抹伤口或捣碎吞下"
+  },
+  {
+    "name": "浆果",
+    "type": "consumable",
+    "effect": "restore_food",
+    "amount": "500",
+    "ap_cost": 0,
+    "weight": 0.1,
+    "price": {"cp": 2},
+    "description": "多汁的浆果，可以在灌木丛中找到"
+  },
+  {
+    "name": "一磅野猪肉",
+    "type": "consumable",
+    "effect": "restore_food",
+    "amount": "1200",
+    "ap_cost": 1,
+    "weight": 0.5,
+    "price": {"cp": 50},
+    "description": "鲜红的兽肉，需要烤熟才能食用",
+    "dc_check": {"stat": "con", "dc": 15, "on_fail": "中毒(2000钟摆)"}
+  },
+  {
+    "name": "烤兽肉",
+    "type": "consumable",
+    "effect": "restore_food",
+    "amount": "2000",
+    "ap_cost": 1,
+    "weight": 0.5,
+    "price": {"sp": 5},
+    "description": "树枝穿起的烤兽肉散发浓郁的香气"
+  },
+  {
+    "name": "红宝石",
+    "type": "misc",
+    "effect": "quest_item",
+    "weight": 1.0,
+    "price": {"gp": 120},
+    "description": "透亮的血色宝石，散发着火焰元素的气息"
+  },
+  {
+    "name": "肋骨",
+    "type": "weapon_temp",
+    "weapon_type": "ranged",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 2,
+    "range_normal": 4,
+    "range_max": 6,
+    "properties": ["thrown"],
+    "weight": 0.1,
+    "price": {"cp": 10},
+    "description": "风干的骨头，可以投掷"
+  }
+]

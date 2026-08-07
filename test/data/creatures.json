@@ -1,0 +1,567 @@
+[
+  {
+    "key": "goblin_brawler",
+    "name": "地精打手",
+    "body_type": "humanoid",
+    "faction": "hostile",
+    "hp": 20,
+    "max_hp": 20,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 6,
+    "max_tenacity": 6,
+    "ap": 6,
+    "max_ap": 6,
+    "speed": 1,
+    "ac_base": 10,
+    "stats": {
+      "str": 8,
+      "dex": 12,
+      "con": 8,
+      "int": 6,
+      "wis": 8,
+      "cha": 6
+    },
+    "vision_range": 8,
+    "food_value": 15000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "",
+    "actions": [
+      {
+        "name": "短棒",
+        "type": "melee_attack",
+        "weapon": "短棒",
+        "two_hand": true,
+        "reach": 1
+      },
+      {
+        "name": "跃起",
+        "type": "special",
+        "description": "跳跃到2格内目标相邻格并攻击，部位概率: 头部40% 躯干60%"
+      }
+    ],
+    "traits": [],
+    "loot": {
+      "always": [
+        {
+          "name": "银币",
+          "amount": 20
+        }
+      ],
+      "dc_6": [
+        {
+          "name": "短棒"
+        }
+      ],
+      "dc_10": [
+        {
+          "name": "地精角"
+        }
+      ]
+    }
+  },
+  {
+    "key": "long_ear_dog",
+    "name": "长耳犬",
+    "body_type": "beast",
+    "faction": "hostile",
+    "hp": 14,
+    "max_hp": 14,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 5,
+    "max_tenacity": 5,
+    "ap": 6,
+    "max_ap": 6,
+    "speed": 2,
+    "ac_base": 11,
+    "stats": {
+      "str": 10,
+      "dex": 14,
+      "con": 10,
+      "int": 4,
+      "wis": 12,
+      "cha": 10
+    },
+    "vision_range": 10,
+    "food_value": 12000,
+    "food_locked": false,
+    "darkvision_range": 5,
+    "language": "",
+    "actions": [
+      {
+        "name": "啃咬",
+        "type": "melee_attack",
+        "weapon": "啃咬",
+        "damage": "1d6",
+        "damage_type": "piercing",
+        "attack_stat": "str",
+        "ap_cost": 3,
+        "reach": 1
+      },
+      {
+        "name": "扑倒",
+        "type": "special",
+        "ap_cost": 4,
+        "description": "目标 DC12 敏捷检定，失败则倒地"
+      }
+    ],
+    "traits": [
+      "darkvision(5)"
+    ],
+    "loot": {
+      "dc_6": [
+        {
+          "name": "犬牙"
+        }
+      ],
+      "dc_12": [
+        {
+          "name": "犬毛"
+        }
+      ]
+    }
+  },
+  {
+    "key": "wild_boar",
+    "name": "野猪",
+    "body_type": "beast",
+    "faction": "neutral",
+    "hp": 18,
+    "max_hp": 18,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 5,
+    "max_tenacity": 5,
+    "ap": 6,
+    "max_ap": 6,
+    "speed": 1,
+    "ac_base": 10,
+    "stats": {
+      "str": 13,
+      "dex": 12,
+      "con": 15,
+      "int": 4,
+      "wis": 10,
+      "cha": 7
+    },
+    "vision_range": 8,
+    "food_value": 12000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "",
+    "actions": [
+      {
+        "name": "顶撞",
+        "type": "melee_attack",
+        "weapon": "顶撞",
+        "damage": "1d6",
+        "damage_type": "bludgeoning",
+        "attack_stat": "str",
+        "ap_cost": 2,
+        "reach": 1,
+        "charge_bonus": "1d6"
+      }
+    ],
+    "traits": [
+      "rage_speed_boost"
+    ],
+    "loot": {
+      "always": [
+        {
+          "name": "一磅野猪肉",
+          "amount": 3
+        }
+      ],
+      "dc_6": [
+        {
+          "name": "猪牙"
+        }
+      ],
+      "dc_10": [
+        {
+          "name": "猪皮"
+        }
+      ]
+    }
+  },
+  {
+    "key": "skeleton",
+    "name": "骷髅",
+    "body_type": "undead",
+    "faction": "hostile",
+    "hp": 16,
+    "max_hp": 16,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 12,
+    "max_tenacity": 12,
+    "ap": 6,
+    "max_ap": 6,
+    "speed": 1,
+    "ac_base": 9,
+    "stats": {
+      "str": 12,
+      "dex": 10,
+      "con": 12,
+      "int": 0,
+      "wis": 8,
+      "cha": 0
+    },
+    "vision_range": 8,
+    "food_value": 0,
+    "food_locked": true,
+    "darkvision_range": 8,
+    "language": "",
+    "actions": [
+      {
+        "name": "长剑",
+        "type": "melee_attack",
+        "weapon": "长剑",
+        "reach": 1
+      }
+    ],
+    "traits": [
+      "piercing_resist",
+      "bludgeoning_vulnerable",
+      "radiant_vulnerable",
+      "poison_immune",
+      "sleep_immune",
+      "darkvision(8)"
+    ],
+    "loot": {
+      "always": [
+        {
+          "name": "银币",
+          "amount": 50
+        }
+      ],
+      "dc_4": [
+        {
+          "name": "肋骨"
+        }
+      ],
+      "dc_10": [
+        {
+          "name": "长剑"
+        }
+      ]
+    }
+  },
+  {
+    "key": "bird",
+    "name": "鸟",
+    "body_type": "beast",
+    "faction": "friendly",
+    "hp": 7,
+    "max_hp": 7,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 2,
+    "max_tenacity": 2,
+    "ap": 4,
+    "max_ap": 4,
+    "speed": 1,
+    "ac_base": 3,
+    "stats": {
+      "str": 3,
+      "dex": 7,
+      "con": 5,
+      "int": 4,
+      "wis": 10,
+      "cha": 8
+    },
+    "vision_range": 8,
+    "food_value": 4000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "",
+    "actions": [
+      {
+        "name": "啄击",
+        "type": "melee_attack",
+        "weapon": "啄击",
+        "damage": "1",
+        "damage_type": "piercing",
+        "attack_stat": "str",
+        "ap_cost": 2,
+        "reach": 1
+      }
+    ],
+    "traits": [
+      "flying(speed=2)"
+    ],
+    "loot": {}
+  },
+  {
+    "key": "squirrel",
+    "name": "松鼠",
+    "body_type": "beast",
+    "faction": "neutral",
+    "hp": 8,
+    "max_hp": 8,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 2,
+    "max_tenacity": 2,
+    "ap": 4,
+    "max_ap": 4,
+    "speed": 1,
+    "ac_base": 4,
+    "stats": {
+      "str": 3,
+      "dex": 7,
+      "con": 6,
+      "int": 4,
+      "wis": 9,
+      "cha": 9
+    },
+    "vision_range": 8,
+    "food_value": 4000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "",
+    "actions": [
+      {
+        "name": "啃咬",
+        "type": "melee_attack",
+        "weapon": "啃咬",
+        "damage": "1",
+        "damage_type": "bludgeoning",
+        "attack_stat": "str",
+        "ap_cost": 2,
+        "reach": 1
+      }
+    ],
+    "traits": [
+      "climbing(speed=2)"
+    ],
+    "loot": {}
+  },
+  {
+    "key": "cat",
+    "name": "猫",
+    "body_type": "beast",
+    "faction": "friendly",
+    "hp": 11,
+    "max_hp": 11,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 2,
+    "max_tenacity": 2,
+    "ap": 4,
+    "max_ap": 4,
+    "speed": 1,
+    "ac_base": 4,
+    "stats": {
+      "str": 5,
+      "dex": 9,
+      "con": 6,
+      "int": 4,
+      "wis": 12,
+      "cha": 11
+    },
+    "vision_range": 8,
+    "food_value": 6000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "",
+    "actions": [
+      {
+        "name": "抓挠",
+        "type": "melee_attack",
+        "weapon": "抓挠",
+        "damage": "1",
+        "damage_type": "piercing",
+        "attack_stat": "str",
+        "ap_cost": 2,
+        "reach": 1
+      }
+    ],
+    "traits": [
+      "keen_smell"
+    ],
+    "loot": {}
+  },
+  {
+    "key": "village_elder",
+    "name": "村庄长老",
+    "body_type": "humanoid",
+    "faction": "friendly",
+    "hp": 22,
+    "max_hp": 22,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 6,
+    "max_tenacity": 6,
+    "ap": 4,
+    "max_ap": 4,
+    "speed": 1,
+    "ac_base": 8,
+    "stats": {
+      "str": 8,
+      "dex": 8,
+      "con": 10,
+      "int": 16,
+      "wis": 10,
+      "cha": 12
+    },
+    "vision_range": 8,
+    "food_value": 15000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "通用语",
+    "actions": [
+      {
+        "name": "长杖",
+        "type": "melee_attack",
+        "weapon": "长杖",
+        "two_hand": true,
+        "reach": 1
+      }
+    ],
+    "traits": [
+      "quest_giver"
+    ],
+    "loot": {
+      "always": [
+        {
+          "name": "金币",
+          "amount": 2
+        }
+      ],
+      "dc_8": [
+        {
+          "name": "长杖"
+        }
+      ],
+      "dc_10": [
+        {
+          "name": "布制长袍"
+        }
+      ]
+    }
+  },
+  {
+    "key": "merchant",
+    "name": "商人",
+    "body_type": "humanoid",
+    "faction": "friendly",
+    "hp": 40,
+    "max_hp": 40,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 11,
+    "max_tenacity": 11,
+    "ap": 6,
+    "max_ap": 6,
+    "speed": 1,
+    "ac_base": 10,
+    "stats": {
+      "str": 12,
+      "dex": 12,
+      "con": 14,
+      "int": 13,
+      "wis": 10,
+      "cha": 14
+    },
+    "vision_range": 8,
+    "food_value": 15000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "通用语",
+    "actions": [
+      {
+        "name": "长剑",
+        "type": "melee_attack",
+        "weapon": "长剑",
+        "two_hand": true,
+        "reach": 1
+      },
+      {
+        "name": "格挡",
+        "type": "reaction",
+        "ap_cost": 1,
+        "description": "全身 AC+1"
+      }
+    ],
+    "traits": [
+      "merchant"
+    ],
+    "loot": {
+      "always": [
+        {
+          "name": "金币",
+          "amount": 15
+        }
+      ],
+      "dc_8": [
+        {
+          "name": "金币",
+          "amount": 10
+        }
+      ],
+      "dc_10": [
+        {
+          "name": "长剑"
+        },
+        {
+          "name": "猪皮靴"
+        }
+      ]
+    }
+  },
+  {
+    "key": "villager",
+    "name": "村民",
+    "body_type": "humanoid",
+    "faction": "friendly",
+    "hp": 35,
+    "max_hp": 35,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 9,
+    "max_tenacity": 9,
+    "ap": 6,
+    "max_ap": 6,
+    "speed": 1,
+    "ac_base": 9,
+    "stats": {
+      "str": 11,
+      "dex": 10,
+      "con": 12,
+      "int": 13,
+      "wis": 10,
+      "cha": 11
+    },
+    "vision_range": 8,
+    "food_value": 15000,
+    "food_locked": false,
+    "darkvision_range": 0,
+    "language": "通用语",
+    "actions": [
+      {
+        "name": "徒手",
+        "type": "melee_attack",
+        "weapon": "徒手打击",
+        "reach": 1
+      }
+    ],
+    "traits": [
+      "call_for_help(16)"
+    ],
+    "loot": {
+      "always": [
+        {
+          "name": "金币",
+          "amount": 1
+        },
+        {
+          "name": "浆果",
+          "amount": 2
+        }
+      ]
+    }
+  }
+]
