@@ -340,7 +340,8 @@ class MVPApp(App):
 
     def compose(self) -> ComposeResult:
         self._create_game()
-        yield TopBar(id="top")
+        self._top_bar = TopBar(id="top")
+        yield self._top_bar
         with Horizontal(id="main"):
             self._left_panel = LeftPanel(id="left")
             yield self._left_panel
