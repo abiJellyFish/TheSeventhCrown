@@ -36,6 +36,22 @@ TERRAIN_COLORS = {
 }
 FACTION_COLORS = {"hostile": "red", "friendly": "green", "neutral": "yellow"}
 
+
+def _add_to_inventory(player, item) -> None:
+    """添加物品到背包，同名称物品堆叠。"""
+    for existing in player.inventory:
+        if existing.name == item.name and existing.item_type == item.item_type:
+            # 堆叠：合并数量（amount 字段）
+            try:
+                ea = int(existing.amount)
+                ia = int(item.amount)
+                existing.amount = str(ea + ia)
+            except (ValueError, TypeError):
+                pass
+            existing.weight += item.weight
+            return
+    player.inventory.append(item)
+
 # 时间常量
 PENDULUMS_PER_DAY = 5000
 PENDULUMS_PER_MONTH = 50000     # 10 天
@@ -450,16 +466,16 @@ class MVPApp(App):
                        "ap_cost": 3, "weight": 2.0}
         self._state.player.equipment["right_hand"] = ent.Weapon.from_dict(sword_data)
         # 预置初始物品
-        self._state.player.inventory.extend([
-            ent.Item.from_dict({"name": "治疗药水", "item_type": "consumable",
-                               "effect": "heal", "amount": "6d4", "ap_cost": 1,
-                               "weight": 0.5, "price": {"gp": 2},
-                               "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值"}),
-            ent.Item.from_dict({"name": "一包口粮", "item_type": "consumable",
-                               "effect": "restore_food", "amount": "15000", "ap_cost": 1,
-                               "weight": 1.0, "price": {"cp": 50},
-                               "description": "几块晒干的兽肉和浆果，食用恢复饮食值"}),
-        ])
+        _add_to_inventory(self._state.player, ent.Item.from_dict({
+            "name": "治疗药水", "item_type": "consumable",
+            "effect": "heal", "amount": "6d4", "ap_cost": 1,
+            "weight": 0.5, "price": {"gp": 2},
+            "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值"}))
+        _add_to_inventory(self._state.player, ent.Item.from_dict({
+            "name": "一包口粮", "item_type": "consumable",
+            "effect": "restore_food", "amount": "15000", "ap_cost": 1,
+            "weight": 1.0, "price": {"cp": 50},
+            "description": "几块晒干的兽肉和浆果，食用恢复饮食值"}))
         _update_fov(self._state)
 
     def compose(self) -> ComposeResult:
@@ -599,10 +615,9 @@ class MVPApp(App):
             if abs(ec - pc) <= 1 and abs(er - pr) <= 1:
                 if creature.hp <= 0: self._loot_corpse(creature); return
                 self._interact_creature(creature, (ec, er)); return
-        # 灌木丛
+        # 灌木丛（自身格 + 相邻格）
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):
-                if dc == 0 and dr == 0: continue
                 nc, nr = pc + dc, pr + dr
                 if not (0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height): continue
                 if self._state.map[nc, nr] == Terrain.DIFFICULT:
@@ -615,7 +630,7 @@ class MVPApp(App):
                         "price": {"cp": 2 * b},
                         "description": f"多汁的浆果，{b}颗"
                     })
-                    self._state.player.inventory.append(berry)
+                    _add_to_inventory(self._state.player, berry)
                     self._act_log.add(f"凯恩 从灌木丛摘到 {b} 个浆果")
                     self.refresh_all(); return
         self._act_log.add("凯恩 环顾四周，这里没什么特别的")
