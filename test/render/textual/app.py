@@ -148,6 +148,7 @@ class LeftPanel(Static):
 
 
 class MapView(Static):
+    can_focus = True
     state: GameState | None = None
     def render(self) -> str:
         if self.state is None: return "Loading..."
@@ -325,9 +326,9 @@ class MVPApp(App):
     def on_mount(self) -> None:
         for w in [self._map_view, self._left_panel, self._right_panel, self._top_bar]:
             w.state = self._state
-        self._act_log.add("凯恩 握紧了手中的长剑")
         self._refresh_scene()
         self.refresh_all()
+        self._map_view.focus()
 
     def refresh_all(self) -> None:
         for w in [self._map_view, self._left_panel, self._right_panel,
