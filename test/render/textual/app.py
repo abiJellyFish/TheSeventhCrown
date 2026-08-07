@@ -60,6 +60,8 @@ def _load_map(state: GameState, map_name: str) -> None:
             state.add_entity(c, tuple(ent_data["pos"]))
     state.map_exits = data.get("exits", [])
     state.loot_spots = data.get("loot_spots", [])
+    beds = data.get("terrain", {}).get("beds", [])
+    state.bed_positions = {tuple(b) for b in beds}
 
 
 def _generate_plains(state: GameState) -> None:
@@ -85,6 +87,7 @@ def _generate_plains(state: GameState) -> None:
         {"to": "goblin_camp", "at": [39, 15], "direction": "east"},
     ]
     state.loot_spots = []
+    state.bed_positions = set()
 
 
 def _update_fov(state: GameState) -> None:
@@ -447,6 +450,12 @@ class MVPApp(App):
     def action_interact(self) -> None:
         if self._state.in_combat: self._player_attack(); return
         pc, pr = self._state.player_pos
+        # 床交互
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if (pc + dc, pr + dr) in self._state.bed_positions:
+                    self._act_log.add("不妨在床上度过舒适的一晚")
+                    self.refresh_all(); return
         for creature, (ec, er) in self._state.entities:
             if creature is self._state.player: continue
             if abs(ec - pc) <= 1 and abs(er - pr) <= 1:
@@ -597,8 +606,11 @@ class MVPApp(App):
 
     def action_long_rest(self) -> None:
         if self._state.in_combat: self._act_log.add("战斗中无法长休"); return
-        r = long_rest(self._state.player, self._state.clock, self._state.map, self._state.player_pos)
-        self._act_log.add(f"凯恩 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']})")
+        r = long_rest(self._state.player, self._state.clock,
+                      self._state.map, self._state.player_pos,
+                      self._state.bed_positions)
+        comfort = "，睡得很舒适" if r.get("comfort") else ""
+        self._act_log.add(f"凯恩 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
         self.refresh_all()
 
     # ── Speed modes ──
@@ -725,8 +737,12 @@ class MVPApp(App):
 
     def action_short_rest(self) -> None:
         if self._state.in_combat: self._act_log.add("战斗中无法休息"); return
-        r = short_rest(self._state.player, self._state.clock, self._state.map, self._state.player_pos)
-        self._act_log.add(f"凯恩 短休 (HP+{r['hp_restored']} MP+{r['mp_restored']})"); self.refresh_all()
+        r = short_rest(self._state.player, self._state.clock,
+                       self._state.map, self._state.player_pos,
+                       self._state.bed_positions)
+        comfort = "，睡得很舒适" if r.get("comfort") else ""
+        self._act_log.add(f"凯恩 短休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
+        self.refresh_all()
 
     # ── Save ──
 
