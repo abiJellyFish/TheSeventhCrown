@@ -293,11 +293,11 @@ class MVPApp(App):
     CSS = """
     #top { height: 1; border: solid #666666; }
     #main { height: 1fr; }
-    #left { width: 16; border: solid #666666; }
+    #left { width: 18; border: solid #666666; overflow-y: auto; }
     MapView { width: 1fr; border: solid #666666; content-align: left top; }
-    #right { width: 24; border: solid #666666; }
+    #right { width: 28; border: solid #666666; overflow-y: auto; }
     #input-bar { height: 1; border: solid #666666; }
-    #log-area { height: 6; }
+    #log-area { height: 8; }
     #action-log { width: 1fr; border: solid #666666; }
     #scene-log { width: 1fr; border: solid #666666; }
     """
@@ -385,45 +385,74 @@ class MVPApp(App):
     # ── Scene description ──
 
     def _refresh_scene(self) -> None:
-        """更新场景描述。仅在实体位置变化后调用，不重复生成相同内容。"""
+        """更新场景描述 —— 对 FOV 内每个生物跑 AI 决策，描述其当前行动意图。"""
         fov = self._state.fov_cache
+        pc, pr = self._state.player_pos
         lines = []
-        # FOV 内生物描述
-        seen = set()
         for creature, (ec, er) in self._state.entities:
             if (ec, er) not in fov or creature.hp <= 0:
                 continue
             if creature is self._state.player:
                 continue
-            key = (creature.name, ec, er)
-            if key in seen:
-                continue
-            seen.add(key)
-            desc = self._describe_creature(creature)
+            desc = self._describe_creature_action(creature, (ec, er), pc, pr)
             if desc:
                 lines.append(desc)
         if not lines:
             lines.append("")
-        # 仅在内容变化时更新，避免重复刷新
         if lines != getattr(self, '_last_scene', None):
             self._last_scene = lines
             self._scene_log.set_scene(lines)
 
-    def _describe_creature(self, c: Creature) -> str:
-        """生物当前描述（固定描述，不随机变化）。"""
-        desc_map = {
-            "地精打手": "地精打手 紧握着武器，警惕地环顾四周",
-            "长耳犬": "长耳犬 低吼着，露出锋利的獠牙",
-            "野猪": "野猪 低头拱着地面觅食",
-            "骷髅": "骷髅 手持长剑，空洞的眼眶中闪烁着幽光",
-            "鸟": "一只鸟 在枝头跳跃",
-            "松鼠": "松鼠 在草丛间窜来窜去",
-            "猫": "猫 慵懒地舔着爪子",
-            "村庄长老": "村庄长老 拄着长杖，目光深邃",
-            "商人": "商人 整理着货物",
-            "村民": "村民 忙碌着自己的事",
+    def _describe_creature_action(self, c: Creature, pos: tuple[int, int],
+                                   player_col: int, player_row: int) -> str:
+        """根据生物当前 AI 决策描述其动作和神态。"""
+        ec, er = pos
+        dist = max(abs(ec - player_col), abs(er - player_row))
+        enemy_count = 1 if dist <= c.vision_range else 0
+        ally_count = sum(1 for other, _ in self._state.entities
+                         if other.faction == c.faction and other.hp > 0
+                         and other is not c)
+        power = c.hp / max(c.max_hp, 1)
+        power_ratio = power * (ally_count + 1) / max(enemy_count, 1)
+
+        # 运行 AI 决策获取当前动作意图
+        try:
+            action, _ = _ai_engine.decide(c, enemy_count, ally_count, power_ratio)
+        except Exception:
+            action = "idle"
+
+        # 根据 AI 动作生成自然语言描述
+        HP_DESC = {
+            "hp:critical": "伤痕累累",
+            "hp:low": "身上带着伤",
+            "hp:healthy": "",
+            "hp:dead": "",
         }
-        return desc_map.get(c.name, f"{c.name} 在附近徘徊")
+        hp_state = ""
+        r = c.hp / max(c.max_hp, 1)
+        if r <= 0: hp_state = "瘫倒在地"
+        elif r < 0.2: hp_state = "伤痕累累"
+        elif r < 0.5: hp_state = "身上带着伤"
+
+        action_desc = {
+            "flee": "惊慌失措地试图逃窜",
+            "surrender": "举起双手示意投降",
+            "attack": "紧握武器，死死盯着凯恩" if enemy_count else "警惕地环顾四周",
+            "advance": "向前逼近，露出凶狠的目光" if enemy_count else "来回踱步巡视",
+            "defend": "举起护具进入防御姿态",
+            "cautious_attack": "小心翼翼地试探着靠近",
+            "patrol": "漫无目的地游荡着",
+            "hunt": "低头寻觅着食物",
+            "idle": "静静地站在原地",
+            "sleep": "蜷缩在地上打着盹",
+        }
+        act = action_desc.get(action, "待在原地")
+
+        parts = [c.name]
+        if hp_state:
+            parts.append(hp_state + "，")
+        parts.append(act)
+        return "".join(parts)
 
     # ── Movement ──
 
