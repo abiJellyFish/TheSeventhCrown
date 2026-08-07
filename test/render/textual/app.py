@@ -42,59 +42,168 @@ PENDULUMS_PER_MONTH = 50000     # 10 天
 PENDULUMS_PER_YEAR = 250000     # 5 月
 
 
-def _load_map(state: GameState, map_name: str) -> None:
-    data = _loader.load_json(f"maps/{map_name}")
-    state.current_map = map_name
-    state.map = Grid[Terrain](data["width"], data["height"], Terrain.PASSABLE)
-    for c, r in data.get("terrain", {}).get("walls", []):
-        state.map[c, r] = Terrain.WALL
-    for c, r in data.get("terrain", {}).get("water", []):
-        state.map[c, r] = Terrain.DIFFICULT
-    for c, r in data.get("terrain", {}).get("difficult", []):
-        state.map[c, r] = Terrain.DIFFICULT
+def _build_world(state: GameState) -> None:
+    """构建 80×60 无缝大地图：村庄 + 平原 + 树林 + 地精营地。"""
+    w, h = 80, 60
+    state.current_map = "世界"
+    state.map = Grid[Terrain](w, h, Terrain.PASSABLE)
     state.entities = []
-    for ent_data in data.get("entities", []):
-        c = _loader.load_creature(ent_data["key"])
-        if c:
-            c.template_name = ent_data["key"]
-            state.add_entity(c, tuple(ent_data["pos"]))
-    state.map_exits = data.get("exits", [])
-    state.loot_spots = data.get("loot_spots", [])
-    beds = data.get("terrain", {}).get("beds", [])
-    state.bed_positions = {tuple(b) for b in beds}
-    doors = data.get("terrain", {}).get("doors", [])
-    state.door_states = {tuple(d["pos"]): d.get("open", False) for d in doors}
-    # 初始将关闭的门所在格设为 WALL
+    random.seed(42)
+
+    # ── 村庄 (20×15, 偏移 3,20) ──
+    vx, vy = 3, 20
+    village_walls = [
+        (2,2),(3,2),(4,2),(5,2),(6,2),(2,3),(6,3),(2,4),(6,4),(2,5),(3,5),(4,5),(5,5),(6,5),
+        (9,2),(10,2),(11,2),(12,2),(13,2),(9,3),(13,3),(9,4),(13,4),(9,5),(10,5),(11,5),(12,5),(13,5),
+        (20,1),(21,1),(22,1),(23,1),(24,1),(20,2),(24,2),(20,3),(24,3),(20,4),(24,4),(20,5),(21,5),(22,5),(23,5),(24,5),
+        (25,8),(26,8),(27,8),(28,8),(25,9),(28,9),(25,10),(28,10),(25,11),(26,11),(27,11),(28,11),
+    ]
+    for wx, wy in village_walls:
+        state.map[vx + wx, vy + wy] = Terrain.WALL
+    state.map[vx + 18, vy + 10] = Terrain.DIFFICULT  # 水井
+
+    state.bed_positions = {(vx + 4, vy + 4), (vx + 11, vy + 4), (vx + 22, vy + 3), (vx + 26, vy + 9)}
+    state.door_states = {
+        (vx + 4, vy + 5): False, (vx + 11, vy + 5): False,
+        (vx + 22, vy + 4): False, (vx + 26, vy + 11): False,
+    }
     for pos, is_open in state.door_states.items():
         if not is_open:
             state.map[pos] = Terrain.WALL
 
+    village_npcs = [
+        ("village_elder", vx + 3, vy + 7), ("merchant", vx + 11, vy + 7),
+        ("villager", vx + 7, vy + 8), ("villager", vx + 14, vy + 5),
+        ("villager", vx + 4, vy + 10), ("villager", vx + 15, vy + 8),
+        ("villager", vx + 22, vy + 7),
+    ]
+    for key, cx, cy in village_npcs:
+        c = _loader.load_creature(key)
+        if c:
+            c.template_name = key
+            state.add_entity(c, (cx, cy))
 
-def _generate_plains(state: GameState) -> None:
-    w, h = 40, 30
-    state.current_map = "plains"
-    state.map = Grid[Terrain](w, h, Terrain.PASSABLE)
-    random.seed(42)
-    for _ in range(30):
-        c, r = random.randint(0, w - 1), random.randint(0, h - 1)
-        if random.random() < 0.6:
-            state.map[c, r] = Terrain.DIFFICULT
+    # ── 树林 (30×30, 偏移 35,15, 村庄东 15 格) ──
+    fx, fy = 35, 15
+    for _ in range(200):
+        tx = fx + random.randint(0, 29)
+        ty = fy + random.randint(0, 29)
+        if 0 <= tx < w and 0 <= ty < h and state.map[tx, ty] == Terrain.PASSABLE:
+            state.map[tx, ty] = Terrain.DIFFICULT
+
+    # 地下城入口 > 在树林中
+    entrance = (fx + random.randint(5, 25), fy + random.randint(5, 25))
+    state.map[entrance] = Terrain.PASSABLE  # 入口可通行
+    state.dungeon_entrance = entrance
+
+    # ── 地精营地 (10×15, 偏移 68,10, 树林东侧) ──
+    gx, gy = 68, 10
+    camp_walls = [
+        (0,0),(1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),
+        (0,1),(7,1),(0,2),(7,2),(0,3),(7,3),(0,4),(7,4),
+        (0,5),(1,5),(2,5),(3,5),(4,5),(5,5),(6,5),(7,5),
+    ]
+    for wx, wy in camp_walls:
+        state.map[gx + wx, gy + wy] = Terrain.WALL
+    # 篝火
+    state.map[gx + 3, gy + 3] = Terrain.DIFFICULT
+    # 木屋门
+    state.door_states[(gx + 3, gy + 5)] = False
+    state.map[gx + 3, gy + 5] = Terrain.WALL
+
+    camp_enemies = [
+        ("goblin_brawler", gx + 2, gy + 2), ("goblin_brawler", gx + 5, gy + 1),
+        ("goblin_brawler", gx + 6, gy + 3), ("goblin_brawler", gx + 1, gy + 4),
+        ("long_ear_dog", gx + 4, gy + 1), ("long_ear_dog", gx + 5, gy + 4),
+        ("long_ear_dog", gx + 2, gy + 3),
+    ]
+    for key, cx, cy in camp_enemies:
+        c = _loader.load_creature(key)
+        if c:
+            c.template_name = key
+            state.add_entity(c, (cx, cy))
+
+    # ── 平原游荡生物 ──
     creatures = ["bird", "squirrel", "cat", "long_ear_dog", "wild_boar"]
-    for _ in range(8):
+    for _ in range(15):
         key = random.choice(creatures)
         c = _loader.load_creature(key)
         if c:
             c.template_name = key
-            pos = (random.randint(3, w - 4), random.randint(3, h - 4))
-            if state.map[pos] == Terrain.PASSABLE:
-                state.add_entity(c, pos)
-    state.map_exits = [
-        {"to": "village", "at": [0, 15], "direction": "west"},
-        {"to": "goblin_camp", "at": [39, 15], "direction": "east"},
-    ]
+            for _ in range(20):
+                px = random.randint(0, w - 1)
+                py = random.randint(0, h - 1)
+                if state.map[px, py] == Terrain.PASSABLE:
+                    state.add_entity(c, (px, py))
+                    break
+
+    # ── 平原灌木 ──
+    for _ in range(60):
+        bx = random.randint(0, w - 1)
+        by = random.randint(0, h - 1)
+        if state.map[bx, by] == Terrain.PASSABLE:
+            state.map[bx, by] = Terrain.DIFFICULT
+
+    state.map_exits = []
     state.loot_spots = []
+
+
+def _build_dungeon(state: GameState) -> None:
+    """BSP 生成地下城 (30×20)。"""
+    w, h = 30, 20
+    state.current_map = "地下城"
+    state.map = Grid[Terrain](w, h, Terrain.WALL)
+    state.entities = []
     state.bed_positions = set()
     state.door_states = {}
+    state.map_exits = []
+    random.seed(123)
+
+    # 挖掘 3-5 个房间 + 走廊
+    rooms = []
+    for _ in range(random.randint(3, 5)):
+        rw, rh = random.randint(4, 8), random.randint(3, 6)
+        rx = random.randint(1, w - rw - 1)
+        ry = random.randint(1, h - rh - 1)
+        rooms.append((rx, ry, rw, rh))
+        for x in range(rx, rx + rw):
+            for y in range(ry, ry + rh):
+                state.map[x, y] = Terrain.PASSABLE
+
+    # 连接走廊
+    for i in range(len(rooms) - 1):
+        x1 = rooms[i][0] + rooms[i][2] // 2
+        y1 = rooms[i][1] + rooms[i][3] // 2
+        x2 = rooms[i + 1][0] + rooms[i + 1][2] // 2
+        y2 = rooms[i + 1][1] + rooms[i + 1][3] // 2
+        for x in range(min(x1, x2), max(x1, x2) + 1):
+            state.map[x, y1] = Terrain.PASSABLE
+        for y in range(min(y1, y2), max(y1, y2) + 1):
+            state.map[x2, y] = Terrain.PASSABLE
+
+    # 入口和出口
+    first_room = rooms[0]
+    state.map[first_room[0] + 1, first_room[1]] = Terrain.PASSABLE  # 入口标记
+    state.dungeon_entrance = (first_room[0] + 1, first_room[1])
+    state.dungeon_exit = (first_room[0] + 1, first_room[1])
+    state.player_pos = (first_room[0] + 2, first_room[1] + 1)
+
+    # 红宝石在最后一个房间
+    last_room = rooms[-1]
+    state.map[last_room[0] + last_room[2] // 2, last_room[1] + last_room[3] // 2] = Terrain.DIFFICULT
+
+    # 骷髅兵
+    skeleton_positions = []
+    for _ in range(4):
+        r = random.choice(rooms[1:])
+        sx = r[0] + random.randint(1, r[2] - 1)
+        sy = r[1] + random.randint(1, r[3] - 1)
+        if (sx, sy) not in skeleton_positions:
+            skeleton_positions.append((sx, sy))
+            sk = _loader.load_creature("skeleton")
+            if sk:
+                sk.template_name = "skeleton"
+                state.add_entity(sk, (sx, sy))
 
 
 def _update_fov(state: GameState) -> None:
@@ -105,7 +214,7 @@ def _update_fov(state: GameState) -> None:
             if state.map[col, row] == Terrain.WALL:
                 transparent[col, row] = False
     light = Grid[LightLevel](state.map.width, state.map.height,
-                             LightLevel.BRIGHT if state.current_map != "dungeon" else LightLevel.DARK)
+                             LightLevel.BRIGHT if not state.in_dungeon else LightLevel.DARK)
     state.fov_cache = compute_fov(transparent, (ox, oy), state.player.vision_range,
                                   light, state.player.darkvision_range > 0,
                                   state.player.darkvision_range)
@@ -188,6 +297,8 @@ class MapView(Static):
                     text.append("@", style="bold bright_cyan")
                 elif (col, row) in self.state.bed_positions:
                     text.append("=", style="bold cyan")
+                elif self.state.dungeon_entrance and (col, row) == self.state.dungeon_entrance:
+                    text.append(">", style="bold magenta")
                 else:
                     t = gmap[col, row]
                     if (col, row) in self.state.door_states:
@@ -330,9 +441,9 @@ class MVPApp(App):
         boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], 2)
         for s in boosted: stats[s] = 10
         player = Player.create_fighter(name="凯恩", stats=stats)
-        self._state = GameState(player=player, map_width=30, map_height=20)
-        _load_map(self._state, "village")
-        self._state.player_pos = (10, 10)
+        self._state = GameState(player=player, map_width=80, map_height=60)
+        _build_world(self._state)
+        self._state.player_pos = (9, 26)  # 村庄长老房旁边
         import core.entity as ent
         sword_data = {"name": "长剑", "weapon_type": "melee", "category": "martial",
                        "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
@@ -424,22 +535,16 @@ class MVPApp(App):
             self._act_log.add("AP 不足"); return
         col, row = self._state.player_pos
         nc, nr = col + dc, row + dr
-        for ext in self._state.map_exits:
-            if (nc, nr) == tuple(ext["at"]):
-                dest = ext["to"]
-                if dest == "plains": _generate_plains(self._state)
-                else: _load_map(self._state, dest)
-                self._state.player_pos = (5, 5)
-                self._act_log.add(f"凯恩 前往了 {dest}")
-                self._end_combat(); _update_fov(self._state)
-                self._refresh_scene(); self.refresh_all(); return
         if self._state.move_player(nc, nr):
             if self._state.in_combat: self._state.player.ap -= 1
             elif self._state.slow_mode:
-                # 慢速模式额外消耗钟摆
                 self._state.clock.tick_action(1.0)
             _update_fov(self._state); self._refresh_scene(); self.refresh_all()
             self._last_move = (dc, dr)
+            # 走进地下城入口
+            if (not self._state.in_dungeon and self._state.dungeon_entrance
+                    and self._state.player_pos == self._state.dungeon_entrance):
+                self._enter_dungeon()
 
     def action_move_up(self): self._move_player(0, -1)
     def action_move_down(self): self._move_player(0, 1)
@@ -462,6 +567,12 @@ class MVPApp(App):
     def action_interact(self) -> None:
         if self._state.in_combat: self._player_attack(); return
         pc, pr = self._state.player_pos
+        # 地下城入口
+        if self._state.dungeon_entrance and (pc, pr) == self._state.dungeon_entrance:
+            self._enter_dungeon(); return
+        # 地下城出口
+        if self._state.in_dungeon and self._state.dungeon_exit and (pc, pr) == self._state.dungeon_exit:
+            self._exit_dungeon(); return
         # 门交互
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):
@@ -550,6 +661,34 @@ class MVPApp(App):
         if getattr(c, '_looted', False): self._act_log.add("已经搜刮过了"); return
         c._looted = True
         self._act_log.add(f"[搜刮] {c.name}: 获得了一些物品")
+
+    def _enter_dungeon(self) -> None:
+        """保存世界状态，进入地下城。"""
+        self._state.world_state = {
+            "map": self._state.map, "entities": self._state.entities,
+            "player_pos": self._state.player_pos, "current_map": self._state.current_map,
+            "bed_positions": self._state.bed_positions, "door_states": self._state.door_states,
+        }
+        _build_dungeon(self._state)
+        self._state.in_dungeon = True
+        self._act_log.add("凯恩 走入了地下城...")
+        self._end_combat(); _update_fov(self._state)
+        self._refresh_scene(); self.refresh_all()
+
+    def _exit_dungeon(self) -> None:
+        """恢复世界状态，退出地下城。"""
+        ws = self._state.world_state
+        if ws:
+            self._state.map = ws["map"]
+            self._state.entities = ws["entities"]
+            self._state.player_pos = ws["player_pos"]
+            self._state.current_map = ws["current_map"]
+            self._state.bed_positions = ws["bed_positions"]
+            self._state.door_states = ws["door_states"]
+        self._state.in_dungeon = False
+        self._act_log.add("凯恩 回到了地面")
+        self._end_combat(); _update_fov(self._state)
+        self._refresh_scene(); self.refresh_all()
 
     # ── Combat ──
 
