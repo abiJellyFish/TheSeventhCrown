@@ -384,7 +384,7 @@ class RightPanel(Static):
                 lines.extend(item_lines)
             elif available > 1:
                 lines.extend(item_lines[:available - 1])
-                lines.append(f"  [dim]... 共{len(item_lines)}项[/]")
+                lines.append(f"  [dim]... 共{len(p.inventory)}件[/]")
             else:
                 lines.extend(item_lines[:max(1, available)])
         else:
@@ -455,9 +455,9 @@ class MVPApp(App):
     #top { height: 1; border: solid #444444; padding: 0 1; }
 
     #main { height: 3fr; min-height: 15; }
-    #left { width: 2fr; min-width: 14; border-right: solid #444444; padding: 0 1; }
+    #left { width: 2fr; min-width: 14; height: 100%; border-right: solid #444444; padding: 0 1; }
     MapView { width: 3fr; min-width: 20; content-align: left top; }
-    #right { width: 2fr; min-width: 18; border-left: solid #444444; padding: 0 1; }
+    #right { width: 2fr; min-width: 18; height: 100%; border-left: solid #444444; padding: 0 1; }
 
     #input-bar { height: 1; border: solid #444444; }
 
