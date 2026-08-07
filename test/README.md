@@ -6,14 +6,13 @@
 
 ```bash
 # 安装依赖
-cd test
 pip install -r requirements.txt
 
 # 启动游戏
 python main.py
 ```
 
-或直接双击项目根目录的 `start.bat` (Windows) / `start.sh` (Linux/macOS)。
+或直接双击 `start.bat` (Windows) / `start.sh` (Linux/macOS)。
 
 ## 操作说明
 
@@ -48,9 +47,10 @@ python main.py
 ## 项目结构
 
 ```
-test/
 ├── main.py                      # 游戏入口
 ├── requirements.txt             # Python 依赖 (textual, pytest)
+├── README.md
+├── start.bat / start.sh         # 启动脚本
 │
 ├── core/                        # 游戏逻辑层 (零渲染依赖)
 │   ├── dice.py                  # D20 骰子池, 优势劣势叠加抵消
@@ -120,7 +120,6 @@ test/
 ## 运行测试
 
 ```bash
-cd test
 python -m pytest tests/ -v
 ```
 
@@ -133,4 +132,4 @@ python -m pytest tests/ -v
 - 短休/长休 + 舒适加成
 - 快速存档/读档
 
-详见 `test/docs/MVP2.md` 和 `test/MVP开发任务.md`。
+详见 `docs/MVP2.md` 和 `MVP开发任务.md`。

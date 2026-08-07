@@ -1,5 +1,5 @@
 @echo off
-cd /d "%~dp0test"
+cd /d "%~dp0"
 echo ============================================
 echo   ASCII CRPG - MVP Prototype
 echo ============================================

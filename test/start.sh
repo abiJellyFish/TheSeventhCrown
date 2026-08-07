@@ -1,5 +1,5 @@
 #!/bin/bash
-cd "$(dirname "$0")/test"
+cd "$(dirname "$0")"
 echo "============================================"
 echo "  ASCII CRPG - MVP Prototype"
 echo "============================================"
