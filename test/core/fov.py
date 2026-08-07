@@ -90,8 +90,8 @@ def compute_fov(
                 continue
             if not grid.within_bounds(col, row):
                 continue
-            # 切比雪夫距离检查
-            if max(abs(col - ox), abs(row - oy)) > use_radius:
+            # 欧几里得距离检查（圆形视野）
+            if (col - ox) ** 2 + (row - oy) ** 2 > use_radius ** 2:
                 continue
             if _line_of_sight(grid, ox, oy, col, row):
                 visible.add((col, row))
