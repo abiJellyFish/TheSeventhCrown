@@ -186,13 +186,14 @@ class MapView(Static):
                     text.append(ch, style=f"bold {color}" if ent.faction == "hostile" else color)
                 elif (col, row) == (pc, pr):
                     text.append("@", style="bold bright_cyan")
+                elif (col, row) in self.state.bed_positions:
+                    text.append("=", style="bold cyan")
                 else:
                     t = gmap[col, row]
-                    # 门渲染
                     if (col, row) in self.state.door_states:
                         is_open = self.state.door_states[(col, row)]
                         ch = "_" if is_open else "]"
-                        text.append(ch, style="yellow")
+                        text.append(ch, style="bold yellow")
                     else:
                         ch = {".": ".", "#": "#", '"': '"'}.get(
                             {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t], ".")
