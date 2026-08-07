@@ -229,7 +229,6 @@ class RightPanel(Static):
 class ActionLog(Static):
     messages: list[str] = []
     def add(self, msg: str) -> None:
-        if self.messages and self.messages[-1] == msg: return
         self.messages.append(msg)
         if len(self.messages) > 200: self.messages = self.messages[-100:]
         self.refresh()
@@ -242,7 +241,6 @@ class ActionLog(Static):
 class SceneLog(Static):
     messages: list[str] = []
     def add(self, msg: str) -> None:
-        if self.messages and self.messages[-1] == msg: return
         self.messages.append(msg)
         if len(self.messages) > 200: self.messages = self.messages[-100:]
         self.refresh()
