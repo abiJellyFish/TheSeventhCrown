@@ -285,7 +285,9 @@ class MapView(Static):
         pc, pr = self.state.player_pos
         fov = self.state.fov_cache
         r = self.state.player.vision_range
-        vw = min(r * 2 + 3, gmap.width)
+        # 双字符渲染：终端宽高比约 2:1，每格用两个字符使格子趋近方形
+        # 视口列数减半以适配终端宽度
+        vw = min(r + 2, gmap.width)
         vh = min(r * 2 + 1, gmap.height)
         ox = max(0, min(pc - vw // 2, gmap.width - vw))
         oy = max(0, min(pr - vh // 2, gmap.height - vh))
@@ -294,29 +296,28 @@ class MapView(Static):
         for row in range(oy, min(oy + vh, gmap.height)):
             for col in range(ox, min(ox + vw, gmap.width)):
                 if (col, row) not in fov:
-                    text.append(" ")
+                    text.append("  ")
                     continue
                 ent = self.state.get_entity_at(col, row)
                 if ent is not None:
                     ch = "%" if ent.hp <= 0 else ent.char
                     color = FACTION_COLORS.get(ent.faction, "")
-                    text.append(ch, style=f"bold {color}" if ent.faction == "hostile" else color)
+                    text.append(f"{ch} ", style=f"bold {color}" if ent.faction == "hostile" else color)
                 elif (col, row) == (pc, pr):
-                    text.append("@", style="bold bright_cyan")
+                    text.append("@ ", style="bold bright_cyan")
                 elif (col, row) in self.state.bed_positions:
-                    text.append("=", style="bold cyan")
+                    text.append("= ", style="bold cyan")
                 elif self.state.dungeon_entrance and (col, row) == self.state.dungeon_entrance:
-                    text.append(">", style="bold magenta")
+                    text.append("> ", style="bold magenta")
                 else:
                     t = gmap[col, row]
                     if (col, row) in self.state.door_states:
                         is_open = self.state.door_states[(col, row)]
                         ch = "_" if is_open else "]"
-                        text.append(ch, style="bold yellow")
+                        text.append(ch * 2, style="bold yellow")
                     else:
-                        ch = {".": ".", "#": "#", '"': '"'}.get(
-                            {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t], ".")
-                        text.append(ch, style=TERRAIN_COLORS.get(t, ""))
+                        ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
+                        text.append(ch * 2, style=TERRAIN_COLORS.get(t, ""))
             if row < min(oy + vh, gmap.height) - 1:
                 text.append("\n")
         text.append("\n")
