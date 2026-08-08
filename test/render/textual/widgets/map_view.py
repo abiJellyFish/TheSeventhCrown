@@ -31,8 +31,12 @@ class MapView(Static):
         ox = max(0, min(pc - vw // 2, gmap.width - vw))
         oy = max(0, min(pr - vh // 2, gmap.height - vh))
 
-        # 观察模式：视口扩展确保光标可见
-        obs_cur = self.state.observe_cursor if self.state.observe_mode else None
+        # 观察模式 / 远程瞄准模式：视口扩展确保光标可见
+        obs_cur = None
+        if self.state.observe_mode:
+            obs_cur = self.state.observe_cursor
+        elif self.state.combat_phase == "ranged_target":
+            obs_cur = self.state.observe_cursor
         if obs_cur is not None:
             oc, oro = obs_cur
             ox = min(ox, oc)

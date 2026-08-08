@@ -25,6 +25,8 @@ class LeftPanel(Static):
         # 攻击流程子面板 — 探索/战斗模式共用
         if phase == "select_action":
             return self._render_action_panel()
+        elif phase == "ranged_target":
+            return self._render_ranged_target_panel()
         elif phase == "select_target":
             return self._render_target_panel()
         elif phase == "select_maneuver":
@@ -96,6 +98,35 @@ class LeftPanel(Static):
 
         self._action_map[0] = ("cancel", None)
         lines.append("[[A0]]取消")
+        return "\n".join(lines)
+
+    def _render_ranged_target_panel(self) -> str:
+        pa = self.state.pending_attack or {}
+        weapon = pa.get("weapon")
+        pc, pr = self.state.player_pos
+        oc, oro = self.state.observe_cursor
+
+        weapon_name = weapon.name if weapon else "武器"
+        max_range = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
+        dist = max(abs(oc - pc), abs(oro - pr))
+
+        target_info = "(空地)"
+        ent = self.state.get_entity_at(oc, oro)
+        if ent and ent.hp > 0 and ent is not self.state.player:
+            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+            target_info = f"{ent.name} {faction_tag} HP:{ent.hp} AC:{ent.total_ac('chest')}"
+
+        lines = [
+            "── 远程瞄准 ──",
+            f"武器: {weapon_name}  射程: {max_range}",
+            f"光标: ({oc}, {oro})  距离: {dist}",
+            f"目标: {target_info}",
+            "",
+            "[方向键] 移动光标",
+            "[Enter] 确认攻击",
+            "[Esc] 取消瞄准",
+        ]
         return "\n".join(lines)
 
     def _render_target_panel(self) -> str:

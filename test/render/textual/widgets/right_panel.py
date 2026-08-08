@@ -15,6 +15,8 @@ class RightPanel(Static):
             return ""
         if self.state.observe_mode:
             return self._render_observe()
+        if self.state.combat_phase == "ranged_target":
+            return self._render_ranged_target()
         if self.view_mode == "inventory":
             return self._render_inventory()
         elif self.view_mode == "character":
@@ -124,6 +126,56 @@ class RightPanel(Static):
             lines.append("亮度: 可见")
         else:
             lines.append("亮度: 不可见")
+
+        return "\n".join(lines[:max_h])
+
+    def _render_ranged_target(self) -> str:
+        cursor = self.state.observe_cursor
+        cx, cy = cursor
+        max_h = self.size.height
+        pc, pr = self.state.player_pos
+        pa = self.state.pending_attack or {}
+        weapon = pa.get("weapon")
+        range_max = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
+
+        dist = max(abs(cx - pc), abs(cy - pr))
+        in_range = dist <= range_max
+
+        lines = [
+            "[bold]远程瞄准[/] [dim]方向键移动 Enter确认 Esc取消[/]",
+            "",
+            f"位置: ({cx}, {cy})  距离: {dist}/{range_max}"
+            + (" [green]在射程内[/]" if in_range else " [red]超出射程[/]"),
+        ]
+
+        # 地形
+        terrain = self.state.map[cx, cy]
+        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形",
+                   Terrain.PASSABLE: "草地/平地"}
+        lines.append(f"地表: {t_names.get(terrain, '未知')}")
+
+        # 生物
+        ent = self.state.get_entity_at(cx, cy)
+        if ent and ent is not self.state.player:
+            hp_pct = ent.hp / max(ent.max_hp, 1) * 100
+            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+            lines.append(
+                f"目标: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%) "
+                f"AC {ent.total_ac('chest')}"
+            )
+            if ent.statuses:
+                lines.append(f"  状态: {', '.join(ent.statuses)}")
+        elif ent is self.state.player:
+            lines.append("目标: [bold cyan]自己[/]")
+        else:
+            lines.append("目标: (空)")
+
+        # 可见性
+        if cursor in self.state.fov_cache:
+            lines.append("可见: 是")
+        else:
+            lines.append("可见: 否")
 
         return "\n".join(lines[:max_h])
 

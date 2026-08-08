@@ -138,7 +138,7 @@ class MVPApp(App):
         "X", "C", "I", "B", "Z", "K", "Y", "H", "M", "E",
     }
     _COMBAT_IDLE_KEYS = _EXPLORE_KEYS  # 战斗默认面板与探索相同（shift+tab 走 binding）
-    _COMBAT_SUB_KEYS = {"X", "C", "I"}    # 战斗子面板：观察/角色/物品栏
+    _COMBAT_SUB_KEYS = {"X", "C", "I", "enter"}    # 战斗子面板：观察/角色/物品栏 + Enter确认远程目标
     _RIGHT_PANEL_KEYS = {"X", "C", "I"}   # 物品栏/角色面板：观察/切换键
 
     def __init__(self):
@@ -241,8 +241,12 @@ class MVPApp(App):
         key = event.key
         state = self._state
 
-        # ── 0. Escape（全局：退出输入栏 / 退出右侧栏视图）──
+        # ── 0. Escape（全局：取消远程瞄准 / 退出输入栏 / 退出右侧栏视图）──
         if key == "escape":
+            if state and state.combat_phase == "ranged_target":
+                self._combat_flow.cancel_ranged_target()
+                event.stop()
+                return
             if self._input_bar and self._input_bar.has_focus:
                 self._input_bar.disabled = True
                 self._map_view.focus()
@@ -312,6 +316,7 @@ class MVPApp(App):
             "H": self.action_height_view,
             "M": self.action_map_overview,
             "E": self.action_system_menu,
+            "enter": self._confirm_ranged_target,
         }
         handler = actions.get(key)
         if handler:
@@ -445,6 +450,22 @@ class MVPApp(App):
                     self._state.observe_cursor = (nc, nr)
                     self._right_panel.refresh()
                     self._map_view.refresh()
+            return
+        # 远程目标选择模式：方向键移动瞄准光标
+        if self._state.combat_phase == "ranged_target":
+            weapon = None
+            if self._state.pending_attack:
+                weapon = self._state.pending_attack.get("weapon")
+            max_range = weapon.range_max if weapon and weapon.weapon_type == "ranged" else 8
+            pc, pr = self._state.player_pos
+            oc, oro = self._state.observe_cursor
+            nc, nr = oc + dc, oro + dr
+            if 0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height:
+                if (nc, nr) in self._state.fov_cache:
+                    if max(abs(nc - pc), abs(nr - pr)) <= max_range:
+                        self._state.observe_cursor = (nc, nr)
+                        self._right_panel.refresh()
+                        self._map_view.refresh()
             return
         # 动作/攻击流程中：方向键无反应，不扣 AP
         if self._state.in_combat and self._state.combat_phase != "idle":
@@ -771,6 +792,13 @@ class MVPApp(App):
     def _check_faction_reaction(self, target: Creature) -> None:
         """玩家攻击非敌对生物后检查阵营反应 → 委托 CombatFlow。"""
         self._combat_flow.check_faction_reaction(target)
+
+    def _confirm_ranged_target(self) -> None:
+        """Enter 键确认远程目标选择。"""
+        if self._state.combat_phase != "ranged_target":
+            return
+        self._combat_flow.confirm_ranged_target()
+        self.refresh_all()
 
     def _find_entity_pos(self, target: Creature) -> tuple[int, int] | None:
         """查找生物在地图上的坐标。"""

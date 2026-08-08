@@ -4,6 +4,7 @@ import random
 from core.entity import Creature, Weapon
 from core.dice import roll_d20
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack
+from core.combat.cover import resolve_cover_line
 
 
 class CombatFlow:
@@ -104,7 +105,18 @@ class CombatFlow:
             "attack_roll": None, "target": None,
         }
 
-        # 找相邻目标
+        # 远程武器 → 进入光标选目标模式
+        if weapon.weapon_type == "ranged":
+            self._state.combat_phase = "ranged_target"
+            self._state.observe_cursor = self._state.player_pos
+            self._unfocus_input()
+            self._act_log.add(
+                f"选择远程目标 — 射程:{weapon.range_max} "
+                f"[方向键]移动光标 [Enter]确认 [Esc]取消")
+            self._refresh_all()
+            return
+
+        # 找相邻目标（近战）
         targets = self._find_adjacent_targets()
 
         if len(targets) == 0:
@@ -161,6 +173,42 @@ class CombatFlow:
             self._act_log.add("目标序号无效")
         self._refresh_all()
 
+    # ── 阶段二B：远程光标选目标 ──
+
+    def confirm_ranged_target(self) -> None:
+        """确认远程目标选择，进入攻击检定。"""
+        pa = self._state.pending_attack
+        if pa is None:
+            return
+        cursor = self._state.observe_cursor
+        target = self._state.get_entity_at(cursor[0], cursor[1])
+        if target is None or target is self._state.player or target.hp <= 0:
+            self._act_log.add("光标位置没有可攻击的目标")
+            self._refresh_all()
+            return
+        # 检查目标是否在射程内
+        weapon = pa.get("weapon")
+        max_range = weapon.range_max if weapon else 8
+        pc, pr = self._state.player_pos
+        if max(abs(cursor[0] - pc), abs(cursor[1] - pr)) > max_range:
+            self._act_log.add("目标超出了射程")
+            self._refresh_all()
+            return
+        pa["target"] = target
+        # 探索模式：仅敌对目标进入战斗
+        if not self._state.in_combat and target.faction == "hostile":
+            self._start_combat_from_ambush(target)
+        self.execute_attack_roll()
+        self._refresh_all()
+
+    def cancel_ranged_target(self) -> None:
+        """取消远程目标选择，返回攻击方式选择。"""
+        self._state.combat_phase = "select_action"
+        self._state.pending_attack = {}
+        self._focus_input()
+        self._act_log.add("取消远程攻击")
+        self._refresh_all()
+
     # ── 阶段三：攻击检定 → 进入战技/特殊行动 ──
 
     def execute_attack_roll(self) -> None:
@@ -170,13 +218,34 @@ class CombatFlow:
         target = pa["target"]
         p = self._state.player
 
-        if self._state.in_combat:
+        # AP 已在 confirm_ranged_target 中扣除（远程），此处处理近战路径
+        if pa.get("_ap_deducted"):
+            pass
+        elif self._state.in_combat:
             p.ap -= weapon.ap_cost
+
         hit, roll = hit_check(p, target, weapon)
 
         pa["attack_roll"] = roll
         pa["hit"] = hit
-        self._act_log.add(f"{self._pn} 挥动{weapon.name}砍向 {target.name}! (roll={roll})")
+        self._act_log.add(f"{self._pn} 使用{weapon.name}攻击 {target.name}! (roll={roll})")
+
+        # 远程武器掩体检查（命中后、进入战技面板前）
+        if hit and weapon.weapon_type == "ranged":
+            attacker_pos = self._find_entity_pos(p)
+            target_pos = self._find_entity_pos(target)
+            if attacker_pos and target_pos:
+                blocked, cover_pos = resolve_cover_line(
+                    roll, attacker_pos, target_pos,
+                    self._state.map, weapon.weapon_type,
+                )
+                if blocked:
+                    hit = False
+                    pa["hit"] = False
+                    pa["blocked_by_cover"] = True
+                    pa["cover_pos"] = cover_pos
+                    reduce_tenacity(target, roll)
+                    self._act_log.add("攻击被掩体挡住了!")
 
         if hit:
             self._state.combat_phase = "select_maneuver"

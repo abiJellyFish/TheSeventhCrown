@@ -235,6 +235,144 @@ class TestCover:
         assert hit_cover is False  # thrown ignores same-height cover
 
 
+class TestRangedTargetFlow:
+    """远程瞄准流程测试 —— ranged_target 阶段进入/确认/取消/掩体。"""
+
+    @pytest.fixture
+    def ranged_weapon(self):
+        return Weapon(name="短弓", weapon_type="ranged", damage="1d6",
+                      damage_type="piercing", attack_stat="dex",
+                      ap_cost=2, range_normal=8, range_max=14,
+                      properties=["ammo", "two_handed"])
+
+    @pytest.fixture
+    def melee_weapon(self):
+        return Weapon(name="长剑", weapon_type="melee", damage="1d8",
+                      damage_type="slashing", attack_stat="str", ap_cost=3)
+
+    @pytest.fixture
+    def flow(self):
+        from unittest.mock import MagicMock
+        from core.combat.flow import CombatFlow
+        state = MagicMock()
+        state.combat_phase = "select_action"
+        state.player_pos = (5, 5)
+        state.player = MagicMock()
+        state.player.ap = 6
+        state.player.max_ap = 6
+        state.in_combat = False
+        state.pending_attack = {}
+        state.entities = []
+        state.observe_cursor = (0, 0)
+        state.map = MagicMock()
+        state.fov_cache = set()
+        flow = CombatFlow(state, MagicMock(), MagicMock(), MagicMock(),
+                          MagicMock(), "测试", MagicMock(), MagicMock())
+        return flow
+
+    def test_ranged_weapon_enters_ranged_target(self, flow, ranged_weapon):
+        """远程武器选中后进入 ranged_target 阶段。"""
+        mock_panel = flow._left_panel
+        mock_panel._action_map = {1: ("right_hand", ranged_weapon)}
+        flow.handle_action_input("A1")
+        assert flow._state.combat_phase == "ranged_target"
+
+    def test_melee_weapon_stays_normal_flow(self, flow, melee_weapon):
+        """近战武器不走远程瞄准，进入原有近战目标流程。"""
+        mock_panel = flow._left_panel
+        mock_panel._action_map = {1: ("right_hand", melee_weapon)}
+        flow._state.entities = []
+        flow.handle_action_input("A1")
+        # 近战无相邻目标 → 取消回 idle
+        assert flow._state.combat_phase == "idle"
+
+    def test_confirm_ranged_target_sets_target(self, flow, ranged_weapon, player, goblin):
+        """confirm_ranged_target 设置光标处生物为目标。"""
+        import core.combat.flow as flow_mod
+
+        flow._state.pending_attack = {"weapon": ranged_weapon, "mode": "right_hand"}
+        flow._state.observe_cursor = (10, 5)
+        flow._state.fov_cache = {(10, 5)}
+        flow._state.player = player
+        flow._state.player_pos = (5, 5)
+        flow._state.combat_phase = "ranged_target"
+        flow._state.in_combat = False
+        flow._state.map = Grid[Terrain](20, 20, Terrain.PASSABLE)
+        flow._state.entities = [(player, (5, 5)), (goblin, (10, 5))]
+
+        # 用真实的 get_entity_at
+        def real_get_entity_at(cx, cy):
+            for c, (ec, er) in flow._state.entities:
+                if (ec, er) == (cx, cy):
+                    return c
+            return None
+        flow._state.get_entity_at = real_get_entity_at
+
+        original = flow_mod.roll_d20
+        flow_mod.roll_d20 = lambda advantage=0, disadvantage=0: 15
+        try:
+            flow.confirm_ranged_target()
+            assert flow._state.pending_attack["target"] is goblin
+        finally:
+            flow_mod.roll_d20 = original
+
+    def test_confirm_rejects_empty_tile(self, flow, ranged_weapon):
+        """光标位置无目标时不能确认。"""
+        flow._state.pending_attack = {"weapon": ranged_weapon, "mode": "right_hand"}
+        flow._state.observe_cursor = (10, 5)
+        flow._state.player_pos = (5, 5)
+        flow._state.combat_phase = "ranged_target"
+        flow._state.get_entity_at = lambda cx, cy: None
+
+        flow.confirm_ranged_target()
+        # 仍处于 ranged_target，target 未设置
+        assert flow._state.combat_phase == "ranged_target"
+
+    def test_cancel_ranged_target(self, flow, ranged_weapon):
+        """取消远程瞄准返回 select_action。"""
+        flow._state.pending_attack = {"weapon": ranged_weapon, "mode": "right_hand"}
+        flow._state.combat_phase = "ranged_target"
+
+        flow.cancel_ranged_target()
+        assert flow._state.combat_phase == "select_action"
+
+    def test_execute_attack_roll_cover_check(self, flow, ranged_weapon, player, goblin):
+        """远程攻击 execute_attack_roll 进行掩体检查。"""
+        import core.combat.flow as flow_mod
+
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        g[2, 0] = Terrain.WALL
+
+        flow._state.pending_attack = {
+            "mode": "right_hand", "weapon": ranged_weapon,
+            "hit_bonus": 0, "damage_bonus": 0,
+            "attack_roll": None, "target": goblin,
+        }
+        flow._state.player_pos = (0, 0)
+        flow._state.player = player
+        flow._state.map = g
+        flow._state.in_combat = False
+        flow._state.entities = [(player, (0, 0)), (goblin, (3, 0))]
+
+        # 提供真实的 _find_entity_pos
+        def real_find_entity_pos(target):
+            for c, (ec, er) in flow._state.entities:
+                if c is target:
+                    return (ec, er)
+            return None
+        flow._find_entity_pos = real_find_entity_pos
+
+        original = flow_mod.roll_d20
+        flow_mod.roll_d20 = lambda advantage=0, disadvantage=0: 15
+        try:
+            flow.execute_attack_roll()
+            # 墙阻挡 → 应进入 select_special 或标记 blocked_by_cover
+            blocked = flow._state.pending_attack.get("blocked_by_cover", False)
+            assert blocked or flow._state.combat_phase == "select_special"
+        finally:
+            flow_mod.roll_d20 = original
+
+
 class TestCoverIntegration:
     """掩体集成测试：resolve_attack 端到端掩体检查。"""
 
