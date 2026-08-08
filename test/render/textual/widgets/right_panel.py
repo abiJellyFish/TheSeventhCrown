@@ -86,7 +86,7 @@ class RightPanel(Static):
         lines.append("── 装备 ──")
         lines.extend(self._render_equipment_lines(p))
         if p.statuses:
-            lines.append(f"[red]状态: {' '.join(p.statuses)}[/]")
+            lines.append(f"[red]状态: {' '.join(s.name for s in p.statuses)}[/]")
         return "\n".join(lines[:max_h])
 
     def _render_observe(self) -> str:

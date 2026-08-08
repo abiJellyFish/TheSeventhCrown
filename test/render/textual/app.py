@@ -1183,7 +1183,7 @@ class MVPApp(App):
             desc = desc.replace("{player}", self._pn)
         status_text = ""
         if c.statuses:
-            status_text = f" [{', '.join(c.statuses)}]"
+            status_text = f" [{', '.join(s.name for s in c.statuses)}]"
         return f"{c.name}{status_text} {hp}{desc}"
 
     # ── Rest ──
