@@ -56,6 +56,45 @@ def _add_to_inventory(player, item) -> None:
     player.inventory.append(item)
 
 
+# ── JSON 数据加载辅助 ──
+
+_DIALOGUES_CACHE: dict | None = None
+_SCENE_ACTIONS_CACHE: dict | None = None
+
+
+def _load_dialogues() -> dict:
+    """加载 NPC 对话数据，fallback 到硬编码默认值。"""
+    global _DIALOGUES_CACHE
+    if _DIALOGUES_CACHE is not None:
+        return _DIALOGUES_CACHE
+    path = os.path.join(DATA_DIR, "dialogues.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            _DIALOGUES_CACHE = json.load(f)
+    if not _DIALOGUES_CACHE:
+        _DIALOGUES_CACHE = {
+            "idle": {"low": "嗯...你好", "medium": "你好，旅行者", "high": "欢迎！有什么需要帮忙的吗"},
+        }
+    return _DIALOGUES_CACHE
+
+
+def _load_scene_actions() -> dict:
+    """加载场景描述文本，fallback 到硬编码默认值。"""
+    global _SCENE_ACTIONS_CACHE
+    if _SCENE_ACTIONS_CACHE is not None:
+        return _SCENE_ACTIONS_CACHE
+    path = os.path.join(DATA_DIR, "scene_actions.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            _SCENE_ACTIONS_CACHE = json.load(f)
+    if not _SCENE_ACTIONS_CACHE:
+        _SCENE_ACTIONS_CACHE = {
+            "idle": "静静地站在原地",
+            "fallback": "待在原地",
+        }
+    return _SCENE_ACTIONS_CACHE
+
+
 def _update_fov(state: GameState) -> None:
     ox, oy = state.player_pos
     transparent = Grid[bool](state.map.width, state.map.height, True)
@@ -130,37 +169,51 @@ class MVPApp(App):
         return self._state.player.name
 
     def _create_game(self) -> None:
-        stats = {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}
-        boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], 2)
-        for s in boosted: stats[s] = 10
-        player = Player.create_fighter(name="凯恩", stats=stats)
-        self._state = GameState(player=player, map_width=80, map_height=60)
-        # 加载战技数据
+        # 加载玩家初始数据
         import json
+        import core.entity as ent
+        ps_data = {"name": "凯恩", "class": "fighter",
+                   "stats": {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
+                   "boosted_stats": 2, "start_pos": [9, 26],
+                   "equipment": {}, "inventory": []}
+        ps_path = os.path.join(DATA_DIR, "player_start.json")
+        if os.path.exists(ps_path):
+            with open(ps_path, "r", encoding="utf-8") as f:
+                ps_data = json.load(f)
+
+        stats = dict(ps_data.get("stats", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}))
+        boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], ps_data.get("boosted_stats", 2))
+        for s in boosted:
+            stats[s] = stats.get(s, 8) + 2
+
+        player_class = ps_data.get("class", "fighter")
+        if player_class == "fighter":
+            player = Player.create_fighter(name=ps_data.get("name", "凯恩"), stats=stats)
+        else:
+            player = Player.create_fighter(name=ps_data.get("name", "凯恩"), stats=stats)
+
+        self._state = GameState(player=player, map_width=80, map_height=60)
+
+        # 加载战技数据（新格式含 maneuvers 和 special_actions）
         maneuver_path = os.path.join(DATA_DIR, "maneuvers.json")
         if os.path.exists(maneuver_path):
             with open(maneuver_path, "r", encoding="utf-8") as f:
-                self._state.maneuvers = json.load(f)
+                mdata = json.load(f)
+            self._state.maneuvers = mdata.get("maneuvers", mdata if isinstance(mdata, list) else [])
         else:
             self._state.maneuvers = []
+
         build_world(self._state, _loader)
-        self._state.player_pos = (9, 26)  # 村庄长老房旁边
-        import core.entity as ent
-        sword_data = {"name": "长剑", "weapon_type": "melee", "category": "martial",
-                       "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
-                       "ap_cost": 3, "weight": 2.0}
-        self._state.player.equipment["right_hand"] = ent.Weapon.from_dict(sword_data)
+        self._state.player_pos = tuple(ps_data.get("start_pos", [9, 26]))
+
+        # 初始装备
+        for slot, item_data in ps_data.get("equipment", {}).items():
+            if item_data and slot in self._state.player.equipment:
+                self._state.player.equipment[slot] = ent.Weapon.from_dict(item_data)
         # 预置初始物品
-        _add_to_inventory(self._state.player, ent.Item.from_dict({
-            "name": "治疗药水", "item_type": "consumable",
-            "effect": "heal", "amount": "6d4", "ap_cost": 1,
-            "weight": 0.5, "price": {"gp": 2},
-            "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值"}))
-        _add_to_inventory(self._state.player, ent.Item.from_dict({
-            "name": "一包口粮", "item_type": "consumable",
-            "effect": "restore_food", "amount": "15000", "ap_cost": 1,
-            "weight": 1.0, "price": {"cp": 50},
-            "description": "几块晒干的兽肉和浆果，食用恢复饮食值"}))
+        for item_data in ps_data.get("inventory", []):
+            _add_to_inventory(self._state.player, ent.Item.from_dict(item_data))
+
         _update_fov(self._state)
         self._save_manager = SaveManager(SAVE_DIR)
         # 战斗流程状态机（需在 widgets 创建后初始化，使用延迟绑定）
@@ -513,7 +566,7 @@ class MVPApp(App):
             self._act_log.add(self._get_npc_dialogue(c))
 
     def _get_npc_dialogue(self, c: Creature) -> str:
-        """基于 AI 状态生成 NPC 对话，不硬编码角色名。"""
+        """基于 AI 状态生成 NPC 对话，从 dialogues.json 加载文本。"""
         enemy_count = 0
         ally_count = sum(1 for o, _ in self._state.entities
                          if o.faction == c.faction and o.hp > 0 and o is not c)
@@ -525,21 +578,10 @@ class MVPApp(App):
 
         brave = getattr(c, "bravery_tier", "medium") or "medium"
 
-        DIALOGUE = {
-            "patrol": {"low": "这一带最近不太平...", "medium": "我在巡逻，一切正常", "high": "放心吧，有我在"},
-            "hunt": {"low": "希望能找到点吃的...", "medium": "今天的猎物跑得真快", "high": "刚猎到一只肥美的兔子"},
-            "idle": {"low": "嗯...你好", "medium": "你好，旅行者", "high": "欢迎！有什么需要帮忙的吗"},
-            "sleep": {"low": "呼...别吵...", "medium": "呼...呼...", "high": "打了个盹，精神不错"},
-            "flee": {"low": "我得走了！", "medium": "这里不安全", "high": "你也快离开这"},
-            "defend": {"low": "别过来...", "medium": "小心为上", "high": "退后！"},
-            "advance": {"low": "别靠近我...", "medium": "你来这里做什么", "high": "嘿，站住"},
-            "attack": {"low": "不...不要过来！", "medium": "你是在挑衅吗", "high": "想打架吗"},
-            "inspect": {"low": "好像有点不对劲...", "medium": "让我看看...", "high": "仔细检查中"},
-            "surrender": {"low": "饶了我吧！", "medium": "我投降，别动手", "high": "好吧好吧，你赢了"},
-        }
+        dialogue = _load_dialogues()
         tier = brave if brave in ("low", "medium", "high") else "medium"
-        action_dialogues = DIALOGUE.get(action, DIALOGUE["idle"])
-        return f"{c.name}: {action_dialogues.get(tier, action_dialogues['medium'])}"
+        action_dialogues = dialogue.get(action, dialogue.get("idle", {}))
+        return f"{c.name}: {action_dialogues.get(tier, action_dialogues.get('medium', '...'))}"
 
     def _loot_corpse(self, c: Creature) -> None:
         if getattr(c, '_looted', False): self._act_log.add("已经搜刮过了"); return
@@ -1029,18 +1071,15 @@ class MVPApp(App):
         elif r < 0.5: hp = "身上带伤，"
         else: hp = ""
 
-        act_map = {
-            "flee": "惊慌失措地试图逃窜", "surrender": "举起双手投降",
-            "attack": f"死死盯着{self._pn}" if enemy_count else "警惕地巡视四周",
-            "advance": "向前逼近" if enemy_count else "来回踱步",
-            "defend": "摆出防御姿态", "patrol": "漫无目的地游荡",
-            "hunt": "低头寻觅着食物", "idle": "静静地站在原地",
-            "sleep": "蜷缩着打盹",
-        }
+        act_map = _load_scene_actions()
+        desc = act_map.get(action, act_map.get("fallback", "待在原地"))
+        if isinstance(desc, dict):
+            desc = desc.get("enemy", desc.get("no_enemy", "")) if enemy_count else desc.get("no_enemy", desc.get("enemy", ""))
+            desc = desc.replace("{player}", self._pn)
         status_text = ""
         if c.statuses:
             status_text = f" [{', '.join(c.statuses)}]"
-        return f"{c.name}{status_text} {hp}{act_map.get(action, '待在原地')}"
+        return f"{c.name}{status_text} {hp}{desc}"
 
     # ── Rest ──
 

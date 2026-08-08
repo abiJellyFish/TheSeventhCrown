@@ -1,0 +1,28 @@
+{
+  "name": "凯恩",
+  "class": "fighter",
+  "stats": {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
+  "boosted_stats": 2,
+  "start_pos": [9, 26],
+  "equipment": {
+    "right_hand": {
+      "name": "长剑", "weapon_type": "melee", "category": "martial",
+      "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
+      "ap_cost": 3, "weight": 2.0
+    }
+  },
+  "inventory": [
+    {
+      "name": "治疗药水", "item_type": "consumable",
+      "effect": "heal", "amount": "6d4", "ap_cost": 1,
+      "weight": 0.5, "price": {"gp": 2},
+      "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值"
+    },
+    {
+      "name": "一包口粮", "item_type": "consumable",
+      "effect": "restore_food", "amount": "15000", "ap_cost": 1,
+      "weight": 1.0, "price": {"cp": 50},
+      "description": "几块晒干的兽肉和浆果，食用恢复饮食值"
+    }
+  ]
+}

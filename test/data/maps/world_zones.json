@@ -1,0 +1,8 @@
+{
+  "forest": {"offset": [35, 15], "width": 30, "height": 30, "name": "树林", "tree_count": 200},
+  "plains": {
+    "creatures": ["bird", "squirrel", "cat", "long_ear_dog", "wild_boar"],
+    "creature_count": 15,
+    "bush_count": 60
+  }
+}

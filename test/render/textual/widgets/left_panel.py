@@ -1,8 +1,12 @@
 """左侧面板 —— 探索/战斗默认面板 + 攻击流程子面板（选武器/选目标/选战技/选特殊行动）。"""
 
+import json
+import os
 from textual.widgets import Static
 
 from core.game_state import GameState
+
+_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
 
 
 class LeftPanel(Static):
@@ -160,11 +164,7 @@ class LeftPanel(Static):
         target_name = target.name if target else "目标"
         target_ac = target.total_ac('chest') if target else 0
 
-        specials = [
-            {"key": "reroll", "name": "奋力一击", "ap_cost": 2, "desc": "额外消耗 2AP，重掷攻击骰"},
-            {"key": "feint", "name": "虚晃一招", "ap_cost": 1, "desc": "消耗 1AP，下次攻击命中+2"},
-            {"key": "taunt", "name": "挑衅", "ap_cost": 1, "desc": "消耗 1AP，目标下回合更容易攻击你"},
-        ]
+        specials = _load_special_actions()
         self._special_map = {}
         lines = ["── 未命中 ──",
                  f"{weapon.name if weapon else '武器'}挥空{target_name} (roll={attack_roll} vs AC={target_ac})"]
@@ -175,3 +175,25 @@ class LeftPanel(Static):
         self._special_map[0] = "tenacity"
         lines.append("[[A0]]削韧      不消耗AP，削减目标韧性")
         return "\n".join(lines)
+
+
+_SPECIAL_ACTIONS_CACHE: list | None = None
+
+
+def _load_special_actions() -> list:
+    """加载特殊行动定义，fallback 到硬编码默认值。"""
+    global _SPECIAL_ACTIONS_CACHE
+    if _SPECIAL_ACTIONS_CACHE is not None:
+        return _SPECIAL_ACTIONS_CACHE
+    path = os.path.join(_DATA_DIR, "maneuvers.json")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _SPECIAL_ACTIONS_CACHE = data.get("special_actions", [])
+    if not _SPECIAL_ACTIONS_CACHE:
+        _SPECIAL_ACTIONS_CACHE = [
+            {"key": "reroll", "name": "奋力一击", "ap_cost": 2, "desc": "额外消耗 2AP，重掷攻击骰"},
+            {"key": "feint", "name": "虚晃一招", "ap_cost": 1, "desc": "消耗 1AP，下次攻击命中+2"},
+            {"key": "taunt", "name": "挑衅", "ap_cost": 1, "desc": "消耗 1AP，目标下回合更容易攻击你"},
+        ]
+    return _SPECIAL_ACTIONS_CACHE
