@@ -285,13 +285,34 @@ class TopBar(Static):
             return len(Text.from_markup(t).plain)
 
         if s.in_combat and s.combat_initiative:
+            # 存活参战者，当前回合生物前后各 2 个，超出用 +N 省略
+            alive = [e for e in s.combat_initiative if e.hp > 0 or e is s.player]
+            if not alive:
+                pad = max(1, width - visible_len(left) - visible_len(right) - 2)
+                return f"{left}{' ' * pad}{right}"
+            current_idx = 0
+            for i, e in enumerate(alive):
+                if e is s.combat_turn_entity:
+                    current_idx = i; break
+            total = len(alive)
+            if total <= 5:
+                indices = list(range(total))
+                prefix = ""
+                suffix = ""
+            else:
+                start = max(0, current_idx - 2)
+                end = min(total, current_idx + 3)
+                indices = list(range(start, end))
+                prefix = f"+{start} " if start > 0 else ""
+                suffix = f" +{total - end}" if end < total else ""
             names = []
-            for e in s.combat_initiative:
-                if e.hp <= 0: continue
+            for i in indices:
+                e = alive[i]
                 nm = e.name
-                if e is s.combat_turn_entity: nm = f"[bold yellow]{nm}[/]"
+                if e is s.combat_turn_entity:
+                    nm = f"[bold yellow]{nm}[/]"
                 names.append(nm)
-            center = " > ".join(names)
+            center = f"{prefix}{' > '.join(names)}{suffix}"
             used = visible_len(left) + visible_len(center) + visible_len(right)
             remaining = max(0, width - used)
             pad_left = remaining // 2
@@ -328,7 +349,7 @@ class LeftPanel(Static):
             "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
             "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
             "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
-            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]动作",
+            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
             "[[S]]法术 [[X]]观察 [[Q]]退出",
         ])
 
@@ -341,7 +362,7 @@ class LeftPanel(Static):
             "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
             "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
             "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
-            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]动作",
+            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
             "[[S]]法术 [[X]]观察 [[Q]]退出",
         ]
         return "\n".join(lines)
@@ -350,7 +371,8 @@ class LeftPanel(Static):
         p = self.state.player
         left = p.equipment.get("left_hand")
         right = p.equipment.get("right_hand")
-        lines = ["── 选择攻击方式 ──"]
+        lines = ["── 选择攻击方式 ──",
+                 "输入 A序号 选择 (如 A2)"]
 
         # A1 left hand
         if left and hasattr(left, 'weapon_type'):
@@ -382,7 +404,7 @@ class LeftPanel(Static):
         else:
             lines.append("[A4]双手并用  (需要近战武器)")
 
-        lines.append("[A0]返回")
+        lines.append("[A0]取消")
         return "\n".join(lines)
 
     def _render_target_panel(self) -> str:
@@ -419,6 +441,7 @@ class LeftPanel(Static):
         target_ac = target.total_ac('chest') if target else 0
 
         lines = ["── 命中! 选择战技 ──",
+                 "输入 A序号 选择 (如 A0 直接攻击)",
                  f"{weapon.name if weapon else '武器'}击中{target_name} (roll={attack_roll} vs AC={target_ac})",
                  "[A1]精准攻击  AP+1  命中+2",
                  "[A2]强力攻击  AP+1  伤害+1d4",
@@ -438,6 +461,7 @@ class LeftPanel(Static):
         target_ac = target.total_ac('chest') if target else 0
 
         lines = ["── 未命中 ──",
+                 "输入 A序号 选择 (如 A0 削韧)",
                  f"{weapon.name if weapon else '武器'}挥空{target_name} (roll={attack_roll} vs AC={target_ac})"]
         lines.append(f"[A1]奋力一击  额外消耗 2AP，重掷攻击骰 {'[dim]AP不足[/]' if p.ap < 2 else ''}")
         lines.append(f"[A2]虚晃一招  消耗 1AP，下次攻击命中+2 {'[dim]AP不足[/]' if p.ap < 1 else ''}")
@@ -761,7 +785,27 @@ class MVPApp(App):
             if w: w.refresh()
 
     def on_key(self, event) -> None:
-        """处理数字键（Textual binding 对数字键不生效，需手动分发）。"""
+        """上下文感知的按键分发：当前面板没写的键不触发。"""
+        phase = self._state.combat_phase if self._state else "idle"
+        view = self._right_panel.view_mode if self._right_panel else "default"
+
+        # ── 战斗流程阶段：输入栏已聚焦，不响应全局快捷键 ──
+        if phase != "idle":
+            return
+
+        # ── 物品栏/角色面板/动作面板：仅 Esc 关闭，其余全局快捷键忽略 ──
+        if view in ("inventory", "character", "actions", "spells"):
+            if event.key == "escape":
+                self._right_panel.view_mode = "default"
+                self._right_panel.refresh()
+                event.stop()
+            return
+
+        # ── 观察模式：仅方向键 + X（已在 bindings 中处理）──
+        if self._state and self._state.observe_mode:
+            pass  # let bindings handle
+
+        # ── 正常分发数字键 ──
         digit_actions = {
             "0": self.action_interact,
             "1": self.action_1,
@@ -1166,6 +1210,8 @@ class MVPApp(App):
         if cmd == "A0":
             self._state.combat_phase = "idle"
             self._state.pending_attack = {}
+            self._input_bar.disabled = True
+            self._map_view.focus()
             self._act_log.add("取消攻击")
             self.refresh_all()
             return
@@ -1245,6 +1291,7 @@ class MVPApp(App):
         """阶段二：选择目标。输入 T1~Tn。"""
         if cmd == "T0":
             self._state.combat_phase = "select_action"
+            self._focus_input()
             self._act_log.add("取消目标选择")
             self.refresh_all()
             return
@@ -1282,12 +1329,14 @@ class MVPApp(App):
         hit, roll = hit_check(p, target, weapon)
 
         pa["attack_roll"] = roll
+        pa["hit"] = hit
         self._act_log.add(f"{self._pn} 挥动{weapon.name}砍向 {target.name}! (roll={roll})")
 
         if hit:
             self._state.combat_phase = "select_maneuver"
         else:
             self._state.combat_phase = "select_special"
+        self._focus_input()
 
     def _handle_maneuver_input(self, cmd: str) -> None:
         """阶段三A：命中后选择战技。输入 A0~A4。"""
@@ -1335,20 +1384,22 @@ class MVPApp(App):
             self.refresh_all()
             return
 
-        # 结算基础伤害
-        result = self._resolve_melee_attack(
-            p, target, weapon,
-            hit_bonus=pa.get("hit_bonus", 0),
-            damage_bonus=pa.get("damage_bonus", 0))
-        if result["hit"]:
-            self._act_log.add(f"{self._pn} 砍中了 {target.name}, 造成 {result['damage']} 点伤害")
-            if target.hp <= 0:
-                self._act_log.add(f"{target.name} 倒在地上，不再动弹")
-        else:
-            self._act_log.add(f"{self._pn} 的攻击被 {target.name} 躲开了")
+        # 结算伤害 — 命中已确认，不再重做命中检定
+        roll = pa.get("attack_roll", 0)
+        critical = (roll == 20)
+        dmg = roll_damage(weapon, p, critical=critical)
+        dmg += pa.get("damage_bonus", 0)
+        dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
+        target.hp = max(0, target.hp - dmg)
+
+        self._act_log.add(f"{self._pn} 砍中了 {target.name}, 造成 {dmg} 点伤害")
+        if target.hp <= 0:
+            self._act_log.add(f"{target.name} 倒在地上，不再动弹")
 
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
+        self._input_bar.disabled = True
+        self._map_view.focus()
         if p.ap <= 0: self._next_turn()
         self.refresh_all()
 
@@ -1389,6 +1440,8 @@ class MVPApp(App):
 
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
+        self._input_bar.disabled = True
+        self._map_view.focus()
         if p.ap <= 0: self._next_turn()
         self.refresh_all()
 
@@ -1497,15 +1550,23 @@ class MVPApp(App):
     def action_7(self): self._act_log.add("[推撞] 此功能待开发")
     def action_8(self): self._act_log.add("[擒抱] 此功能待开发")
     def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
+    def _focus_input(self) -> None:
+        """聚焦输入栏（战斗流程专用）。"""
+        self._input_bar.disabled = False
+        self._input_bar.focus()
+
     def action_show_actions(self):
         """按 A 键 → 进入攻击方式选择阶段。"""
         if not self._state.in_combat:
-            self._act_log.add("[动作] 非战斗无需选择动作")
+            self._act_log.add("[攻击] 非战斗无需选择动作")
+            return
+        if self._state.combat_phase != "idle":
+            # 已在战斗流程中，只聚焦输入栏，不重置状态
+            self._focus_input()
             return
         self._state.combat_phase = "select_action"
         self._state.pending_attack = {}
-        self._input_bar.disabled = False
-        self._input_bar.focus()
+        self._focus_input()
         self.refresh_all()
     def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
     def action_char_panel(self):
