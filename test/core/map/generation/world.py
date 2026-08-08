@@ -36,10 +36,10 @@ def _place_zone(state: GameState, data: dict, loader) -> None:
     for fx, fy in data.get("campfires", []):
         state.campfire_positions.add((ox + fx, oy + fy))
 
-    # 石头（WALL 碰撞 + `o` 渲染）
+    # 石头（半身掩体，可通行，不挡视野，`o` 渲染）
     for sx, sy in data.get("stones", []):
         pos = (ox + sx, oy + sy)
-        state.map[pos] = Terrain.WALL
+        state.map[pos] = Terrain.DIFFICULT
         state.stone_positions.add(pos)
 
     # 床
