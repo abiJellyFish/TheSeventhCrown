@@ -282,7 +282,7 @@ class TopBar(Static):
         right = f"{pc}钟摆 第{day}天 {month}月 {year}纪年 "
 
         def visible_len(t: str) -> int:
-            return len(Text.from_markup(t).plain)
+            return Text.from_markup(t).cell_len
 
         if s.in_combat and s.combat_initiative:
             # 存活参战者，当前回合生物前后各 2 个，超出用 +N 省略
