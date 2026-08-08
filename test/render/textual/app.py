@@ -400,30 +400,30 @@ class LeftPanel(Static):
         if left:
             if hasattr(left, 'weapon_type'):
                 self._action_map[idx] = ("left_hand", left)
-                lines.append(f"[A{idx}]左手武器  {left.name} {left.damage} {left.damage_type} AP:{left.ap_cost}")
+                lines.append(f"[[A{idx}]]左手武器  {left.name} {left.damage} {left.damage_type} AP:{left.ap_cost}")
             else:
                 self._action_map[idx] = ("left_hand_blocked", left)
-                lines.append(f"[A{idx}]左手武器  {left.name} (不能攻击)")
+                lines.append(f"[[A{idx}]]左手武器  {left.name} (不能攻击)")
             idx += 1
         if right:
             if hasattr(right, 'weapon_type'):
                 self._action_map[idx] = ("right_hand", right)
-                lines.append(f"[A{idx}]右手武器  {right.name} {right.damage} {right.damage_type} AP:{right.ap_cost}")
+                lines.append(f"[[A{idx}]]右手武器  {right.name} {right.damage} {right.damage_type} AP:{right.ap_cost}")
             else:
                 self._action_map[idx] = ("right_hand_blocked", right)
-                lines.append(f"[A{idx}]右手武器  {right.name} (不能攻击)")
+                lines.append(f"[[A{idx}]]右手武器  {right.name} (不能攻击)")
             idx += 1
         if left and hasattr(left, 'weapon_type') and right and hasattr(right, 'weapon_type'):
             self._action_map[idx] = ("dual_wield", right)
-            lines.append(f"[A{idx}]双持武器  {left.name}+{right.name} AP:3")
+            lines.append(f"[[A{idx}]]双持武器  {left.name}+{right.name} AP:3")
             idx += 1
         if right and hasattr(right, 'weapon_type') and right.weapon_type == "melee":
             self._action_map[idx] = ("two_hand", right)
-            lines.append(f"[A{idx}]双手并用  {right.name} 命中+1 伤害+2 AP:{right.ap_cost}")
+            lines.append(f"[[A{idx}]]双手并用  {right.name} 命中+1 伤害+2 AP:{right.ap_cost}")
             idx += 1
 
         self._action_map[0] = ("cancel", None)
-        lines.append("[A0]取消")
+        lines.append("[[A0]]取消")
         return "\n".join(lines)
 
     def _render_target_panel(self) -> str:
@@ -444,10 +444,10 @@ class LeftPanel(Static):
         targets.sort(key=lambda x: (x[0], x[1]))
 
         for i, (_, _, c) in enumerate(targets[:8]):
-            lines.append(f"[T{i+1}]{c.name} (HP {c.hp}, AC {c.total_ac('chest')})")
+            lines.append(f"[[T{i+1}]]{c.name} (HP {c.hp}, AC {c.total_ac('chest')})")
         if len(targets) > 8:
             lines.append(f"... 还有 {len(targets)-8} 个目标")
-        lines.append("[T0]取消")
+        lines.append("[[T0]]取消")
         return "\n".join(lines)
 
     def _render_maneuver_panel(self) -> str:
@@ -472,9 +472,9 @@ class LeftPanel(Static):
             elif desc == 'disarm': desc_text = '目标力量豁免失败则武器掉落'
             elif desc == 'knockdown': desc_text = '目标敏捷豁免失败则倒地'
             else: desc_text = desc
-            lines.append(f"[A{i}]{m['name']}  AP+{m['ap_extra']}  {desc_text}")
+            lines.append(f"[[A{i}]]{m['name']}  AP+{m['ap_extra']}  {desc_text}")
         self._maneuver_map[0] = None
-        lines.append("[A0]直接攻击  不消耗额外AP，正常结算伤害")
+        lines.append("[[A0]]直接攻击  不消耗额外AP，正常结算伤害")
         return "\n".join(lines)
 
     def _render_special_panel(self) -> str:
@@ -498,9 +498,9 @@ class LeftPanel(Static):
         for i, s in enumerate(specials, 1):
             self._special_map[i] = s["key"]
             ap_note = " [dim]AP不足[/]" if p.ap < s["ap_cost"] else ""
-            lines.append(f"[A{i}]{s['name']}  {s['desc']}{ap_note}")
+            lines.append(f"[[A{i}]]{s['name']}  {s['desc']}{ap_note}")
         self._special_map[0] = "tenacity"
-        lines.append("[A0]削韧      不消耗AP，削减目标韧性")
+        lines.append("[[A0]]削韧      不消耗AP，削减目标韧性")
         return "\n".join(lines)
 
 
@@ -1558,11 +1558,28 @@ class MVPApp(App):
 
     def _npc_special_action(self, npc: Creature, action: dict, target,
                              nc: int, nr: int, tc: int, tr: int) -> None:
-        """NPC 执行特殊动作。MVP 仅做日志记录，后续扩展。"""
+        """NPC 执行特殊动作，按描述结算效果。"""
         name = action.get("name", "特殊动作")
         ap_cost = action.get("ap_cost", 3)
         npc.ap -= ap_cost
-        self._act_log.add(f"{npc.name} 使用了{name}")
+        desc = action.get("description", "")
+
+        if "扑倒" in name:
+            # 目标 DC12 敏捷检定，失败则倒地
+            save_roll = roll_d20() + target.stat_adjust("dex")
+            if save_roll < 12:
+                if "prone" not in target.statuses:
+                    target.statuses.append("prone")
+                self._act_log.add(
+                    f"{npc.name}使用{name}扑倒了{target.name}!")
+            else:
+                self._act_log.add(
+                    f"{npc.name}使用{name}，{target.name}稳住了身形")
+        elif "跃起" in name:
+            # 跳跃攻击：移动到目标相邻格，部位概率改变
+            self._act_log.add(f"{npc.name}使用{name}高高跃起!")
+        else:
+            self._act_log.add(f"{npc.name} 使用了{name}")
 
     def _npc_action_total_ap(self, npc: Creature, action: dict,
                               nc: int, nr: int, pc: int, pr: int) -> int | None:
