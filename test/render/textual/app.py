@@ -8,7 +8,7 @@ from textual.binding import Binding
 from rich.text import Text
 
 from core.game_state import GameState
-from core.entity import Player, Creature
+from core.entity import Player, Creature, Weapon
 from core.movement import Terrain
 from core.grid import Grid
 from core.fov import LightLevel, compute_fov
@@ -1542,49 +1542,76 @@ class MVPApp(App):
         npc.ap -= ap_cost
         self._act_log.add(f"{npc.name} 使用了{name}")
 
+    def _npc_action_total_ap(self, npc: Creature, action: dict,
+                              nc: int, nr: int, pc: int, pr: int) -> int | None:
+        """计算执行动作所需的总 AP（移动 + 动作本身）。不可行返回 None。"""
+        atype = action.get("type", "melee_attack")
+        reach = action.get("reach", 1)
+        ap_cost = action.get("ap_cost", 3)
+        dist = max(abs(nc - pc), abs(nr - pr))
+
+        if atype in ("melee_attack", "special"):
+            if dist <= reach:
+                return ap_cost
+            else:
+                # 需要移动：每格 1 AP
+                move_ap = dist - reach
+                return move_ap + ap_cost
+        return ap_cost
+
     def _execute_npc_action(self, npc: Creature, action: dict,
                             nc: int, nr: int, pc: int, pr: int) -> None:
-        """执行单个 NPC 动作。"""
+        """执行单个 NPC 动作：先移动到范围内，再发动。"""
         atype = action.get("type", "melee_attack")
         reach = action.get("reach", 1)
         dist = max(abs(nc - pc), abs(nr - pr))
 
-        if atype == "melee_attack":
-            if dist <= reach:
-                self._npc_melee_attack(npc, action, self._state.player)
+        # 先移动到攻击范围内
+        while dist > reach and npc.ap > 0:
+            moved = self._move_npc_toward(npc, nc, nr, pc, pr)
+            if not moved:
+                break
+            npc.ap -= 1
+            pos = self._find_entity_pos(npc)
+            if pos:
+                nc, nr = pos
+                dist = max(abs(nc - pc), abs(nr - pr))
             else:
-                self._move_npc_toward(npc, nc, nr, pc, pr)
-                # 移动后重新获取位置
-                new_pos = self._find_entity_pos(npc)
-                if new_pos:
-                    new_dist = max(abs(new_pos[0] - pc), abs(new_pos[1] - pr))
-                    if new_dist <= reach:
-                        self._npc_melee_attack(npc, action, self._state.player)
-        elif atype == "special":
+                break
+
+        # 在范围内则发动攻击
+        if atype == "melee_attack" and dist <= reach and npc.ap >= action.get("ap_cost", 2):
+            self._npc_melee_attack(npc, action, self._state.player)
+        elif atype == "special" and dist <= reach and npc.ap >= action.get("ap_cost", 3):
             self._npc_special_action(npc, action, self._state.player,
                                      nc, nr, pc, pr)
 
     def _npc_turn(self, npc: Creature) -> None:
-        """NPC 回合：按 MVP2.md 规则从 creature.actions 平均概率选取动作。"""
+        """NPC 回合：按 MVP2.md 规则重复执行动作直到 AP 不足。"""
         pc, pr = self._state.player_pos
-        npc_pos = self._find_entity_pos(npc)
-        if npc_pos is None:
+        pos = self._find_entity_pos(npc)
+        if pos is None:
             self._next_turn(); return
-        nc, nr = npc_pos
 
-        # 收集 AP 足够的动作
-        available = []
-        for action in npc.actions:
-            ap_needed = action.get("ap_cost", 3)
-            if npc.ap >= ap_needed:
-                available.append(action)
+        actions_taken = 0
+        while npc.ap > 0:
+            nc, nr = pos if (pos := self._find_entity_pos(npc)) else (0, 0)
+            # 收集可执行的动作（总 AP 足够 + 条件满足）
+            available = []
+            for action in npc.actions:
+                total = self._npc_action_total_ap(npc, action, nc, nr, pc, pr)
+                if total is not None and npc.ap >= total:
+                    available.append(action)
 
-        if not available:
-            self._act_log.add(f"{npc.name} 没有可用的动作")
-            self._next_turn(); self.refresh_all(); return
+            if not available:
+                if actions_taken == 0:
+                    self._act_log.add(f"{npc.name} 没有可用的动作")
+                break
 
-        action = random.choice(available)
-        self._execute_npc_action(npc, action, nc, nr, pc, pr)
+            action = random.choice(available)
+            self._execute_npc_action(npc, action, nc, nr, pc, pr)
+            actions_taken += 1
+
         self._next_turn(); self.refresh_all()
 
     # ── Long Rest ──
