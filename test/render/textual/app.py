@@ -12,6 +12,7 @@ from core.game_state import GameState
 from core.entity import Player, Creature, Weapon
 from core.movement import Terrain
 from core.grid import Grid
+from core.movement import find_path
 from core.fov import LightLevel, compute_fov
 from core.combat.initiative import roll_initiative
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice
@@ -732,10 +733,19 @@ class MVPApp(App):
 
     def _move_npc_toward(self, npc: Creature, nc: int, nr: int,
                          tc: int, tr: int) -> bool:
-        """NPC 向目标坐标移动一格。返回是否成功移动。"""
+        """NPC 向目标坐标移动一格（A* 寻路 + 简单 fallback）。"""
+        # 尝试 A* 寻路
+        path = find_path(self._state.map, self._state.entities,
+                         (nc, nr), (tc, tr))
+        if path and len(path) >= 2:
+            # path[0] = 起点, path[1] = 下一步
+            nx, ny = path[1]
+            if self._state.move_entity(npc, nc, nr, nx, ny):
+                return True
+
+        # A* 失败或不可达，fallback 到简单朝向移动
         dc = 1 if tc > nc else (-1 if tc < nc else 0)
         dr = 1 if tr > nr else (-1 if tr < nr else 0)
-        # 优先对角线，否则单轴
         for try_dc, try_dr in [(dc, dr), (dc, 0), (0, dr)]:
             nx, ny = nc + try_dc, nr + try_dr
             if self._state.move_entity(npc, nc, nr, nx, ny):
@@ -840,15 +850,16 @@ class MVPApp(App):
 
     def _execute_npc_action(self, npc: Creature, action: dict,
                             nc: int, nr: int, pc: int, pr: int) -> None:
-        """执行单个 NPC 动作：先移动到范围内，再发动。"""
+        """执行单个 NPC 动作：包围移动 → 进入范围 → 发动攻击。"""
         atype = action.get("type", "melee_attack")
         reach = action.get("reach", 1)
         dist = max(abs(nc - pc), abs(nr - pr))
 
-        # 先移动到攻击范围内
+        # 移动到攻击范围内：目标为玩家周围最近的空格（包围）
         while dist > reach and npc.ap > 0:
-            moved = self._move_npc_toward(npc, nc, nr, pc, pr)
-            npc.ap -= 1  # 尝试移动即消耗 AP（无论成功与否）
+            target = self._find_surround_target(nc, nr, pc, pr)
+            moved = self._move_npc_toward(npc, nc, nr, target[0], target[1])
+            npc.ap -= 1  # 尝试移动即消耗 AP
             if not moved:
                 break
             pos = self._find_entity_pos(npc)
@@ -865,8 +876,36 @@ class MVPApp(App):
             self._npc_special_action(npc, action, self._state.player,
                                      nc, nr, pc, pr)
 
+    def _find_surround_target(self, nc: int, nr: int,
+                               pc: int, pr: int) -> tuple[int, int]:
+        """找到玩家周围最佳包围位置（最近且未被占据的相邻格）。"""
+        best = None
+        best_dist = 999
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if dc == 0 and dr == 0:
+                    continue
+                tx, ty = pc + dc, pr + dr
+                if not self._state.map.within_bounds(tx, ty):
+                    continue
+                # 检查是否已被占据
+                occupied = False
+                for _, (ec, er) in self._state.entities:
+                    if (ec, er) == (tx, ty):
+                        occupied = True
+                        break
+                if (tx, ty) == (pc, pr):
+                    occupied = True
+                if occupied:
+                    continue
+                d = max(abs(nc - tx), abs(nr - ty))
+                if d < best_dist:
+                    best_dist = d
+                    best = (tx, ty)
+        return best or (pc, pr)
+
     def _npc_turn(self, npc: Creature) -> None:
-        """NPC 回合：按 MVP2.md 规则重复执行动作直到 AP 不足。"""
+        """NPC 回合：包围玩家 + 重复执行动作直到 AP 不足。"""
         pc, pr = self._state.player_pos
         pos = self._find_entity_pos(npc)
         if pos is None:
@@ -886,15 +925,16 @@ class MVPApp(App):
                     available.append(action)
 
             if not available:
-                # 无法发动任何动作，但还可以移动：向玩家靠近
+                # 无法发动任何动作，包围移动：向玩家周围空格靠近
                 if max(abs(nc - pc), abs(nr - pr)) <= 1:
-                    # 已在相邻格，确实无可用动作
                     if actions_taken == 0:
                         self._act_log.add(f"{npc.name} 没有可用的动作")
                     break
-                moved = self._move_npc_toward(npc, nc, nr, pc, pr)
+                # 找包围位置并移动
+                target = self._find_surround_target(nc, nr, pc, pr)
+                moved = self._move_npc_toward(npc, nc, nr, target[0], target[1])
+                npc.ap -= 1  # 尝试移动即消耗 AP
                 if moved:
-                    npc.ap -= 1
                     actions_taken += 1
                 else:
                     break
@@ -905,7 +945,6 @@ class MVPApp(App):
             self._execute_npc_action(npc, action, nc, nr, pc, pr)
             actions_taken += 1
             if npc.ap >= ap_before:
-                # 动作未能执行（被阻挡/无法移动），跳出防止死循环
                 break
 
         self._next_turn(); self.refresh_all()
