@@ -218,12 +218,11 @@ class TestTenacityEdge:
     def test_already_incapacitated_not_duplicated(self):
         """已 incapacitated 的生物不会重复添加状态。"""
         c = Creature(name="Test", faction="neutral", tenacity=3, max_tenacity=10)
-        c.statuses = ["incapacitated"]
+        c.add_status("incapacitated")
         reduce_tenacity(c, 20)  # reduces to 0
-        # 不应重复添加 incapacitated（已知bug: 当前实现会重复添加）
-        # 这里验证基本行为
+        # add_status 不会重复添加同名状态
         assert c.tenacity == 0
-        assert "incapacitated" in c.statuses
+        assert c.has_status("incapacitated")
 
 
 class TestAutoHitEdge:

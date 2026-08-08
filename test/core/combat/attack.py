@@ -251,8 +251,8 @@ def reduce_tenacity(target: Creature, d20_roll: int) -> None:
     """
     reduction = max(d20_roll // 5, 1)
     target.tenacity = max(0, target.tenacity - reduction)
-    if target.tenacity == 0 and "incapacitated" not in target.statuses:
-        target.statuses.append("incapacitated")
+    if target.tenacity == 0 and not target.has_status("incapacitated"):
+        target.add_status("incapacitated")
 
 
 # ═══════════════════════════════════════════════════

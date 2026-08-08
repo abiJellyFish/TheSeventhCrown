@@ -138,7 +138,7 @@ class LeftPanel(Static):
             lines.append(f"目标: {ent.name} {faction_tag}")
             lines.append(f"  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
             if ent.statuses:
-                lines.append(f"  状态: {', '.join(ent.statuses)}")
+                lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
         elif terrain == Terrain.WALL:
             lines.append("目标: (墙壁)")
         else:

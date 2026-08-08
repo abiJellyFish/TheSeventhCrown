@@ -36,7 +36,7 @@ class RightPanel(Static):
             "[[H]]高度 [[M]]地图 [[E]]系统",
         ]
         if p.statuses:
-            lines.append(f"[red]{' '.join(p.statuses)}[/]")
+            lines.append(f"[red]{' '.join(s.name for s in p.statuses)}[/]")
         return "\n".join(lines)
 
     def _render_inventory(self) -> str:
@@ -117,7 +117,7 @@ class RightPanel(Static):
                            "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
             lines.append(f"生物: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
             if ent.statuses:
-                lines.append(f"  状态: {', '.join(ent.statuses)}")
+                lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
 
         # 光照
         if cursor in self.state.fov_cache:

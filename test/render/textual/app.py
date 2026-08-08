@@ -884,7 +884,7 @@ class MVPApp(App):
             save_roll = roll_d20() + target.stat_adjust("dex")
             if save_roll < 12:
                 if "prone" not in target.statuses:
-                    target.statuses.append("prone")
+                    target.add_status("prone")
                 self._act_log.add(
                     f"{npc.name}使用扑倒——{target.name}被扑倒在地!")
             else:
@@ -913,7 +913,7 @@ class MVPApp(App):
         elif "格挡" in name:
             # AC+1 直到下回合（用 status 标记）
             if "guarding" not in npc.statuses:
-                npc.statuses.append("guarding")
+                npc.add_status("guarding")
             self._act_log.add(f"{npc.name}举起盾牌格挡，全身 AC+1")
 
         else:

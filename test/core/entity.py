@@ -26,6 +26,13 @@ def stat_adjust(stat_value: int) -> int:
 # ═══════════════════════════════════════════════════
 
 @dataclass
+class StatusEffect:
+    """状态效果。duration=None 表示永久（如 incapacitated），>0 表示剩余钟摆数。"""
+    name: str
+    duration: int | None = None
+
+
+@dataclass
 class Creature:
     """生物数据类。字段对齐 MVP2.md 六、生物 定义。"""
 
@@ -68,8 +75,39 @@ class Creature:
     traits: list[str] = field(default_factory=list)
     loot: dict = field(default_factory=dict)
 
-    # 状态标记
-    statuses: list[str] = field(default_factory=list)
+    # 状态效果
+    statuses: list[StatusEffect] = field(default_factory=list)
+
+    # ---- 状态管理 ----
+
+    def has_status(self, name: str) -> bool:
+        """检查是否有指定名称的状态。"""
+        return any(s.name == name for s in self.statuses)
+
+    def add_status(self, name: str, duration: int | None = None) -> None:
+        """添加状态。若已存在则刷新 duration。"""
+        for s in self.statuses:
+            if s.name == name:
+                if duration is not None:
+                    s.duration = duration
+                return
+        self.statuses.append(StatusEffect(name=name, duration=duration))
+
+    def remove_status(self, name: str) -> None:
+        """移除状态。"""
+        self.statuses = [s for s in self.statuses if s.name != name]
+
+    def tick_statuses(self) -> list[str]:
+        """每钟摆推进有持续时间的状态。返回本次到期的状态名列表。"""
+        expired = []
+        for s in self.statuses:
+            if s.duration is not None:
+                s.duration -= 1
+                if s.duration <= 0:
+                    expired.append(s.name)
+        for name in expired:
+            self.remove_status(name)
+        return expired
 
     # ---- AI 字段 ----
     template_name: str = ""               # AI 行为模板名
@@ -85,7 +123,7 @@ class Creature:
     def meets_condition(self, cond: str) -> bool:
         """检查硬过滤条件。"""
         if cond == "can_move":
-            return "incapacitated" not in self.statuses
+            return not self.has_status("incapacitated")
         if cond == "has_weapon":
             return True  # MVP 暂定都有武器
         if cond == "has_healing_potion":
@@ -129,11 +167,6 @@ class Creature:
     def carry_capacity(self) -> float:
         """负重上限 (kg) = 20 + 力量调整值 * 2"""
         return 20.0 + self.stat_adjust("str") * 2
-
-    # ---- 状态 ----
-
-    def has_status(self, name: str) -> bool:
-        return name in self.statuses
 
     # ---- 构造 ----
 

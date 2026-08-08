@@ -85,7 +85,7 @@ class TestMeetsCondition:
         assert creature.meets_condition("can_move") is True
 
     def test_can_move_when_incapacitated(self, creature):
-        creature.statuses = ["incapacitated"]
+        creature.add_status("incapacitated")
         assert creature.meets_condition("can_move") is False
 
     def test_has_weapon_always_true(self, creature):

@@ -336,8 +336,8 @@ class CombatFlow:
             elif effect == "knockdown":
                 t_roll = roll_d20() + target.stat_adjust("dex")
                 if t_roll < 12:
-                    if "prone" not in target.statuses:
-                        target.statuses.append("prone")
+                    if not target.has_status("prone"):
+                        target.add_status("prone")
                     self._act_log.add(f"扫腿成功! {target.name} 摔倒在地")
                 else:
                     self._act_log.add(f"{target.name} 稳住了身形")

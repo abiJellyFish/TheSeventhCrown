@@ -116,7 +116,7 @@ class SaveManager:
             "food_locked": player.food_locked,
             "vision_range": player.vision_range,
             "darkvision_range": player.darkvision_range,
-            "statuses": list(player.statuses),
+            "statuses": [{"name": s.name, "duration": s.duration} for s in player.statuses],
             "equipment": {
                 slot: item.name if item else None
                 for slot, item in player.equipment.items()
@@ -142,7 +142,7 @@ class SaveManager:
                 "mp": creature.mp,
                 "tenacity": creature.tenacity,
                 "ap": creature.ap,
-                "statuses": list(creature.statuses),
+                "statuses": [{"name": s.name, "duration": s.duration} for s in creature.statuses],
                 "food_value": creature.food_value,
                 "hostility_triggered": creature.hostility_triggered,
                 "original_faction": creature.original_faction,
@@ -185,7 +185,7 @@ class SaveManager:
         player.cp = data.get("cp", 0)
         player.food_value = data.get("food_value", 15000)
         player.food_locked = data.get("food_locked", False)
-        player.statuses = data.get("statuses", [])
+        player.statuses = [StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in data.get("statuses", [])]
         player.memorized_spells = data.get("memorized_spells", [])
 
         # 装备重建
@@ -216,7 +216,7 @@ class SaveManager:
                 c.mp = entry.get("mp", 0)
                 c.tenacity = entry.get("tenacity", c.max_tenacity)
                 c.ap = entry.get("ap", c.max_ap)
-                c.statuses = entry.get("statuses", [])
+                c.statuses = [StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in entry.get("statuses", [])]
                 c.food_value = entry.get("food_value", c.food_value)
                 c.faction = entry.get("faction", c.faction)
                 c.hostility_triggered = entry.get("hostility_triggered", False)
@@ -228,7 +228,7 @@ class SaveManager:
     @staticmethod
     def _load_item_by_name(name: str, loader: "DataLoader") -> "Item | None":
         """按名称从数据文件加载物品。依次搜索武器/护甲/消耗品。"""
-        from core.entity import Weapon, Armor, Item
+        from core.entity import Weapon, Armor, Item, StatusEffect
         for category in ["items/weapons", "items/armors", "items/consumables"]:
             try:
                 items = loader.load_all(category)

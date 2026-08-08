@@ -59,7 +59,7 @@ class TestDiscretize:
         assert "social:alone" in keys
 
     def test_on_fire(self, goblin):
-        goblin.statuses = ["on_fire"]
+        goblin.add_status("on_fire")
         keys = discretize_state(goblin, enemy_count=1, ally_count=0,
                                 power_ratio=0.5)
         assert "status:on_fire" in keys
