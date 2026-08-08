@@ -5,7 +5,18 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static, Input
 from textual.containers import Horizontal, Vertical
 from textual.binding import Binding
+from textual.events import Key
 from rich.text import Text
+
+
+class GameInput(Input):
+    """Input 子类：X 键不消费，阻止输入模式下触发观察模式。"""
+
+    def _on_key(self, event: Key) -> None:
+        if event.key == "X":
+            event.stop()
+            return
+        super()._on_key(event)
 
 from core.game_state import GameState
 from core.entity import Player, Creature, Weapon
@@ -13,7 +24,7 @@ from core.movement import Terrain
 from core.grid import Grid
 from core.fov import LightLevel, compute_fov
 from core.combat.initiative import roll_initiative
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers
+from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice
 from core.dice import roll_d20
 from core.ai.engine import BehaviorEngine
 from core.rest import short_rest, long_rest
@@ -104,20 +115,25 @@ def _build_world(state: GameState) -> None:
     state.map[entrance] = Terrain.PASSABLE  # 入口可通行
     state.dungeon_entrance = entrance
 
-    # ── 地精营地 (10×15, 偏移 68,10, 树林东侧) ──
+    # ── 地精营地 (开放式，偏移 68,10, 树林东侧) ──
     gx, gy = 68, 10
+    # 断墙/路障 — 不是封闭房子，而是几段不连通的矮墙
     camp_walls = [
-        (0,0),(1,0),(2,0),(3,0),(4,0),(5,0),(6,0),(7,0),
-        (0,1),(7,1),(0,2),(7,2),(0,3),(7,3),(0,4),(7,4),
-        (0,5),(1,5),(2,5),(3,5),(4,5),(5,5),(6,5),(7,5),
+        # 北侧路障（有缺口）
+        (0,0),(1,0),(2,0),(3,0),(4,0),           (6,0),(7,0),
+        # 东侧断墙
+        (7,1),(7,2),
+        # 西侧路障
+        (0,1),(0,2),(0,3),
+        # 南侧散落木桩
+        (4,5),(5,5),(7,5),
+        # 角落杂物堆
+        (0,4),(1,4),
     ]
     for wx, wy in camp_walls:
         state.map[gx + wx, gy + wy] = Terrain.WALL
-    # 篝火
+    # 篝火（营地中央）
     state.map[gx + 3, gy + 3] = Terrain.DIFFICULT
-    # 木屋门
-    state.door_states[(gx + 3, gy + 5)] = False
-    state.map[gx + 3, gy + 5] = Terrain.WALL
 
     camp_enemies = [
         ("goblin_brawler", gx + 2, gy + 2), ("goblin_brawler", gx + 5, gy + 1),
@@ -348,18 +364,19 @@ class LeftPanel(Static):
     def render(self) -> str:
         if self.state is None:
             return ""
+        phase = self.state.combat_phase
+        # 攻击流程子面板 — 探索/战斗模式共用
+        if phase == "select_action":
+            return self._render_action_panel()
+        elif phase == "select_target":
+            return self._render_target_panel()
+        elif phase == "select_maneuver":
+            return self._render_maneuver_panel()
+        elif phase == "select_special":
+            return self._render_special_panel()
+        # 探索 vs 战斗默认面板
         if self.state.in_combat:
-            phase = self.state.combat_phase
-            if phase == "select_action":
-                return self._render_action_panel()
-            elif phase == "select_target":
-                return self._render_target_panel()
-            elif phase == "select_maneuver":
-                return self._render_maneuver_panel()
-            elif phase == "select_special":
-                return self._render_special_panel()
-            else:
-                return self._render_combat_default()
+            return self._render_combat_default()
         else:
             return self._render_explore_default()
 
@@ -369,7 +386,7 @@ class LeftPanel(Static):
             "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
             "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
             "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
-            "[[S]]法术 [[X]]观察 [[Q]]退出",
+            "[[S]]法术",
         ])
 
     def _render_combat_default(self) -> str:
@@ -377,12 +394,12 @@ class LeftPanel(Static):
         filled = int(p.ap / max(p.max_ap, 1) * 10)
         lines = [
             f"AP [{'|'*filled}{'.'*(10-filled)}]",
-            "S-Tab 结束回合",
+            "S-Tab 结束战斗轮",
             "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
             "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
             "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
             "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
-            "[[S]]法术 [[X]]观察 [[Q]]退出",
+            "[[S]]法术",
         ]
         return "\n".join(lines)
 
@@ -435,14 +452,16 @@ class LeftPanel(Static):
 
         targets = []
         for creature, (ec, er) in self.state.entities:
-            if creature.faction == "hostile" and creature.hp > 0 \
+            if creature is not self.state.player and creature.hp > 0 \
                and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
                 dist = max(abs(ec - pc), abs(er - pr))
                 targets.append((dist, creature.hp, creature))
         targets.sort(key=lambda x: (x[0], x[1]))
 
         for i, (_, _, c) in enumerate(targets[:8]):
-            lines.append(f"[[T{i+1}]]{c.name} (HP {c.hp}, AC {c.total_ac('chest')})")
+            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                           "neutral": "[yellow]中立[/]"}.get(c.faction, c.faction)
+            lines.append(f"[[T{i+1}]]{c.name} {faction_tag} (HP {c.hp}, AC {c.total_ac('chest')})")
         if len(targets) > 8:
             lines.append(f"... 还有 {len(targets)-8} 个目标")
         lines.append("[[T0]]取消")
@@ -465,8 +484,7 @@ class LeftPanel(Static):
         for i, m in enumerate(maneuvers, 1):
             self._maneuver_map[i] = m
             desc = m.get('effect', '')
-            if desc == 'hit_bonus': desc_text = f'命中+{m["value"]}'
-            elif desc == 'damage_bonus': desc_text = f'伤害+{m["value"]}'
+            if desc == 'damage_bonus': desc_text = f'伤害+{m["value"]}'
             elif desc == 'disarm': desc_text = '目标力量豁免失败则武器掉落'
             elif desc == 'knockdown': desc_text = '目标敏捷豁免失败则倒地'
             else: desc_text = desc
@@ -511,39 +529,50 @@ class MapView(Static):
         pc, pr = self.state.player_pos
         fov = self.state.fov_cache
         r = self.state.player.vision_range
-        # 双字符渲染：终端宽高比约 2:1，每格用两个字符使格子趋近方形
-        # 视口列数减半以适配终端宽度
-        vw = min(r + 2, gmap.width)
+        # 单字符渲染，视口宽度翻倍补偿
+        vw = min((r + 2) * 2, gmap.width)
         vh = min(r * 2 + 1, gmap.height)
         ox = max(0, min(pc - vw // 2, gmap.width - vw))
         oy = max(0, min(pr - vh // 2, gmap.height - vh))
+
+        # 观察模式：视口扩展确保光标可见
+        obs_cur = self.state.observe_cursor if self.state.observe_mode else None
+        if obs_cur is not None:
+            oc, oro = obs_cur
+            ox = min(ox, oc)
+            oy = min(oy, oro)
+            ox = max(ox, oc - vw + 1)
+            oy = max(oy, oro - vh + 1)
+            ox = max(0, min(ox, gmap.width - vw))
+            oy = max(0, min(oy, gmap.height - vh))
 
         text = Text()
         for row in range(oy, min(oy + vh, gmap.height)):
             for col in range(ox, min(ox + vw, gmap.width)):
                 if (col, row) not in fov:
-                    text.append("  ")
+                    text.append(" ")
                     continue
+                cur = " reverse" if (col, row) == obs_cur else ""
                 ent = self.state.get_entity_at(col, row)
                 if ent is not None:
                     ch = "%" if ent.hp <= 0 else ent.char
                     color = FACTION_COLORS.get(ent.faction, "")
-                    text.append(f"{ch} ", style=f"bold {color}" if ent.faction == "hostile" else color)
+                    text.append(ch, style=f"bold {color}{cur}" if ent.faction == "hostile" else f"{color}{cur}")
                 elif (col, row) == (pc, pr):
-                    text.append("@ ", style="bold bright_cyan")
+                    text.append("@", style=f"bold bright_cyan{cur}")
                 elif (col, row) in self.state.bed_positions:
-                    text.append("= ", style="bold cyan")
+                    text.append("=", style=f"bold cyan{cur}")
                 elif self.state.dungeon_entrance and (col, row) == self.state.dungeon_entrance:
-                    text.append("> ", style="bold magenta")
+                    text.append(">", style=f"bold magenta{cur}")
                 else:
                     t = gmap[col, row]
                     if (col, row) in self.state.door_states:
                         is_open = self.state.door_states[(col, row)]
                         ch = "_" if is_open else "]"
-                        text.append(ch * 2, style="bold yellow")
+                        text.append(ch, style=f"bold yellow{cur}")
                     else:
                         ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
-                        text.append(ch * 2, style=TERRAIN_COLORS.get(t, ""))
+                        text.append(ch, style=f"{TERRAIN_COLORS.get(t, '')}{cur}")
             if row < min(oy + vh, gmap.height) - 1:
                 text.append("\n")
         text.append("\n")
@@ -577,6 +606,8 @@ class RightPanel(Static):
 
     def render(self) -> str:
         if self.state is None: return ""
+        if self.state.observe_mode:
+            return self._render_observe()
         if self.view_mode == "inventory":
             return self._render_inventory()
         elif self.view_mode == "character":
@@ -592,6 +623,7 @@ class RightPanel(Static):
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
             "",
+            "[[X]]观察 [[Q]]退出",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
             "[[Z]]制作 [[K]]烹饪 [[Y]]炼药",
             "[[H]]高度 [[M]]地图 [[E]]系统",
@@ -659,6 +691,44 @@ class RightPanel(Static):
             lines.append(f"[red]状态: {' '.join(p.statuses)}[/]")
         return "\n".join(lines[:max_h])
 
+    def _render_observe(self) -> str:
+        cursor = self.state.observe_cursor
+        cx, cy = cursor
+        max_h = self.size.height
+        lines = ["[bold]观察模式[/] [dim]X退出 方向键移动光标[/]", ""]
+
+        # 地名 — 从 location_map 哈希表 O(1) 查询，不存在时回退到当前地图名
+        loc = self.state.location_map.get(cursor, "")
+        if not loc:
+            loc = self.state.current_map or ""
+        if loc:
+            lines.append(f"位置: ({cx}, {cy}) {loc}")
+        else:
+            lines.append(f"位置: ({cx}, {cy})")
+
+        # 地形
+        terrain = self.state.map[cx, cy]
+        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形", Terrain.PASSABLE: "草地/平地"}
+        lines.append(f"地表: {t_names.get(terrain, '未知')}")
+
+        # 生物
+        ent = self.state.get_entity_at(cx, cy)
+        if ent and ent is not self.state.player:
+            hp_pct = ent.hp / max(ent.max_hp, 1) * 100
+            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+            lines.append(f"生物: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
+            if ent.statuses:
+                lines.append(f"  状态: {', '.join(ent.statuses)}")
+
+        # 光照
+        if cursor in self.state.fov_cache:
+            lines.append("亮度: 可见")
+        else:
+            lines.append("亮度: 不可见")
+
+        return "\n".join(lines[:max_h])
+
 
 class ActionLog(Static):
     messages: list[str] = []
@@ -709,43 +779,26 @@ class MVPApp(App):
     """
 
     BINDINGS = [
-        Binding("q", "quit", "退出", priority=True),
         Binding("up", "move_up", "", priority=True),
         Binding("down", "move_down", "", priority=True),
         Binding("left", "move_left", "", priority=True),
         Binding("right", "move_right", "", priority=True),
-        Binding("x", "toggle_observe", "观察", priority=True),
-        Binding("r", "short_rest", "短休", priority=True),
-        Binding("R", "long_rest", "长休", priority=True),
-        Binding("g", "slow_speed", "慢速", priority=True),
-        Binding("G", "dash", "疾走", priority=True),
-        Binding("0", "action_0", "交互", priority=True),
-        Binding("1", "action_1", "探查", priority=True),
-        Binding("2", "action_2", "躲藏", priority=True),
-        Binding("3", "action_3", "协助", priority=True),
-        Binding("4", "action_4", "跳跃", priority=True),
-        Binding("5", "action_5", "撤离", priority=True),
-        Binding("6", "action_6", "回避", priority=True),
-        Binding("7", "action_7", "推撞", priority=True),
-        Binding("8", "action_8", "擒抱", priority=True),
-        Binding("slash", "toggle_knockout", "击晕", priority=True),
-        Binding("comma", "wait", "消磨时间", priority=True),
-        Binding("shift+tab", "end_turn", "结束回合", priority=True),
-        Binding("A", "show_actions", "动作", priority=True),
-        Binding("S", "show_spells", "法术", priority=True),
+        Binding("colon", "focus_input", "", priority=True),
+        Binding("shift+tab", "end_turn", "结束战斗轮", priority=True),
         Binding("f5", "quick_save", "存档", priority=True),
         Binding("f9", "quick_load", "读档", priority=True),
-        Binding("colon", "focus_input", "", priority=True),
-        Binding("C", "char_panel", "角色面板", priority=True),
-        Binding("I", "inventory", "物品栏", priority=True),
-        Binding("B", "spellbook", "法术书", priority=True),
-        Binding("Z", "crafting", "制作", priority=True),
-        Binding("K", "cooking", "烹饪", priority=True),
-        Binding("Y", "alchemy", "炼药", priority=True),
-        Binding("H", "height_view", "高度", priority=True),
-        Binding("M", "map_overview", "地图", priority=True),
-        Binding("E", "system_menu", "系统", priority=True),
     ]
+
+    # ── 各面板允许的快捷键集合 ──
+
+    _EXPLORE_KEYS = {
+        "0", "1", "2", "3", "4", "5", "6", "7", "8",
+        "slash", "g", "G", "r", "R", "comma", "A", "S", "Q",
+        "X", "C", "I", "B", "Z", "K", "Y", "H", "M", "E",
+    }
+    _COMBAT_IDLE_KEYS = _EXPLORE_KEYS  # 战斗默认面板与探索相同（shift+tab 走 binding）
+    _COMBAT_SUB_KEYS = {"X", "C", "I"}    # 战斗子面板：观察/角色/物品栏
+    _RIGHT_PANEL_KEYS = {"X", "C", "I"}   # 物品栏/角色面板：观察/切换键
 
     def __init__(self):
         super().__init__()
@@ -806,7 +859,7 @@ class MVPApp(App):
             self._left_panel = LeftPanel(id="left"); yield self._left_panel
             self._map_view = MapView(); yield self._map_view
             self._right_panel = RightPanel(id="right"); yield self._right_panel
-        self._input_bar = Input(placeholder=": 输入命令 (按 Esc 退出输入)", id="input-bar", disabled=True)
+        self._input_bar = GameInput(placeholder=": 输入命令 (按 Esc 退出输入)", id="input-bar", disabled=True)
         yield self._input_bar
         with Horizontal(id="log-area"):
             self._act_log = ActionLog(id="action-log"); yield self._act_log
@@ -825,28 +878,53 @@ class MVPApp(App):
             if w: w.refresh()
 
     def on_key(self, event) -> None:
-        """上下文感知的按键分发：当前面板没写的键不触发。"""
-        phase = self._state.combat_phase if self._state else "idle"
-        view = self._right_panel.view_mode if self._right_panel else "default"
+        """上下文感知的按键分发：只有当前面板显示的键才触发。"""
+        key = event.key
+        state = self._state
 
-        # ── 战斗流程阶段：输入栏已聚焦，不响应全局快捷键 ──
-        if phase != "idle":
-            return
-
-        # ── 物品栏/角色面板/动作面板：仅 Esc 关闭，其余全局快捷键忽略 ──
-        if view in ("inventory", "character", "actions", "spells"):
-            if event.key == "escape":
+        # ── 0. Escape（全局：退出输入栏 / 退出右侧栏视图）──
+        if key == "escape":
+            if self._input_bar and self._input_bar.has_focus:
+                self._input_bar.disabled = True
+                self._map_view.focus()
+                event.stop()
+                return
+            view = self._right_panel.view_mode if self._right_panel else "default"
+            if view != "default":
                 self._right_panel.view_mode = "default"
                 self._right_panel.refresh()
                 event.stop()
             return
 
-        # ── 观察模式：仅方向键 + X（已在 bindings 中处理）──
-        if self._state and self._state.observe_mode:
-            pass  # let bindings handle
+        # ── 1. 输入栏聚焦时 → 不响应任何快捷键 ──
+        if self._input_bar and self._input_bar.has_focus:
+            return
 
-        # ── 正常分发数字键 ──
-        digit_actions = {
+        # ── 2. 根据当前上下文确定允许的键 ──
+        if state is None:
+            return
+        view = self._right_panel.view_mode if self._right_panel else "default"
+        phase = state.combat_phase
+
+        if view in ("inventory", "character"):
+            allowed = self._RIGHT_PANEL_KEYS
+        elif phase != "idle":
+            allowed = self._COMBAT_SUB_KEYS
+        elif state.in_combat:
+            allowed = self._COMBAT_IDLE_KEYS
+        else:
+            allowed = self._EXPLORE_KEYS
+
+        if key not in allowed:
+            return
+
+        # ── 3. 分发 ──
+        self._dispatch_key(key)
+        event.stop()
+
+    def _dispatch_key(self, key: str) -> None:
+        """根据按键分发到对应的 action 方法。"""
+        actions = {
             "0": self.action_interact,
             "1": self.action_1,
             "2": self.action_2,
@@ -856,17 +934,34 @@ class MVPApp(App):
             "6": self.action_6,
             "7": self.action_7,
             "8": self.action_8,
+            "slash": self.action_toggle_knockout,
+            "g": self.action_slow_speed,
+            "G": self.action_dash,
+            "r": self.action_short_rest,
+            "R": self.action_long_rest,
+            "comma": self.action_wait,
+            "X": self.action_toggle_observe,
+            "A": self.action_show_actions,
+            "S": self.action_show_spells,
+            "Q": self._quit_game,
+            "C": self.action_char_panel,
+            "I": self.action_inventory,
+            "B": self.action_spellbook,
+            "Z": self.action_crafting,
+            "K": self.action_cooking,
+            "Y": self.action_alchemy,
+            "H": self.action_height_view,
+            "M": self.action_map_overview,
+            "E": self.action_system_menu,
         }
-        handler = digit_actions.get(event.key)
+        handler = actions.get(key)
         if handler:
             handler()
-            event.stop()
-            return
-        # Esc 返回右侧栏默认视图
-        if event.key == "escape" and self._right_panel.view_mode != "default":
-            self._right_panel.view_mode = "default"
-            self._right_panel.refresh()
-            event.stop()
+        else:
+            self._act_log.add(f"[{key}] 功能待定")
+
+    def _quit_game(self) -> None:
+        self.exit()
 
     # ── Input ──
 
@@ -879,21 +974,27 @@ class MVPApp(App):
         self._input_bar.value = ""
         self._input_bar.disabled = True
         if cmd:
+            is_combat_cmd = False
             phase = self._state.combat_phase if self._state else "idle"
             if phase == "select_action":
-                self._handle_action_input(cmd)
+                self._handle_action_input(cmd); is_combat_cmd = True
             elif phase == "select_target":
-                self._handle_target_input(cmd)
+                self._handle_target_input(cmd); is_combat_cmd = True
             elif phase == "select_maneuver":
-                self._handle_maneuver_input(cmd)
+                self._handle_maneuver_input(cmd); is_combat_cmd = True
             elif phase == "select_special":
-                self._handle_special_input(cmd)
+                self._handle_special_input(cmd); is_combat_cmd = True
             elif cmd.startswith("I") and self._right_panel.view_mode == "inventory":
                 self._act_log.add(f"> :{cmd}")
                 self._use_item(cmd)
+                self._map_view.focus()
             else:
                 self._act_log.add(f"> :{cmd}")
-                self._act_log.add("此功能待开发")
+                self._act_log.add("功能待定")
+                self._map_view.focus()
+            # 战斗阶段的 handler 自行管理焦点，此处不抢
+            if is_combat_cmd:
+                return
         self._map_view.focus()
 
     def _use_item(self, cmd: str) -> None:
@@ -903,10 +1004,18 @@ class MVPApp(App):
             inv = self._state.player.inventory
             if 0 <= idx < len(inv):
                 item = inv[idx]
+                # AP 检查（与武器攻击复用同一模式：item.ap_cost）
+                cost = item.ap_cost
+                if self._state.in_combat and self._state.player.ap < cost:
+                    self._act_log.add("AP 不足，无法使用物品")
+                    self._right_panel.refresh()
+                    return
                 if item.count > 1:
                     item.count -= 1
                 else:
                     inv.pop(idx)
+                if self._state.in_combat:
+                    self._state.player.ap -= cost
                 self._act_log.add(f"{self._pn} 使用了 {item.name}")
                 self._apply_item_effect(item)
             else:
@@ -916,14 +1025,21 @@ class MVPApp(App):
         self._right_panel.refresh()
 
     def _apply_item_effect(self, item) -> None:
-        """根据物品 effect 字段应用效果（MVP: 仅处理数值型）。"""
+        """根据物品 effect 字段应用效果，支持数值和骰子字符串。"""
         eff = item.effect
         amt = item.amount
         p = self._state.player
+
+        # 解析数值或骰子字符串
         try:
             val = int(amt)
         except (ValueError, TypeError):
-            val = 0  # 骰子字符串如 "6d4" 暂不解析
+            if isinstance(amt, str) and "d" in amt:
+                count, sides = parse_dice(amt)
+                val = roll_dice(count, sides)
+            else:
+                val = 0
+
         if eff == "heal" and val > 0:
             p.hp = min(p.max_hp, p.hp + val)
             self._act_log.add(f"  恢复了 {val} 点生命")
@@ -931,6 +1047,8 @@ class MVPApp(App):
             p.mp = min(p.max_mp, p.mp + val)
             self._act_log.add(f"  恢复了 {val} 点精神")
         elif eff == "restore_food":
+            if val > 0:
+                p.food_value = min(15000, p.food_value + val)
             self._act_log.add(f"  恢复了 {val or '一定'} 饮食值")
 
     # ── Movement ──
@@ -943,6 +1061,10 @@ class MVPApp(App):
                 if (nc, nr) in self._state.fov_cache:
                     self._state.observe_cursor = (nc, nr)
                     self._right_panel.refresh()
+                    self._map_view.refresh()
+            return
+        # 动作/攻击流程中：方向键无反应，不扣 AP
+        if self._state.in_combat and self._state.combat_phase != "idle":
             return
         if self._state.in_combat and self._state.player.ap <= 0:
             self._act_log.add("AP 不足"); return
@@ -968,11 +1090,13 @@ class MVPApp(App):
 
     def action_end_turn(self) -> None:
         """手动结束当前回合（Shift+Tab）。"""
+        if self._state.combat_phase != "idle":
+            return  # 战斗子面板中不响应
         if self._state.in_combat and self._state.combat_turn_entity is self._state.player:
             self._state.player.ap = 0
             self._next_turn()
         else:
-            self._act_log.add("现在不是你的回合")
+            self._act_log.add("现在不是你的战斗轮")
 
     # ── NPC 自主行为 ──
 
@@ -1003,7 +1127,6 @@ class MVPApp(App):
     # ── Observe ──
 
     def action_toggle_observe(self) -> None:
-        if self._state.in_combat: self._act_log.add("战斗中无法观察"); return
         self._state.observe_mode = not self._state.observe_mode
         if self._state.observe_mode:
             self._state.observe_cursor = self._state.player_pos
@@ -1014,14 +1137,7 @@ class MVPApp(App):
     # ── Interact ──
 
     def action_interact(self) -> None:
-        if self._state.in_combat: self._player_attack(); return
         pc, pr = self._state.player_pos
-        # 地下城入口
-        if self._state.dungeon_entrance and (pc, pr) == self._state.dungeon_entrance:
-            self._enter_dungeon(); return
-        # 地下城出口
-        if self._state.in_dungeon and self._state.dungeon_exit and (pc, pr) == self._state.dungeon_exit:
-            self._exit_dungeon(); return
         # 门交互
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):
@@ -1036,7 +1152,14 @@ class MVPApp(App):
                         self._state.door_states[door_pos] = True
                         self._state.map[door_pos] = Terrain.PASSABLE
                         self._act_log.add("门打开了")
+                    _update_fov(self._state)
                     self.refresh_all(); return
+        # 地下城入口
+        if self._state.dungeon_entrance and (pc, pr) == self._state.dungeon_entrance:
+            self._enter_dungeon(); return
+        # 地下城出口
+        if self._state.in_dungeon and self._state.dungeon_exit and (pc, pr) == self._state.dungeon_exit:
+            self._exit_dungeon(); return
         # 床交互
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):
@@ -1154,6 +1277,22 @@ class MVPApp(App):
         self._state.combat_turn_index = 0; self._state.combat_turn_entity = combatants[0]
         self._act_log.add("=== 战斗开始 ==="); self._next_turn()
 
+    def _start_combat_from_ambush(self, target: Creature) -> None:
+        """探索模式主动攻击 → 进入战斗，玩家必定先手（不调用 _next_turn）。"""
+        self._state.in_combat = True
+        self._state.player.ap = self._state.player.max_ap
+        combatants = [self._state.player]
+        pc, pr = self._state.player_pos
+        for creature, (ec, er) in self._state.entities:
+            if creature.hp > 0 and creature is not self._state.player and abs(ec - pc) <= 5:
+                combatants.append(creature)
+                creature.ap = creature.max_ap
+        self._state.combat_initiative = roll_initiative(combatants)
+        self._state.combat_turn_index = 0
+        self._state.combat_turn_entity = self._state.player
+        self._act_log.add("=== 战斗开始 ===")
+        self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
+
     def _end_combat(self) -> None:
         self._state.in_combat = False; self._state.combat_initiative = []
         self._state.combat_turn_entity = None
@@ -1189,8 +1328,11 @@ class MVPApp(App):
         idx = (self._state.combat_turn_index + 1) % len(alive)
         self._state.combat_turn_index = idx; turn = alive[idx]
         self._state.combat_turn_entity = turn; turn.ap = turn.max_ap
-        if turn is self._state.player: self._act_log.add(f">>> {self._pn}的回合 <<<")
-        else: self._npc_turn(turn)
+        if turn is self._state.player:
+            self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
+        else:
+            self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
+            self._npc_turn(turn)
         self.refresh_all()
 
     def _player_attack(self) -> None:
@@ -1201,7 +1343,7 @@ class MVPApp(App):
         if self._state.player.ap < weapon.ap_cost: self._act_log.add("AP 不足"); return
         target = None
         for creature, (ec, er) in self._state.entities:
-            if creature.faction == "hostile" and creature.hp > 0 and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
+            if creature is not self._state.player and creature.hp > 0 and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
                 target = creature; break
         if target is None: self._act_log.add(f"{self._pn} 环顾四周，没有目标"); return
         self._state.player.ap -= weapon.ap_cost
@@ -1219,7 +1361,6 @@ class MVPApp(App):
             if target.tenacity == 0 and "incapacitated" not in target.statuses:
                 target.statuses.append("incapacitated")
                 self._act_log.add(f"{target.name} 被击破防御，陷入失能!")
-        if self._state.player.ap <= 0: self._next_turn()
         self.refresh_all()
 
     # ── 攻击流程状态机 ──
@@ -1277,7 +1418,7 @@ class MVPApp(App):
         if mode == "two_hand":
             hit_bonus = 1; damage_bonus = 2
 
-        if p.ap < weapon.ap_cost:
+        if self._state.in_combat and p.ap < weapon.ap_cost:
             self._act_log.add("AP 不足")
             return
 
@@ -1287,25 +1428,41 @@ class MVPApp(App):
             "attack_roll": None, "target": None,
         }
 
-        # 找相邻敌对目标
+        # 找相邻目标
         pc, pr = self._state.player_pos
         targets = []
         for creature, (ec, er) in self._state.entities:
-            if creature.faction == "hostile" and creature.hp > 0 \
+            if creature is not self._state.player and creature.hp > 0 \
                and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
                 targets.append(creature)
 
         if len(targets) == 0:
             self._act_log.add("近战范围内没有目标")
-            self._state.combat_phase = "select_action"
+            if not self._state.in_combat:
+                # 探索模式无目标，不进入战斗，直接取消
+                self._state.combat_phase = "idle"
+                self._state.pending_attack = {}
+                self._input_bar.disabled = True
+                self._map_view.focus()
+            else:
+                self._state.combat_phase = "select_action"
             self.refresh_all()
         elif len(targets) == 1:
-            # 唯一目标，直接攻击检定
-            self._state.pending_attack["target"] = targets[0]
+            target = targets[0]
+            # 探索模式：仅敌对目标进入战斗，非敌对先攻击再根据阵营反应决定
+            if not self._state.in_combat and target.faction == "hostile":
+                self._start_combat_from_ambush(target)
+            self._state.pending_attack["target"] = target
             self._execute_attack_roll()
             self.refresh_all()
         else:
+            # 多目标：存在敌对目标时才进入战斗
+            if not self._state.in_combat:
+                hostile = [t for t in targets if t.faction == "hostile"]
+                if hostile:
+                    self._start_combat_from_ambush(hostile[0])
             self._state.combat_phase = "select_target"
+            self._focus_input()
             self.refresh_all()
 
     def _handle_target_input(self, cmd: str) -> None:
@@ -1326,7 +1483,7 @@ class MVPApp(App):
         pc, pr = self._state.player_pos
         targets = []
         for creature, (ec, er) in self._state.entities:
-            if creature.faction == "hostile" and creature.hp > 0 \
+            if creature is not self._state.player and creature.hp > 0 \
                and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
                 dist = max(abs(ec - pc), abs(er - pr))
                 targets.append((dist, creature.hp, creature))
@@ -1346,7 +1503,8 @@ class MVPApp(App):
         target = pa["target"]
         p = self._state.player
 
-        p.ap -= weapon.ap_cost
+        if self._state.in_combat:
+            p.ap -= weapon.ap_cost
         hit, roll = hit_check(p, target, weapon)
 
         pa["attack_roll"] = roll
@@ -1379,14 +1537,12 @@ class MVPApp(App):
             pass
         elif num in mmap and mmap[num] is not None:
             m = mmap[num]
-            if p.ap < m["ap_extra"]:
-                self._act_log.add("AP 不足"); self.refresh_all(); return
-            p.ap -= m["ap_extra"]
+            if self._state.in_combat:
+                if p.ap < m["ap_extra"]:
+                    self._act_log.add("AP 不足"); self.refresh_all(); return
+                p.ap -= m["ap_extra"]
             effect = m["effect"]
-            if effect == "hit_bonus":
-                pa["hit_bonus"] = pa.get("hit_bonus", 0) + m["value"]
-                self._act_log.add(f"{m['name']}! 命中+{m['value']}")
-            elif effect == "damage_bonus":
+            if effect == "damage_bonus":
                 bonus = roll_d20() % 4 + 1  # 1d4
                 pa["damage_bonus"] = pa.get("damage_bonus", 0) + bonus
                 self._act_log.add(f"{m['name']}! 伤害+{bonus}")
@@ -1422,11 +1578,14 @@ class MVPApp(App):
         if target.hp <= 0:
             self._act_log.add(f"{target.name} 倒在地上，不再动弹")
 
+        # 探索模式：攻击后目标变为敌对 → 进入战斗
+        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0:
+            self._start_combat_from_ambush(target)
+
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
         self._input_bar.disabled = True
         self._map_view.focus()
-        if p.ap <= 0: self._next_turn()
         self.refresh_all()
 
     def _handle_special_input(self, cmd: str) -> None:
@@ -1454,8 +1613,10 @@ class MVPApp(App):
         if action_key == "tenacity":
             self._act_log.add(f"削韧: {target.name} 韧性被削减")
         elif action_key == "reroll":
-            if p.ap < 2: self._act_log.add("AP 不足"); self.refresh_all(); return
-            p.ap -= 2
+            if self._state.in_combat and p.ap < 2:
+                self._act_log.add("AP 不足"); self.refresh_all(); return
+            if self._state.in_combat:
+                p.ap -= 2
             self._act_log.add("奋力一击! 重掷攻击骰")
             result = self._resolve_melee_attack(p, target, weapon)
             if result["hit"]:
@@ -1464,19 +1625,26 @@ class MVPApp(App):
             else:
                 self._act_log.add("再次未命中...")
         elif action_key == "feint":
-            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
-            p.ap -= 1
+            if self._state.in_combat and p.ap < 1:
+                self._act_log.add("AP 不足"); self.refresh_all(); return
+            if self._state.in_combat:
+                p.ap -= 1
             self._act_log.add("虚晃一招 — 下次攻击命中+2")
         elif action_key == "taunt":
-            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
-            p.ap -= 1
+            if self._state.in_combat and p.ap < 1:
+                self._act_log.add("AP 不足"); self.refresh_all(); return
+            if self._state.in_combat:
+                p.ap -= 1
             self._act_log.add(f"{self._pn} 挑衅了 {target.name}")
+
+        # 探索模式：攻击后目标变为敌对 → 进入战斗
+        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0:
+            self._start_combat_from_ambush(target)
 
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
         self._input_bar.disabled = True
         self._map_view.focus()
-        if p.ap <= 0: self._next_turn()
         self.refresh_all()
 
     def _check_faction_reaction(self, target: Creature) -> None:
@@ -1755,14 +1923,14 @@ class MVPApp(App):
     # ── Stub actions (待实现) ──
 
     def action_0(self): self.action_interact()
-    def action_2(self): self._act_log.add("[躲藏] 此功能待开发")
-    def action_3(self): self._act_log.add("[协助] 此功能待开发")
-    def action_4(self): self._act_log.add("[跳跃] 此功能待开发")
-    def action_5(self): self._act_log.add("[撤离] 此功能待开发")
-    def action_6(self): self._act_log.add("[回避] 此功能待开发")
-    def action_7(self): self._act_log.add("[推撞] 此功能待开发")
-    def action_8(self): self._act_log.add("[擒抱] 此功能待开发")
-    def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
+    def action_2(self): self._act_log.add("[躲藏] 功能待定")
+    def action_3(self): self._act_log.add("[协助] 功能待定")
+    def action_4(self): self._act_log.add("[跳跃] 功能待定")
+    def action_5(self): self._act_log.add("[撤离] 功能待定")
+    def action_6(self): self._act_log.add("[回避] 功能待定")
+    def action_7(self): self._act_log.add("[推撞] 功能待定")
+    def action_8(self): self._act_log.add("[擒抱] 功能待定")
+    def action_toggle_knockout(self): self._act_log.add("[击晕] 功能待定")
     def _focus_input(self) -> None:
         """聚焦输入栏（战斗流程专用）。"""
         self._input_bar.disabled = False
@@ -1770,18 +1938,14 @@ class MVPApp(App):
 
     def action_show_actions(self):
         """按 A 键 → 进入攻击方式选择阶段。"""
-        if not self._state.in_combat:
-            self._act_log.add("[攻击] 非战斗无需选择动作")
-            return
         if self._state.combat_phase != "idle":
-            # 已在战斗流程中，只聚焦输入栏，不重置状态
-            self._focus_input()
-            return
+            return  # 战斗面板中按 A 不重新聚焦输入栏
         self._state.combat_phase = "select_action"
         self._state.pending_attack = {}
+        self._act_log.add("[攻击] 选择武器 — 输入 A序号 确认, A0 取消")
         self._focus_input()
         self.refresh_all()
-    def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
+    def action_show_spells(self): self._act_log.add("[法术] 功能待定")
     def action_char_panel(self):
         if self._right_panel.view_mode == "character":
             self._right_panel.view_mode = "default"
@@ -1795,13 +1959,13 @@ class MVPApp(App):
         else:
             self._right_panel.view_mode = "inventory"
         self._right_panel.refresh()
-    def action_spellbook(self): self._act_log.add("[法术书] 此功能待开发")
-    def action_crafting(self): self._act_log.add("[制作] 此功能待开发")
-    def action_cooking(self): self._act_log.add("[烹饪] 此功能待开发")
-    def action_alchemy(self): self._act_log.add("[炼药] 此功能待开发")
-    def action_height_view(self): self._act_log.add("[高度] 此功能待开发")
-    def action_map_overview(self): self._act_log.add("[地图] 此功能待开发")
-    def action_system_menu(self): self._act_log.add("[系统] 此功能待开发")
+    def action_spellbook(self): self._act_log.add("[法术书] 功能待定")
+    def action_crafting(self): self._act_log.add("[制作] 功能待定")
+    def action_cooking(self): self._act_log.add("[烹饪] 功能待定")
+    def action_alchemy(self): self._act_log.add("[炼药] 功能待定")
+    def action_height_view(self): self._act_log.add("[高度] 功能待定")
+    def action_map_overview(self): self._act_log.add("[地图] 功能待定")
+    def action_system_menu(self): self._act_log.add("[系统] 功能待定")
 
     # ── Scene ──
 
