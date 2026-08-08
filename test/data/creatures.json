@@ -573,5 +573,43 @@
       ]
     },
     "char": "v"
+  },
+  {
+    "key": "training_dummy",
+    "name": "训练假人",
+    "body_type": "humanoid",
+    "faction": "neutral",
+    "hp": 50,
+    "max_hp": 50,
+    "mp": 0,
+    "max_mp": 0,
+    "tenacity": 20,
+    "max_tenacity": 20,
+    "ap": 0,
+    "max_ap": 0,
+    "speed": 0,
+    "ac_base": 5,
+    "stats": {
+      "str": 0,
+      "dex": 0,
+      "con": 20,
+      "int": 0,
+      "wis": 0,
+      "cha": 0
+    },
+    "vision_range": 0,
+    "food_value": 0,
+    "food_locked": true,
+    "darkvision_range": 0,
+    "language": "",
+    "actions": [],
+    "traits": [
+      "piercing_resist",
+      "bludgeoning_vulnerable",
+      "sleep_immune",
+      "poison_immune"
+    ],
+    "loot": {},
+    "char": "D"
   }
 ]

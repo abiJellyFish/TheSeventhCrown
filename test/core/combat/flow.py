@@ -5,6 +5,7 @@ from core.entity import Creature, Weapon
 from core.dice import roll_d20
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack
 from core.combat.cover import resolve_cover_line
+from core.movement import Terrain
 
 
 class CombatFlow:
@@ -248,7 +249,6 @@ class CombatFlow:
         if target is None:
             tc, tr = target_pos if target_pos else (0, 0)
             terrain = self._state.map[tc, tr]
-            from core.movement import Terrain
             if terrain == Terrain.WALL:
                 self._act_log.add(f"箭矢射在了墙上")
             else:
@@ -278,7 +278,15 @@ class CombatFlow:
                 pa["blocked_by_cover"] = True
                 pa["cover_pos"] = cover_pos
                 reduce_tenacity(target, roll)
-                self._act_log.add("攻击被掩体挡住了!")
+                # 掩体类型判定
+                if cover_pos:
+                    cx, cy = cover_pos
+                    terrain = self._state.map[cx, cy]
+                    cover_type = "墙壁(全身)" if terrain == Terrain.WALL else "灌木(半身)"
+                    self._act_log.add(
+                        f"攻击被掩体挡住了! 位置({cx},{cy}) {cover_type}")
+                else:
+                    self._act_log.add("攻击被掩体挡住了!")
 
         if hit:
             self._state.combat_phase = "select_maneuver"
