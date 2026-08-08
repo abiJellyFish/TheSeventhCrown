@@ -26,6 +26,7 @@ class GameState:
     loot_spots: list[dict] = field(default_factory=list)
     bed_positions: set[tuple[int, int]] = field(default_factory=set)
     campfire_positions: set[tuple[int, int]] = field(default_factory=set)
+    stone_positions: set[tuple[int, int]] = field(default_factory=set)
     door_states: dict[tuple[int, int], bool] = field(default_factory=dict)
     dungeon_entrance: tuple[int, int] | None = None
     dungeon_exit: tuple[int, int] | None = None
@@ -139,6 +140,8 @@ class GameState:
             self._check_campfire_burn(self.player)
         for creature, (ec, er) in list(self.entities):
             if creature is self.player or creature.hp <= 0:
+                continue
+            if creature.has_status("不可移动"):
                 continue
             # 随机游荡（25% 概率每钟摆移动一格）
             if random.random() < 0.25:

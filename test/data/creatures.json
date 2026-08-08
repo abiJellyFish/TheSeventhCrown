@@ -609,6 +609,9 @@
       "sleep_immune",
       "poison_immune"
     ],
+    "statuses": [
+      {"name": "不可移动", "duration": null}
+    ],
     "loot": {},
     "char": "D"
   }

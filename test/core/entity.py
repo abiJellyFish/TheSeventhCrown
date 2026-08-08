@@ -197,6 +197,7 @@ class Creature:
             actions=data.get("actions", []),
             traits=data.get("traits", []),
             loot=data.get("loot", {}),
+            statuses=[StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in data.get("statuses", [])],
         )
 
 
