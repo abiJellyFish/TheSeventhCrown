@@ -330,11 +330,8 @@ class TopBar(Static):
             pad_right = remaining - pad_left
             return f"{left}{' ' * pad_left}{center}{' ' * pad_right}{right}"
         else:
-            right_len = visible_len(right)
-            left_len = visible_len(left)
-            if left_len + right_len > width:
-                right = right[:max(0, width - left_len - 3)] + "..." if width - left_len > 6 else ""
-            pad = max(1, width - left_len - visible_len(right) - 2)
+            # 右侧始终完整显示，不截断
+            pad = max(1, width - visible_len(left) - visible_len(right))
             return f"{left}{' ' * pad}{right}"
 
 
