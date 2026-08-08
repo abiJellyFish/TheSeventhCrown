@@ -127,7 +127,7 @@ class MVPApp(App):
         Binding("right", "move_right", "", priority=True),
         Binding("colon", "focus_input", "", priority=True),
         Binding("shift+tab", "end_turn", "结束战斗轮", priority=True),
-        Binding("enter", "confirm_attack", "", priority=True),
+        Binding("enter", "confirm_attack", "", priority=False),
         Binding("f5", "quick_save", "存档", priority=True),
         Binding("f9", "quick_load", "读档", priority=True),
     ]
