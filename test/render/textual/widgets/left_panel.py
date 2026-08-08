@@ -106,39 +106,53 @@ class LeftPanel(Static):
         weapon = pa.get("weapon")
         pc, pr = self.state.player_pos
         oc, oro = self.state.observe_cursor
+        max_h = self.size.height
 
         weapon_name = weapon.name if weapon else "武器"
         max_range = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
         dist = max(abs(oc - pc), abs(oro - pr))
+        in_range = dist <= max_range
 
         # 地表
         terrain = self.state.map[oc, oro]
-        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形",
-                   Terrain.PASSABLE: "草地/平地"}
+        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木", Terrain.PASSABLE: "草地"}
         terrain_name = t_names.get(terrain, "未知")
 
         # 目标
-        target_info = "(空地)"
         ent = self.state.get_entity_at(oc, oro)
-        if terrain == Terrain.WALL:
-            target_info = "(墙壁)"
-        elif ent and ent.hp > 0 and ent is not self.state.player:
-            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
-            target_info = f"{ent.name} {faction_tag} HP:{ent.hp} AC:{ent.total_ac('chest')}"
+        has_valid_target = ent and ent.hp > 0 and ent is not self.state.player
 
         lines = [
-            "── 远程瞄准 ──",
+            "[bold]── 远程瞄准 ──[/]",
             f"武器: {weapon_name}  射程: {max_range}",
-            f"光标: ({oc}, {oro})  距离: {dist}",
+            f"光标: ({oc}, {oro})  距离: {dist}/{max_range}"
+            + (" [green]✓[/]" if in_range else " [red]超出射程[/]"),
             f"地表: {terrain_name}",
-            f"目标: {target_info}",
             "",
-            "[[方向键]] 移动光标",
-            "[[Enter]] 确认攻击",
-            "[[Esc]] 取消瞄准",
         ]
-        return "\n".join(lines)
+
+        if has_valid_target:
+            hp_pct = ent.hp / max(ent.max_hp, 1) * 100
+            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+            lines.append(f"目标: {ent.name} {faction_tag}")
+            lines.append(f"  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
+            if ent.statuses:
+                lines.append(f"  状态: {', '.join(ent.statuses)}")
+        elif terrain == Terrain.WALL:
+            lines.append("目标: (墙壁)")
+        else:
+            lines.append("目标: (空地)")
+
+        # 可见性
+        if (oc, oro) in self.state.fov_cache:
+            lines.append("可见: 是")
+        else:
+            lines.append("可见: 否")
+
+        lines.append("")
+        lines.append("[[方向键]] 移动光标  [[Enter]] 确认  [[Esc]] 取消")
+        return "\n".join(lines[:max_h])
 
     def _render_target_panel(self) -> str:
         pa = self.state.pending_attack or {}

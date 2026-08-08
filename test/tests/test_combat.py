@@ -355,6 +355,7 @@ class TestRangedTargetFlow:
             "mode": "right_hand", "weapon": ranged_weapon,
             "hit_bonus": 0, "damage_bonus": 0,
             "attack_roll": None, "target": goblin,
+            "target_pos": (3, 0),
         }
         flow._state.player_pos = (0, 0)
         flow._state.player = player

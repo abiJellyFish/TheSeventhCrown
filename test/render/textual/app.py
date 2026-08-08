@@ -127,6 +127,7 @@ class MVPApp(App):
         Binding("right", "move_right", "", priority=True),
         Binding("colon", "focus_input", "", priority=True),
         Binding("shift+tab", "end_turn", "结束战斗轮", priority=True),
+        Binding("enter", "confirm_attack", "", priority=True),
         Binding("f5", "quick_save", "存档", priority=True),
         Binding("f9", "quick_load", "读档", priority=True),
     ]
@@ -464,7 +465,7 @@ class MVPApp(App):
                 if (nc, nr) in self._state.fov_cache:
                     if max(abs(nc - pc), abs(nr - pr)) <= max_range:
                         self._state.observe_cursor = (nc, nr)
-                        self._right_panel.refresh()
+                        self._left_panel.refresh()
                         self._map_view.refresh()
             return
         # 动作/攻击流程中：方向键无反应，不扣 AP
@@ -491,6 +492,12 @@ class MVPApp(App):
     def action_move_down(self): self._move_player(0, 1)
     def action_move_left(self): self._move_player(-1, 0)
     def action_move_right(self): self._move_player(1, 0)
+
+    def action_confirm_attack(self) -> None:
+        """Enter 键确认远程目标（Binding 路径）。"""
+        if self._state and self._state.combat_phase == "ranged_target":
+            self._combat_flow.confirm_ranged_target()
+            self.refresh_all()
 
     def action_end_turn(self) -> None:
         """手动结束当前回合（Shift+Tab）。"""
