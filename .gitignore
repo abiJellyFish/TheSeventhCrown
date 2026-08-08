@@ -34,8 +34,13 @@ test/ui*.md
 # 存档运行时
 saves/
 
+# 技术规格
+MVP.md
+MVP2.md
+
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+MVP.md MVP2.md
