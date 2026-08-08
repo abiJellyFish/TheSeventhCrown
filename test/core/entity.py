@@ -77,6 +77,11 @@ class Creature:
     aggression_tier: str = "medium"       # "low" | "medium" | "high"
     schedule: str = "idle"               # 当前日程
 
+    # ---- 阵营反应 ----
+    original_faction: str = ""            # 记录原始阵营
+    hostility_triggered: bool = False     # 中立生物是否已被攻击
+    friendly_attack_count: int = 0        # 友好生物被攻击次数
+
     def meets_condition(self, cond: str) -> bool:
         """检查硬过滤条件。"""
         if cond == "can_move":
