@@ -274,12 +274,13 @@ class TopBar(Static):
         day = (pc // PENDULUMS_PER_DAY) % 10 + 1
         month = (pc // PENDULUMS_PER_MONTH) % 5 + 1
         year = pc // PENDULUMS_PER_YEAR + 1
+        current_pc = pc % PENDULUMS_PER_DAY  # 每天 5000 钟摆后清零
 
         map_name = s.current_map or "???"
         location = self._get_location(s)
         left = f" [bold]{map_name}[/] {location}  晴"
 
-        right = f"{pc}钟摆 第{day}天 {month}月 {year}纪年 "
+        right = f"{current_pc}钟摆 第{day}天 {month}月 {year}纪年 "
 
         def visible_len(t: str) -> int:
             return Text.from_markup(t).cell_len
