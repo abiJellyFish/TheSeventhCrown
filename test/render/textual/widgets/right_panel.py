@@ -47,12 +47,7 @@ class RightPanel(Static):
             f"金币: {p.gp}GP",
             "── 装备 ──",
         ]
-        body = [("head", "头部"), ("chest", "躯干"), ("arms", "双臂"), ("legs", "双腿")]
-        hands = [("left_hand", "左手"), ("right_hand", "右手")]
-        accs = [("accessory1", "饰品1"), ("accessory2", "饰品2"), ("accessory3", "饰品3")]
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s, l in body))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s, l in hands))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s, l in accs))
+        lines.extend(self._render_equipment_lines(p))
         lines.append("── 背包 ──")
         if p.inventory:
             item_lines = []
@@ -89,12 +84,7 @@ class RightPanel(Static):
             lines.append(f"  {label}: {val} ({sign}{adj})")
         lines.append("")
         lines.append("── 装备 ──")
-        body = [("head", "头部"), ("chest", "躯干"), ("arms", "双臂"), ("legs", "双腿")]
-        hands = [("left_hand", "左手"), ("right_hand", "右手")]
-        accs = [("accessory1", "饰品1"), ("accessory2", "饰品2"), ("accessory3", "饰品3")]
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s, l in body))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s, l in hands))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s, l in accs))
+        lines.extend(self._render_equipment_lines(p))
         if p.statuses:
             lines.append(f"[red]状态: {' '.join(p.statuses)}[/]")
         return "\n".join(lines[:max_h])
@@ -136,3 +126,20 @@ class RightPanel(Static):
             lines.append("亮度: 不可见")
 
         return "\n".join(lines[:max_h])
+
+    @staticmethod
+    def _render_equipment_lines(player) -> list[str]:
+        """构建装备显示行列表（物品栏和角色面板共用）。"""
+        slot_groups = [
+            [("head", "头部"), ("chest", "躯干"), ("arms", "双臂"), ("legs", "双腿")],
+            [("left_hand", "左手"), ("right_hand", "右手")],
+            [("accessory1", "饰品1"), ("accessory2", "饰品2"), ("accessory3", "饰品3")],
+        ]
+        lines = []
+        for group in slot_groups:
+            parts = []
+            for slot, label in group:
+                item = player.equipment.get(slot)
+                parts.append(f"{label}:{item.name if item else '-'}")
+            lines.append("  " + " ".join(parts))
+        return lines

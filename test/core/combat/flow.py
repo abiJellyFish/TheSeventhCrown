@@ -33,6 +33,18 @@ class CombatFlow:
         self._input_bar.disabled = True
         self._map_view.focus()
 
+    def _find_adjacent_targets(self) -> list:
+        """返回玩家相邻格的所有存活目标，按距离和 HP 排序。"""
+        pc, pr = self._state.player_pos
+        targets = []
+        for creature, (ec, er) in self._state.entities:
+            if creature is not self._state.player and creature.hp > 0 \
+               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
+                dist = max(abs(ec - pc), abs(er - pr))
+                targets.append((dist, creature.hp, creature))
+        targets.sort(key=lambda x: (x[0], x[1]))
+        return [c for _, _, c in targets]
+
     # ── 攻击流程入口 ──
 
     def start_action_phase(self) -> None:
@@ -93,12 +105,7 @@ class CombatFlow:
         }
 
         # 找相邻目标
-        pc, pr = self._state.player_pos
-        targets = []
-        for creature, (ec, er) in self._state.entities:
-            if creature is not self._state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                targets.append(creature)
+        targets = self._find_adjacent_targets()
 
         if len(targets) == 0:
             self._act_log.add("近战范围内没有目标")
@@ -145,17 +152,10 @@ class CombatFlow:
             self._act_log.add(f"无效选项: {cmd}, 请输入 T序号")
             return
 
-        pc, pr = self._state.player_pos
-        targets = []
-        for creature, (ec, er) in self._state.entities:
-            if creature is not self._state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                dist = max(abs(ec - pc), abs(er - pr))
-                targets.append((dist, creature.hp, creature))
-        targets.sort(key=lambda x: (x[0], x[1]))
+        targets = self._find_adjacent_targets()
 
         if 0 <= idx < len(targets):
-            self._state.pending_attack["target"] = targets[idx][2]
+            self._state.pending_attack["target"] = targets[idx]
             self.execute_attack_roll()
         else:
             self._act_log.add("目标序号无效")

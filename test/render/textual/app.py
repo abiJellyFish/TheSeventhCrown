@@ -224,7 +224,7 @@ class MVPApp(App):
         self._combat_flow = CombatFlow(
             self._state, self._act_log, self._left_panel,
             self._input_bar, self._map_view, self._pn,
-            self._start_combat_from_ambush, self.refresh_all,
+            lambda t: self._start_combat(t, ambush=True), self.refresh_all,
         )
 
     def compose(self) -> ComposeResult:
@@ -620,19 +620,8 @@ class MVPApp(App):
 
     # ── Combat ──
 
-    def _start_combat(self, target: Creature) -> None:
-        self._state.in_combat = True; self._state.player.ap = self._state.player.max_ap
-        combatants = [self._state.player]
-        pc, pr = self._state.player_pos
-        for creature, (ec, er) in self._state.entities:
-            if creature.hp > 0 and creature.faction == "hostile" and abs(ec - pc) <= 5:
-                combatants.append(creature); creature.ap = creature.max_ap
-        self._state.combat_initiative = roll_initiative(combatants)
-        self._state.combat_turn_index = 0; self._state.combat_turn_entity = combatants[0]
-        self._act_log.add("=== 战斗开始 ==="); self._next_turn()
-
-    def _start_combat_from_ambush(self, target: Creature) -> None:
-        """探索模式主动攻击 → 进入战斗，玩家必定先手（不调用 _next_turn）。"""
+    def _start_combat(self, target: Creature, ambush: bool = False) -> None:
+        """进入战斗。ambush=True 时玩家必定先手（探索模式主动攻击）。"""
         self._state.in_combat = True
         self._state.player.ap = self._state.player.max_ap
         combatants = [self._state.player]
@@ -643,9 +632,15 @@ class MVPApp(App):
                 creature.ap = creature.max_ap
         self._state.combat_initiative = roll_initiative(combatants)
         self._state.combat_turn_index = 0
-        self._state.combat_turn_entity = self._state.player
-        self._act_log.add("=== 战斗开始 ===")
-        self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
+
+        if ambush:
+            self._state.combat_turn_entity = self._state.player
+            self._act_log.add("=== 战斗开始 ===")
+            self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
+        else:
+            self._state.combat_turn_entity = combatants[0]
+            self._act_log.add("=== 战斗开始 ===")
+            self._next_turn()
 
     def _end_combat(self) -> None:
         self._state.in_combat = False; self._state.combat_initiative = []
