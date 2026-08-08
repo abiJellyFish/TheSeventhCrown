@@ -1,12 +1,39 @@
 """Textual MVP App — 完整游戏原型。"""
 
+import json
 import random
 from textual.app import App, ComposeResult
-from textual.widgets import Static, Input
+from textual.widgets import Input
 from textual.containers import Horizontal, Vertical
 from textual.binding import Binding
 from textual.events import Key
-from rich.text import Text
+
+from core.game_state import GameState
+from core.entity import Player, Creature, Weapon
+from core.movement import Terrain
+from core.grid import Grid
+from core.fov import LightLevel, compute_fov
+from core.combat.initiative import roll_initiative
+from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice
+from core.combat.flow import CombatFlow
+from core.map.generation import build_world, build_dungeon
+from core.dice import roll_d20
+from core.ai.engine import BehaviorEngine
+from core.rest import short_rest, long_rest
+from core.loader import DataLoader
+from core.save.database import SaveManager
+from render.textual.widgets import (
+    TopBar, LeftPanel, MapView, RightPanel, ActionLog, SceneLog,
+)
+import os
+
+DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+SAVE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "saves")
+_loader = DataLoader(DATA_DIR)
+_ai_engine = BehaviorEngine({
+    "goblin_brawler": _loader.load_json("ai/goblin_brawler"),
+    "skeleton": _loader.load_json("ai/skeleton"),
+})
 
 
 class GameInput(Input):
@@ -18,35 +45,6 @@ class GameInput(Input):
             return
         super()._on_key(event)
 
-from core.game_state import GameState
-from core.entity import Player, Creature, Weapon
-from core.movement import Terrain
-from core.grid import Grid
-from core.fov import LightLevel, compute_fov
-from core.combat.initiative import roll_initiative
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice
-from core.dice import roll_d20
-from core.ai.engine import BehaviorEngine
-from core.rest import short_rest, long_rest
-from core.loader import DataLoader
-from core.save.database import SaveManager
-import os
-
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-SAVE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "saves")
-_loader = DataLoader(DATA_DIR)
-_ai_engine = BehaviorEngine({
-    "goblin_brawler": _loader.load_json("ai/goblin_brawler"),
-    "skeleton": _loader.load_json("ai/skeleton"),
-})
-
-TERRAIN_COLORS = {
-    Terrain.PASSABLE: "rgb(80,80,80)",
-    Terrain.DIFFICULT: "green",
-    Terrain.WALL: "rgb(140,140,140)",
-}
-FACTION_COLORS = {"hostile": "red", "friendly": "green", "neutral": "yellow"}
-
 
 def _add_to_inventory(player, item) -> None:
     """添加物品到背包，同名称同类型物品堆叠计数。"""
@@ -56,206 +54,6 @@ def _add_to_inventory(player, item) -> None:
             existing.weight += item.weight
             return
     player.inventory.append(item)
-
-# 时间常量
-PENDULUMS_PER_DAY = 5000
-PENDULUMS_PER_MONTH = 50000     # 10 天
-PENDULUMS_PER_YEAR = 250000     # 5 月
-
-
-def _build_world(state: GameState) -> None:
-    """构建 80×60 无缝大地图：村庄 + 平原 + 树林 + 地精营地。"""
-    w, h = 80, 60
-    state.current_map = "世界"
-    state.map = Grid[Terrain](w, h, Terrain.PASSABLE)
-    state.entities = []
-    random.seed(42)
-
-    # ── 村庄 (20×15, 偏移 3,20) ──
-    vx, vy = 3, 20
-    village_walls = [
-        (2,2),(3,2),(4,2),(5,2),(6,2),(2,3),(6,3),(2,4),(6,4),(2,5),(3,5),(4,5),(5,5),(6,5),
-        (9,2),(10,2),(11,2),(12,2),(13,2),(9,3),(13,3),(9,4),(13,4),(9,5),(10,5),(11,5),(12,5),(13,5),
-        (20,1),(21,1),(22,1),(23,1),(24,1),(20,2),(24,2),(20,3),(24,3),(20,4),(24,4),(20,5),(21,5),(22,5),(23,5),(24,5),
-        (25,8),(26,8),(27,8),(28,8),(25,9),(28,9),(25,10),(28,10),(25,11),(26,11),(27,11),(28,11),
-    ]
-    for wx, wy in village_walls:
-        state.map[vx + wx, vy + wy] = Terrain.WALL
-    state.map[vx + 18, vy + 10] = Terrain.DIFFICULT  # 水井
-
-    state.bed_positions = {(vx + 4, vy + 4), (vx + 11, vy + 4), (vx + 22, vy + 3), (vx + 26, vy + 9)}
-    state.door_states = {
-        (vx + 4, vy + 5): False, (vx + 11, vy + 5): False,
-        (vx + 22, vy + 4): False, (vx + 26, vy + 11): False,
-    }
-    for pos, is_open in state.door_states.items():
-        if not is_open:
-            state.map[pos] = Terrain.WALL
-
-    village_npcs = [
-        ("village_elder", vx + 3, vy + 7), ("merchant", vx + 11, vy + 7),
-        ("villager", vx + 7, vy + 8), ("villager", vx + 14, vy + 5),
-        ("villager", vx + 4, vy + 10), ("villager", vx + 15, vy + 8),
-        ("villager", vx + 22, vy + 7),
-    ]
-    for key, cx, cy in village_npcs:
-        c = _loader.load_creature(key)
-        if c:
-            c.template_name = key
-            state.add_entity(c, (cx, cy))
-
-    # ── 树林 (30×30, 偏移 35,15, 村庄东 15 格) ──
-    fx, fy = 35, 15
-    for _ in range(200):
-        tx = fx + random.randint(0, 29)
-        ty = fy + random.randint(0, 29)
-        if 0 <= tx < w and 0 <= ty < h and state.map[tx, ty] == Terrain.PASSABLE:
-            state.map[tx, ty] = Terrain.DIFFICULT
-
-    # 地下城入口 > 在树林中
-    entrance = (fx + random.randint(5, 25), fy + random.randint(5, 25))
-    state.map[entrance] = Terrain.PASSABLE  # 入口可通行
-    state.dungeon_entrance = entrance
-
-    # ── 地精营地 (开放式，偏移 68,10, 树林东侧) ──
-    gx, gy = 68, 10
-    # 断墙/路障 — 不是封闭房子，而是几段不连通的矮墙
-    camp_walls = [
-        # 北侧路障（有缺口）
-        (0,0),(1,0),(2,0),(3,0),(4,0),           (6,0),(7,0),
-        # 东侧断墙
-        (7,1),(7,2),
-        # 西侧路障
-        (0,1),(0,2),(0,3),
-        # 南侧散落木桩
-        (4,5),(5,5),(7,5),
-        # 角落杂物堆
-        (0,4),(1,4),
-    ]
-    for wx, wy in camp_walls:
-        state.map[gx + wx, gy + wy] = Terrain.WALL
-    # 篝火（营地中央）
-    state.map[gx + 3, gy + 3] = Terrain.DIFFICULT
-
-    camp_enemies = [
-        ("goblin_brawler", gx + 2, gy + 2), ("goblin_brawler", gx + 5, gy + 1),
-        ("goblin_brawler", gx + 6, gy + 3), ("goblin_brawler", gx + 1, gy + 4),
-        ("long_ear_dog", gx + 4, gy + 1), ("long_ear_dog", gx + 5, gy + 4),
-        ("long_ear_dog", gx + 2, gy + 3),
-    ]
-    for key, cx, cy in camp_enemies:
-        c = _loader.load_creature(key)
-        if c:
-            c.template_name = key
-            state.add_entity(c, (cx, cy))
-
-    # ── 平原游荡生物 ──
-    # 固定区域：村庄 (3,20)-(23,35) / 树林 (35,15)-(65,45) / 营地 (68,10)-(78,25)
-    RESERVED_ZONES = [
-        (vx, vy, 21, 16),   # 村庄
-        (fx, fy, 30, 30),   # 树林
-        (gx, gy, 9, 15),    # 营地
-    ]
-    def _in_reserved(px: int, py: int) -> bool:
-        for rx, ry, rw, rh in RESERVED_ZONES:
-            if rx <= px < rx + rw and ry <= py < ry + rh:
-                return True
-        return False
-
-    creatures = ["bird", "squirrel", "cat", "long_ear_dog", "wild_boar"]
-    for _ in range(15):
-        key = random.choice(creatures)
-        c = _loader.load_creature(key)
-        if c:
-            c.template_name = key
-            for _ in range(20):
-                px = random.randint(0, w - 1)
-                py = random.randint(0, h - 1)
-                if state.map[px, py] == Terrain.PASSABLE and not _in_reserved(px, py):
-                    state.add_entity(c, (px, py))
-                    break
-
-    # ── 平原灌木 ──
-    for _ in range(60):
-        for _ in range(20):
-            bx = random.randint(0, w - 1)
-            by = random.randint(0, h - 1)
-            if state.map[bx, by] == Terrain.PASSABLE and not _in_reserved(bx, by):
-                state.map[bx, by] = Terrain.DIFFICULT
-                break
-
-    state.map_exits = []
-    state.loot_spots = []
-
-    # 位置 → 地名哈希表（O(1) 查询，无分支）
-    state.location_map = {}
-    for x in range(vx, vx + 21):
-        for y in range(vy, vy + 16):
-            state.location_map[(x, y)] = "小村庄"
-    for x in range(fx, fx + 30):
-        for y in range(fy, fy + 30):
-            state.location_map.setdefault((x, y), "树林")
-    for x in range(gx, gx + 9):
-        for y in range(gy, gy + 15):
-            state.location_map[(x, y)] = "营地"
-
-
-def _build_dungeon(state: GameState) -> None:
-    """BSP 生成地下城 (30×20)。"""
-    w, h = 30, 20
-    state.current_map = "地下城"
-    state.map = Grid[Terrain](w, h, Terrain.WALL)
-    state.entities = []
-    state.bed_positions = set()
-    state.door_states = {}
-    state.map_exits = []
-    state.location_map = {}  # 地下城全部标记为地下城1层
-
-    # 挖掘 3-5 个房间 + 走廊
-    rooms = []
-    for _ in range(random.randint(3, 5)):
-        rw, rh = random.randint(4, 8), random.randint(3, 6)
-        rx = random.randint(1, w - rw - 1)
-        ry = random.randint(1, h - rh - 1)
-        rooms.append((rx, ry, rw, rh))
-        for x in range(rx, rx + rw):
-            for y in range(ry, ry + rh):
-                state.map[x, y] = Terrain.PASSABLE
-
-    # 连接走廊
-    for i in range(len(rooms) - 1):
-        x1 = rooms[i][0] + rooms[i][2] // 2
-        y1 = rooms[i][1] + rooms[i][3] // 2
-        x2 = rooms[i + 1][0] + rooms[i + 1][2] // 2
-        y2 = rooms[i + 1][1] + rooms[i + 1][3] // 2
-        for x in range(min(x1, x2), max(x1, x2) + 1):
-            state.map[x, y1] = Terrain.PASSABLE
-        for y in range(min(y1, y2), max(y1, y2) + 1):
-            state.map[x2, y] = Terrain.PASSABLE
-
-    # 入口和出口
-    first_room = rooms[0]
-    state.map[first_room[0] + 1, first_room[1]] = Terrain.PASSABLE  # 入口标记
-    state.dungeon_entrance = (first_room[0] + 1, first_room[1])
-    state.dungeon_exit = (first_room[0] + 1, first_room[1])
-    state.player_pos = (first_room[0] + 2, first_room[1] + 1)
-
-    # 红宝石在最后一个房间
-    last_room = rooms[-1]
-    state.map[last_room[0] + last_room[2] // 2, last_room[1] + last_room[3] // 2] = Terrain.DIFFICULT
-
-    # 骷髅兵
-    skeleton_positions = []
-    for _ in range(4):
-        r = random.choice(rooms[1:])
-        sx = r[0] + random.randint(1, r[2] - 1)
-        sy = r[1] + random.randint(1, r[3] - 1)
-        if (sx, sy) not in skeleton_positions:
-            skeleton_positions.append((sx, sy))
-            sk = _loader.load_creature("skeleton")
-            if sk:
-                sk.template_name = "skeleton"
-                state.add_entity(sk, (sx, sy))
 
 
 def _update_fov(state: GameState) -> None:
@@ -270,497 +68,6 @@ def _update_fov(state: GameState) -> None:
     state.fov_cache = compute_fov(transparent, (ox, oy), state.player.vision_range,
                                   light, state.player.darkvision_range > 0,
                                   state.player.darkvision_range)
-
-
-# ═══════════════════════════════════════ Widgets ═══════════════════════════════════════
-
-class TopBar(Static):
-    state: GameState | None = None
-
-    @staticmethod
-    def _get_location(s) -> str:
-        """O(1) 哈希表查询，无分支。"""
-        if s.in_dungeon:
-            return "地下城1层"
-        return s.location_map.get(s.player_pos, "平原")
-
-    def render(self) -> str:
-        if self.state is None: return ""
-        s = self.state
-        width = self.size.width
-        pc = s.clock.pendulum_count
-        day = (pc // PENDULUMS_PER_DAY) % 10 + 1
-        month = (pc // PENDULUMS_PER_MONTH) % 5 + 1
-        year = pc // PENDULUMS_PER_YEAR + 1
-        current_pc = pc % PENDULUMS_PER_DAY  # 每天 5000 钟摆后清零
-
-        map_name = s.current_map or "???"
-        location = self._get_location(s)
-        left = f" [bold]{map_name}[/] {location}  晴"
-
-        right = f"{current_pc}钟摆 第{day}天 {month}月 {year}纪年 "
-
-        def visible_len(t: str) -> int:
-            return Text.from_markup(t).cell_len
-
-        if s.in_combat and s.combat_initiative:
-            # 存活参战者，当前回合生物前后各 2 个，超出用 +N 省略
-            alive = [e for e in s.combat_initiative if e.hp > 0 or e is s.player]
-            if not alive:
-                pad = max(1, width - visible_len(left) - visible_len(right) - 2)
-                return f"{left}{' ' * pad}{right}"
-            current_idx = 0
-            for i, e in enumerate(alive):
-                if e is s.combat_turn_entity:
-                    current_idx = i; break
-            total = len(alive)
-            if total <= 5:
-                indices = list(range(total))
-                prefix = ""
-                suffix = ""
-            else:
-                start = max(0, current_idx - 2)
-                end = min(total, current_idx + 3)
-                indices = list(range(start, end))
-                prefix = f"+{start} " if start > 0 else ""
-                suffix = f" +{total - end}" if end < total else ""
-            names = []
-            for i in indices:
-                e = alive[i]
-                nm = e.name
-                if e is s.combat_turn_entity:
-                    nm = f"[bold yellow]{nm}[/]"
-                names.append(nm)
-            center = f"{prefix}{' > '.join(names)}{suffix}"
-            # 确保右侧始终固定在屏幕右端，center 溢出时截断
-            right_len = visible_len(right)
-            left_len = visible_len(left)
-            center_len = visible_len(center)
-            if left_len + center_len + right_len > width:
-                available = width - left_len - right_len
-                if available < 4:
-                    center = ""
-                elif center_len > available:
-                    # 用 Rich Text 安全截断，不破坏 markup 标签
-                    t = Text.from_markup(center)
-                    t.truncate(available, overflow="ellipsis")
-                    center = t.markup
-            center_len = visible_len(center)
-            used = left_len + center_len + right_len
-            remaining = max(0, width - used)
-            pad_left = remaining // 2
-            pad_right = remaining - pad_left
-            return f"{left}{' ' * pad_left}{center}{' ' * pad_right}{right}"
-        else:
-            # 右侧始终完整显示，不截断
-            pad = max(1, width - visible_len(left) - visible_len(right))
-            return f"{left}{' ' * pad}{right}"
-
-
-class LeftPanel(Static):
-    state: GameState | None = None
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._action_map: dict[int, tuple] = {}
-        self._maneuver_map: dict[int, dict] = {}
-        self._special_map: dict[int, str] = {}
-
-    def render(self) -> str:
-        if self.state is None:
-            return ""
-        phase = self.state.combat_phase
-        # 攻击流程子面板 — 探索/战斗模式共用
-        if phase == "select_action":
-            return self._render_action_panel()
-        elif phase == "select_target":
-            return self._render_target_panel()
-        elif phase == "select_maneuver":
-            return self._render_maneuver_panel()
-        elif phase == "select_special":
-            return self._render_special_panel()
-        # 探索 vs 战斗默认面板
-        if self.state.in_combat:
-            return self._render_combat_default()
-        else:
-            return self._render_explore_default()
-
-    def _render_explore_default(self) -> str:
-        return "\n".join([
-            "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
-            "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
-            "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
-            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
-            "[[S]]法术",
-        ])
-
-    def _render_combat_default(self) -> str:
-        p = self.state.player
-        filled = int(p.ap / max(p.max_ap, 1) * 10)
-        lines = [
-            f"AP [{'|'*filled}{'.'*(10-filled)}]",
-            "S-Tab 结束战斗轮",
-            "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
-            "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
-            "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
-            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
-            "[[S]]法术",
-        ]
-        return "\n".join(lines)
-
-    def _render_action_panel(self) -> str:
-        p = self.state.player
-        left = p.equipment.get("left_hand")
-        right = p.equipment.get("right_hand")
-        self._action_map = {}
-
-        lines = ["── 选择攻击方式 ──"]
-        idx = 1
-
-        if left:
-            if hasattr(left, 'weapon_type'):
-                self._action_map[idx] = ("left_hand", left)
-                lines.append(f"[[A{idx}]]左手武器  {left.name} {left.damage} {left.damage_type} AP:{left.ap_cost}")
-            else:
-                self._action_map[idx] = ("left_hand_blocked", left)
-                lines.append(f"[[A{idx}]]左手武器  {left.name} (不能攻击)")
-            idx += 1
-        if right:
-            if hasattr(right, 'weapon_type'):
-                self._action_map[idx] = ("right_hand", right)
-                lines.append(f"[[A{idx}]]右手武器  {right.name} {right.damage} {right.damage_type} AP:{right.ap_cost}")
-            else:
-                self._action_map[idx] = ("right_hand_blocked", right)
-                lines.append(f"[[A{idx}]]右手武器  {right.name} (不能攻击)")
-            idx += 1
-        if left and hasattr(left, 'weapon_type') and right and hasattr(right, 'weapon_type'):
-            self._action_map[idx] = ("dual_wield", right)
-            lines.append(f"[[A{idx}]]双持武器  {left.name}+{right.name} AP:3")
-            idx += 1
-        if right and hasattr(right, 'weapon_type') and right.weapon_type == "melee":
-            self._action_map[idx] = ("two_hand", right)
-            lines.append(f"[[A{idx}]]双手并用  {right.name} 命中+1 伤害+2 AP:{right.ap_cost}")
-            idx += 1
-
-        self._action_map[0] = ("cancel", None)
-        lines.append("[[A0]]取消")
-        return "\n".join(lines)
-
-    def _render_target_panel(self) -> str:
-        pa = self.state.pending_attack or {}
-        weapon = pa.get("weapon")
-        pc, pr = self.state.player_pos
-
-        weapon_name = weapon.name if weapon else "武器"
-        lines = ["── 选择目标 ──",
-                 f"{weapon_name} → 选择目标:"]
-
-        targets = []
-        for creature, (ec, er) in self.state.entities:
-            if creature is not self.state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                dist = max(abs(ec - pc), abs(er - pr))
-                targets.append((dist, creature.hp, creature))
-        targets.sort(key=lambda x: (x[0], x[1]))
-
-        for i, (_, _, c) in enumerate(targets[:8]):
-            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                           "neutral": "[yellow]中立[/]"}.get(c.faction, c.faction)
-            lines.append(f"[[T{i+1}]]{c.name} {faction_tag} (HP {c.hp}, AC {c.total_ac('chest')})")
-        if len(targets) > 8:
-            lines.append(f"... 还有 {len(targets)-8} 个目标")
-        lines.append("[[T0]]取消")
-        return "\n".join(lines)
-
-    def _render_maneuver_panel(self) -> str:
-        pa = self.state.pending_attack or {}
-        target = pa.get("target")
-        attack_roll = pa.get("attack_roll", 0)
-        weapon = pa.get("weapon")
-
-        target_name = target.name if target else "目标"
-        target_ac = target.total_ac('chest') if target else 0
-
-        # 从 game_state 读取战技数据
-        maneuvers = getattr(self.state, 'maneuvers', [])
-        self._maneuver_map = {}
-        lines = ["── 命中! 选择战技 ──",
-                 f"{weapon.name if weapon else '武器'}击中{target_name} (roll={attack_roll} vs AC={target_ac})"]
-        for i, m in enumerate(maneuvers, 1):
-            self._maneuver_map[i] = m
-            desc = m.get('effect', '')
-            if desc == 'damage_bonus': desc_text = f'伤害+{m["value"]}'
-            elif desc == 'disarm': desc_text = '目标力量豁免失败则武器掉落'
-            elif desc == 'knockdown': desc_text = '目标敏捷豁免失败则倒地'
-            else: desc_text = desc
-            lines.append(f"[[A{i}]]{m['name']}  AP+{m['ap_extra']}  {desc_text}")
-        self._maneuver_map[0] = None
-        lines.append("[[A0]]直接攻击  不消耗额外AP，正常结算伤害")
-        return "\n".join(lines)
-
-    def _render_special_panel(self) -> str:
-        pa = self.state.pending_attack or {}
-        target = pa.get("target")
-        attack_roll = pa.get("attack_roll", 0)
-        weapon = pa.get("weapon")
-        p = self.state.player
-
-        target_name = target.name if target else "目标"
-        target_ac = target.total_ac('chest') if target else 0
-
-        specials = [
-            {"key": "reroll", "name": "奋力一击", "ap_cost": 2, "desc": "额外消耗 2AP，重掷攻击骰"},
-            {"key": "feint",  "name": "虚晃一招", "ap_cost": 1, "desc": "消耗 1AP，下次攻击命中+2"},
-            {"key": "taunt",  "name": "挑衅",     "ap_cost": 1, "desc": "消耗 1AP，目标下回合更容易攻击你"},
-        ]
-        self._special_map = {}
-        lines = ["── 未命中 ──",
-                 f"{weapon.name if weapon else '武器'}挥空{target_name} (roll={attack_roll} vs AC={target_ac})"]
-        for i, s in enumerate(specials, 1):
-            self._special_map[i] = s["key"]
-            ap_note = " [dim]AP不足[/]" if p.ap < s["ap_cost"] else ""
-            lines.append(f"[[A{i}]]{s['name']}  {s['desc']}{ap_note}")
-        self._special_map[0] = "tenacity"
-        lines.append("[[A0]]削韧      不消耗AP，削减目标韧性")
-        return "\n".join(lines)
-
-
-class MapView(Static):
-    can_focus = True
-    state: GameState | None = None
-    def render(self) -> str:
-        if self.state is None: return "Loading..."
-        gmap = self.state.map
-        pc, pr = self.state.player_pos
-        fov = self.state.fov_cache
-        r = self.state.player.vision_range
-        # 单字符渲染，视口宽度翻倍补偿
-        vw = min((r + 2) * 2, gmap.width)
-        vh = min(r * 2 + 1, gmap.height)
-        ox = max(0, min(pc - vw // 2, gmap.width - vw))
-        oy = max(0, min(pr - vh // 2, gmap.height - vh))
-
-        # 观察模式：视口扩展确保光标可见
-        obs_cur = self.state.observe_cursor if self.state.observe_mode else None
-        if obs_cur is not None:
-            oc, oro = obs_cur
-            ox = min(ox, oc)
-            oy = min(oy, oro)
-            ox = max(ox, oc - vw + 1)
-            oy = max(oy, oro - vh + 1)
-            ox = max(0, min(ox, gmap.width - vw))
-            oy = max(0, min(oy, gmap.height - vh))
-
-        text = Text()
-        for row in range(oy, min(oy + vh, gmap.height)):
-            for col in range(ox, min(ox + vw, gmap.width)):
-                if (col, row) not in fov:
-                    text.append(" ")
-                    continue
-                cur = " reverse" if (col, row) == obs_cur else ""
-                ent = self.state.get_entity_at(col, row)
-                if ent is not None:
-                    ch = "%" if ent.hp <= 0 else ent.char
-                    color = FACTION_COLORS.get(ent.faction, "")
-                    text.append(ch, style=f"bold {color}{cur}" if ent.faction == "hostile" else f"{color}{cur}")
-                elif (col, row) == (pc, pr):
-                    text.append("@", style=f"bold bright_cyan{cur}")
-                elif (col, row) in self.state.bed_positions:
-                    text.append("=", style=f"bold cyan{cur}")
-                elif self.state.dungeon_entrance and (col, row) == self.state.dungeon_entrance:
-                    text.append(">", style=f"bold magenta{cur}")
-                else:
-                    t = gmap[col, row]
-                    if (col, row) in self.state.door_states:
-                        is_open = self.state.door_states[(col, row)]
-                        ch = "_" if is_open else "]"
-                        text.append(ch, style=f"bold yellow{cur}")
-                    else:
-                        ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
-                        text.append(ch, style=f"{TERRAIN_COLORS.get(t, '')}{cur}")
-            if row < min(oy + vh, gmap.height) - 1:
-                text.append("\n")
-        text.append("\n")
-        # 图例 — FOV 内动态生成
-        legend_seen: dict[str, str] = {"@": "玩家"}
-        for creature, (ec, er) in self.state.entities:
-            if (ec, er) in fov and creature.hp > 0:
-                legend_seen[creature.char] = creature.name
-        terrain_map = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}
-        terrain_labels = {"#": "墙壁", '"': "灌木", ".": "草地"}
-        for pos in fov:
-            t = gmap[pos]
-            ch = terrain_map.get(t)
-            if ch:
-                legend_seen.setdefault(ch, terrain_labels[ch])
-            if pos in self.state.bed_positions:
-                legend_seen["="] = "床"
-            if pos in self.state.door_states:
-                legend_seen["]"] = "门"
-            if self.state.dungeon_entrance and pos == self.state.dungeon_entrance:
-                legend_seen[">"] = "入口"
-        player_part = "@玩家"
-        others = " ".join(f"{ch}{name}" for ch, name in legend_seen.items() if ch != "@")
-        text.append(f"{player_part} {others}".strip(), style="dim")
-        return text
-
-
-class RightPanel(Static):
-    state: GameState | None = None
-    view_mode: str = "default"  # "default" | "inventory" | "character"
-
-    def render(self) -> str:
-        if self.state is None: return ""
-        if self.state.observe_mode:
-            return self._render_observe()
-        if self.view_mode == "inventory":
-            return self._render_inventory()
-        elif self.view_mode == "character":
-            return self._render_character()
-        return self._render_default()
-
-    def _render_default(self) -> str:
-        p = self.state.player
-        slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
-        lines = [
-            f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
-            f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
-            f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
-            "",
-            "[[X]]观察 [[Q]]退出",
-            "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
-            "[[Z]]制作 [[K]]烹饪 [[Y]]炼药",
-            "[[H]]高度 [[M]]地图 [[E]]系统",
-        ]
-        if p.statuses:
-            lines.append(f"[red]{' '.join(p.statuses)}[/]")
-        return "\n".join(lines)
-
-    def _render_inventory(self) -> str:
-        p = self.state.player
-        max_h = self.size.height
-        lines = [
-            f"[bold]物品栏[/] [dim]I/Esc返回  输入 :I序号 使用[/]",
-            f"金币: {p.gp}GP",
-            "── 装备 ──",
-        ]
-        body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
-        hands = [("left_hand","左手"),("right_hand","右手")]
-        accs = [("accessory1","饰品1"),("accessory2","饰品2"),("accessory3","饰品3")]
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in body))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in hands))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in accs))
-        lines.append("── 背包 ──")
-        if p.inventory:
-            item_lines = []
-            for i, item in enumerate(p.inventory):
-                item_lines.append(f"  [{i+1}] {item.name} x{item.count}")
-                if item.description:
-                    item_lines.append(f"      {item.description[:20]}")
-            available = max_h - len(lines) - 1
-            if available >= len(item_lines):
-                lines.extend(item_lines)
-            elif available > 1:
-                lines.extend(item_lines[:available - 1])
-                lines.append(f"  [dim]... 共{len(p.inventory)}件[/]")
-            else:
-                lines.extend(item_lines[:max(1, available)])
-        else:
-            lines.append("  (空)")
-        return "\n".join(lines)
-
-    def _render_character(self) -> str:
-        p = self.state.player
-        max_h = self.size.height
-        lines = [
-            f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
-            f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
-            f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
-            "",
-        ]
-        for key, label in [("str","力量"),("dex","敏捷"),("con","体质"),("int","智力"),("wis","感知"),("cha","魅力")]:
-            val = p.stat(key); adj = p.stat_adjust(key)
-            sign = "+" if adj >= 0 else ""
-            lines.append(f"  {label}: {val} ({sign}{adj})")
-        lines.append("")
-        lines.append("── 装备 ──")
-        body = [("head","头部"),("chest","躯干"),("arms","双臂"),("legs","双腿")]
-        hands = [("left_hand","左手"),("right_hand","右手")]
-        accs = [("accessory1","饰品1"),("accessory2","饰品2"),("accessory3","饰品3")]
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in body))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in hands))
-        lines.append("  " + " ".join(f"{l}:{p.equipment.get(s).name if p.equipment.get(s) else '-'}" for s,l in accs))
-        if p.statuses:
-            lines.append(f"[red]状态: {' '.join(p.statuses)}[/]")
-        return "\n".join(lines[:max_h])
-
-    def _render_observe(self) -> str:
-        cursor = self.state.observe_cursor
-        cx, cy = cursor
-        max_h = self.size.height
-        lines = ["[bold]观察模式[/] [dim]X退出 方向键移动光标[/]", ""]
-
-        # 地名 — 从 location_map 哈希表 O(1) 查询，不存在时回退到当前地图名
-        loc = self.state.location_map.get(cursor, "")
-        if not loc:
-            loc = self.state.current_map or ""
-        if loc:
-            lines.append(f"位置: ({cx}, {cy}) {loc}")
-        else:
-            lines.append(f"位置: ({cx}, {cy})")
-
-        # 地形
-        terrain = self.state.map[cx, cy]
-        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形", Terrain.PASSABLE: "草地/平地"}
-        lines.append(f"地表: {t_names.get(terrain, '未知')}")
-
-        # 生物
-        ent = self.state.get_entity_at(cx, cy)
-        if ent and ent is not self.state.player:
-            hp_pct = ent.hp / max(ent.max_hp, 1) * 100
-            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
-            lines.append(f"生物: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
-            if ent.statuses:
-                lines.append(f"  状态: {', '.join(ent.statuses)}")
-
-        # 光照
-        if cursor in self.state.fov_cache:
-            lines.append("亮度: 可见")
-        else:
-            lines.append("亮度: 不可见")
-
-        return "\n".join(lines[:max_h])
-
-
-class ActionLog(Static):
-    messages: list[str] = []
-    def add(self, msg: str) -> None:
-        self.messages.append(msg)
-        if len(self.messages) > 200: self.messages = self.messages[-100:]
-        self.refresh()
-    def render(self) -> str:
-        if not self.messages: return ""
-        h = max(self.size.height, 6)
-        return "\n".join(self.messages[-h:])
-
-
-class SceneLog(Static):
-    messages: list[str] = []
-    def add(self, msg: str) -> None:
-        self.messages.append(msg)
-        if len(self.messages) > 200: self.messages = self.messages[-100:]
-        self.refresh()
-    def set_scene(self, lines: list[str]) -> None:
-        filtered = [l for l in lines if l]
-        if filtered != self.messages:
-            self.messages = filtered; self.refresh()
-    def render(self) -> str:
-        if not self.messages: return ""
-        h = max(self.size.height, 6)
-        return "\n".join(self.messages[-h:])
 
 
 # ═══════════════════════════════════════ App ═══════════════════════════════════════
@@ -836,7 +143,7 @@ class MVPApp(App):
                 self._state.maneuvers = json.load(f)
         else:
             self._state.maneuvers = []
-        _build_world(self._state)
+        build_world(self._state, _loader)
         self._state.player_pos = (9, 26)  # 村庄长老房旁边
         import core.entity as ent
         sword_data = {"name": "长剑", "weapon_type": "melee", "category": "martial",
@@ -856,6 +163,16 @@ class MVPApp(App):
             "description": "几块晒干的兽肉和浆果，食用恢复饮食值"}))
         _update_fov(self._state)
         self._save_manager = SaveManager(SAVE_DIR)
+        # 战斗流程状态机（需在 widgets 创建后初始化，使用延迟绑定）
+        self._combat_flow: CombatFlow | None = None
+
+    def _init_combat_flow(self) -> None:
+        """在 compose 完成后初始化 CombatFlow（依赖已创建的 widgets）。"""
+        self._combat_flow = CombatFlow(
+            self._state, self._act_log, self._left_panel,
+            self._input_bar, self._map_view, self._pn,
+            self._start_combat_from_ambush, self.refresh_all,
+        )
 
     def compose(self) -> ComposeResult:
         self._create_game()
@@ -873,6 +190,7 @@ class MVPApp(App):
     def on_mount(self) -> None:
         for w in [self._map_view, self._left_panel, self._right_panel, self._top_bar]:
             w.state = self._state
+        self._init_combat_flow()
         self._refresh_scene()
         self.refresh_all()
         self._map_view.focus()
@@ -1236,7 +554,7 @@ class MVPApp(App):
             "bed_positions": self._state.bed_positions, "door_states": self._state.door_states,
             "location_map": self._state.location_map,
         }
-        _build_dungeon(self._state)
+        build_dungeon(self._state, _loader)
         self._state.in_dungeon = True
         self._act_log.add(f"{self._pn} 走入了地下城...")
         self._end_combat(); _update_fov(self._state)
@@ -1361,309 +679,33 @@ class MVPApp(App):
 
     def _resolve_melee_attack(self, attacker, target, weapon,
                                hit_bonus=0, damage_bonus=0) -> dict:
-        """执行一次近战攻击检定，返回结果 dict。不修改 AP，不切换回合。"""
-        hit, roll = hit_check(attacker, target, weapon)
-        effective_roll = roll + hit_bonus
-        if hit:
-            critical = (roll == 20)
-            dmg = roll_damage(weapon, attacker, critical=critical)
-            dmg += damage_bonus
-            dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
-            target.hp = max(0, target.hp - dmg)
-            return {"hit": True, "critical": critical, "roll": roll,
-                    "damage": dmg, "target_name": target.name}
-        else:
-            reduce_tenacity(target, roll)
-            return {"hit": False, "roll": roll,
-                    "target_name": target.name}
+        """委托 CombatFlow 执行近战攻击检定。"""
+        return self._combat_flow.resolve_melee_attack(
+            attacker, target, weapon, hit_bonus, damage_bonus)
 
     def _handle_action_input(self, cmd: str) -> None:
-        """阶段一：选择攻击方式。按动态 action_map 解析序号。"""
-        p = self._state.player
-        action_map = self._left_panel._action_map
-
-        try:
-            num = int(cmd[1:])
-        except (ValueError, IndexError):
-            self._act_log.add(f"无效选项: {cmd}")
-            return
-
-        if num == 0:
-            self._state.combat_phase = "idle"
-            self._state.pending_attack = {}
-            self._input_bar.disabled = True
-            self._map_view.focus()
-            self._act_log.add("取消攻击")
-            self.refresh_all()
-            return
-
-        entry = action_map.get(num)
-        if entry is None:
-            self._act_log.add(f"无效选项: {cmd}")
-            return
-
-        mode, weapon = entry
-        hit_bonus = 0
-        damage_bonus = 0
-
-        if mode.endswith("_blocked"):
-            self._act_log.add(f"{weapon.name} 无法用于攻击")
-            return
-        if mode == "two_hand":
-            hit_bonus = 1; damage_bonus = 2
-
-        if self._state.in_combat and p.ap < weapon.ap_cost:
-            self._act_log.add("AP 不足")
-            return
-
-        self._state.pending_attack = {
-            "mode": mode, "weapon": weapon,
-            "hit_bonus": hit_bonus, "damage_bonus": damage_bonus,
-            "attack_roll": None, "target": None,
-        }
-
-        # 找相邻目标
-        pc, pr = self._state.player_pos
-        targets = []
-        for creature, (ec, er) in self._state.entities:
-            if creature is not self._state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                targets.append(creature)
-
-        if len(targets) == 0:
-            self._act_log.add("近战范围内没有目标")
-            if not self._state.in_combat:
-                # 探索模式无目标，不进入战斗，直接取消
-                self._state.combat_phase = "idle"
-                self._state.pending_attack = {}
-                self._input_bar.disabled = True
-                self._map_view.focus()
-            else:
-                self._state.combat_phase = "select_action"
-            self.refresh_all()
-        elif len(targets) == 1:
-            target = targets[0]
-            # 探索模式：仅敌对目标进入战斗，非敌对先攻击再根据阵营反应决定
-            if not self._state.in_combat and target.faction == "hostile":
-                self._start_combat_from_ambush(target)
-            self._state.pending_attack["target"] = target
-            self._execute_attack_roll()
-            self.refresh_all()
-        else:
-            # 多目标：存在敌对目标时才进入战斗
-            if not self._state.in_combat:
-                hostile = [t for t in targets if t.faction == "hostile"]
-                if hostile:
-                    self._start_combat_from_ambush(hostile[0])
-            self._state.combat_phase = "select_target"
-            self._focus_input()
-            self.refresh_all()
+        """阶段一：选择攻击方式 → 委托 CombatFlow。"""
+        self._combat_flow.handle_action_input(cmd)
 
     def _handle_target_input(self, cmd: str) -> None:
-        """阶段二：选择目标。输入 T1~Tn。"""
-        if cmd == "T0":
-            self._state.combat_phase = "select_action"
-            self._focus_input()
-            self._act_log.add("取消目标选择")
-            self.refresh_all()
-            return
-
-        try:
-            idx = int(cmd[1:]) - 1
-        except (ValueError, IndexError):
-            self._act_log.add(f"无效选项: {cmd}, 请输入 T序号")
-            return
-
-        pc, pr = self._state.player_pos
-        targets = []
-        for creature, (ec, er) in self._state.entities:
-            if creature is not self._state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                dist = max(abs(ec - pc), abs(er - pr))
-                targets.append((dist, creature.hp, creature))
-        targets.sort(key=lambda x: (x[0], x[1]))
-
-        if 0 <= idx < len(targets):
-            self._state.pending_attack["target"] = targets[idx][2]
-            self._execute_attack_roll()
-        else:
-            self._act_log.add("目标序号无效")
-        self.refresh_all()
+        """阶段二：选择目标 → 委托 CombatFlow。"""
+        self._combat_flow.handle_target_input(cmd)
 
     def _execute_attack_roll(self) -> None:
-        """执行攻击检定，根据命中/未命中进入阶段三。"""
-        pa = self._state.pending_attack
-        weapon = pa["weapon"]
-        target = pa["target"]
-        p = self._state.player
-
-        if self._state.in_combat:
-            p.ap -= weapon.ap_cost
-        hit, roll = hit_check(p, target, weapon)
-
-        pa["attack_roll"] = roll
-        pa["hit"] = hit
-        self._act_log.add(f"{self._pn} 挥动{weapon.name}砍向 {target.name}! (roll={roll})")
-
-        if hit:
-            self._state.combat_phase = "select_maneuver"
-        else:
-            self._state.combat_phase = "select_special"
-        self._focus_input()
+        """执行攻击检定 → 委托 CombatFlow。"""
+        self._combat_flow.execute_attack_roll()
 
     def _handle_maneuver_input(self, cmd: str) -> None:
-        """阶段三A：命中后选择战技。按 maneuver_map 解析。"""
-        pa = self._state.pending_attack
-        weapon = pa["weapon"]
-        target = pa["target"]
-        p = self._state.player
-        mmap = self._left_panel._maneuver_map
-
-        try:
-            num = int(cmd[1:])
-        except (ValueError, IndexError):
-            self._act_log.add(f"无效选项: {cmd}")
-            self.refresh_all()
-            return
-
-        if num == 0:
-            # 直接攻击，正常结算
-            pass
-        elif num in mmap and mmap[num] is not None:
-            m = mmap[num]
-            if self._state.in_combat:
-                if p.ap < m["ap_extra"]:
-                    self._act_log.add("AP 不足"); self.refresh_all(); return
-                p.ap -= m["ap_extra"]
-            effect = m["effect"]
-            if effect == "damage_bonus":
-                bonus = roll_d20() % 4 + 1  # 1d4
-                pa["damage_bonus"] = pa.get("damage_bonus", 0) + bonus
-                self._act_log.add(f"{m['name']}! 伤害+{bonus}")
-            elif effect == "disarm":
-                t_roll = roll_d20() + target.stat_adjust("str")
-                if t_roll < 12:
-                    self._act_log.add(f"缴械成功! {target.name} 的武器被打落")
-                else:
-                    self._act_log.add(f"{target.name} 握紧了武器")
-            elif effect == "knockdown":
-                t_roll = roll_d20() + target.stat_adjust("dex")
-                if t_roll < 12:
-                    if "prone" not in target.statuses:
-                        target.statuses.append("prone")
-                    self._act_log.add(f"扫腿成功! {target.name} 摔倒在地")
-                else:
-                    self._act_log.add(f"{target.name} 稳住了身形")
-        else:
-            self._act_log.add(f"无效选项: {cmd}")
-            self.refresh_all()
-            return
-
-        # 结算伤害 — 命中已确认，不再重做命中检定
-        roll = pa.get("attack_roll", 0)
-        critical = (roll == 20)
-        dmg = roll_damage(weapon, p, critical=critical)
-        dmg += pa.get("damage_bonus", 0)
-        dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
-        target.hp = max(0, target.hp - dmg)
-        self._check_faction_reaction(target)
-
-        self._act_log.add(f"{self._pn} 砍中了 {target.name}, 造成 {dmg} 点伤害")
-        if target.hp <= 0:
-            self._act_log.add(f"{target.name} 倒在地上，不再动弹")
-
-        # 探索模式：攻击后目标变为敌对 → 进入战斗
-        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0:
-            self._start_combat_from_ambush(target)
-
-        self._state.combat_phase = "idle"
-        self._state.pending_attack = {}
-        self._input_bar.disabled = True
-        self._map_view.focus()
-        self.refresh_all()
+        """阶段三A：命中后选择战技 → 委托 CombatFlow。"""
+        self._combat_flow.handle_maneuver_input(cmd)
 
     def _handle_special_input(self, cmd: str) -> None:
-        """阶段三B：未命中后选择特殊行动。输入 A0~A3。"""
-        pa = self._state.pending_attack
-        target = pa["target"]
-        weapon = pa["weapon"]
-        p = self._state.player
-        roll = pa.get("attack_roll", 0)
-
-        smap = self._left_panel._special_map
-        try:
-            num = int(cmd[1:])
-        except (ValueError, IndexError):
-            self._act_log.add(f"无效选项: {cmd}")
-            self.refresh_all()
-            return
-
-        action_key = smap.get(num)
-        if action_key is None:
-            self._act_log.add(f"无效选项: {cmd}")
-            self.refresh_all()
-            return
-
-        if action_key == "tenacity":
-            self._act_log.add(f"削韧: {target.name} 韧性被削减")
-        elif action_key == "reroll":
-            if self._state.in_combat and p.ap < 2:
-                self._act_log.add("AP 不足"); self.refresh_all(); return
-            if self._state.in_combat:
-                p.ap -= 2
-            self._act_log.add("奋力一击! 重掷攻击骰")
-            result = self._resolve_melee_attack(p, target, weapon)
-            if result["hit"]:
-                self._check_faction_reaction(target)
-                self._act_log.add(f"命中! 造成 {result['damage']} 点伤害")
-            else:
-                self._act_log.add("再次未命中...")
-        elif action_key == "feint":
-            if self._state.in_combat and p.ap < 1:
-                self._act_log.add("AP 不足"); self.refresh_all(); return
-            if self._state.in_combat:
-                p.ap -= 1
-            self._act_log.add("虚晃一招 — 下次攻击命中+2")
-        elif action_key == "taunt":
-            if self._state.in_combat and p.ap < 1:
-                self._act_log.add("AP 不足"); self.refresh_all(); return
-            if self._state.in_combat:
-                p.ap -= 1
-            self._act_log.add(f"{self._pn} 挑衅了 {target.name}")
-
-        # 探索模式：攻击后目标变为敌对 → 进入战斗
-        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0:
-            self._start_combat_from_ambush(target)
-
-        self._state.combat_phase = "idle"
-        self._state.pending_attack = {}
-        self._input_bar.disabled = True
-        self._map_view.focus()
-        self.refresh_all()
+        """阶段三B：未命中后选择特殊行动 → 委托 CombatFlow。"""
+        self._combat_flow.handle_special_input(cmd)
 
     def _check_faction_reaction(self, target: Creature) -> None:
-        """玩家攻击非敌对生物后检查阵营反应。"""
-        if target.faction == "hostile":
-            return
-        if target.faction == "neutral" and not target.hostility_triggered:
-            target.hostility_triggered = True
-            target.original_faction = "neutral"
-            target.faction = "hostile"
-            self._act_log.add(f"{target.name} 被激怒了! 开始反击")
-            if self._state.in_combat:
-                if target not in self._state.combat_initiative:
-                    self._state.combat_initiative.append(target)
-        elif target.faction == "friendly":
-            target.friendly_attack_count += 1
-            if target.friendly_attack_count >= 2:
-                target.original_faction = "friendly"
-                target.faction = "hostile"
-                self._act_log.add(f"{target.name} 怒不可遏! 开始反击")
-                if self._state.in_combat:
-                    if target not in self._state.combat_initiative:
-                        self._state.combat_initiative.append(target)
-            else:
-                self._act_log.add(f"{target.name} 被{self._pn}的攻击吓了一跳，但忍住了")
+        """玩家攻击非敌对生物后检查阵营反应 → 委托 CombatFlow。"""
+        self._combat_flow.check_faction_reaction(target)
 
     def _find_entity_pos(self, target: Creature) -> tuple[int, int] | None:
         """查找生物在地图上的坐标。"""
@@ -1931,14 +973,8 @@ class MVPApp(App):
         self._input_bar.focus()
 
     def action_show_actions(self):
-        """按 A 键 → 进入攻击方式选择阶段。"""
-        if self._state.combat_phase != "idle":
-            return  # 战斗面板中按 A 不重新聚焦输入栏
-        self._state.combat_phase = "select_action"
-        self._state.pending_attack = {}
-        self._act_log.add("[攻击] 选择武器 — 输入 A序号 确认, A0 取消")
-        self._focus_input()
-        self.refresh_all()
+        """按 A 键 → 委托 CombatFlow 进入攻击方式选择阶段。"""
+        self._combat_flow.start_action_phase()
     def action_show_spells(self): self._act_log.add("[法术] 功能待定")
     def action_char_panel(self):
         if self._right_panel.view_mode == "character":
@@ -2048,9 +1084,9 @@ class MVPApp(App):
         if current_map != self._state.current_map:
             # 需要加载不同地图：重建世界/地下城
             if current_map == "世界":
-                _build_world(self._state)
+                build_world(self._state, _loader)
             elif current_map == "地下城":
-                _build_dungeon(self._state)
+                build_dungeon(self._state, _loader)
 
         # 恢复状态
         success = self._save_manager.load(self._state, slot="quicksave", loader=_loader)
