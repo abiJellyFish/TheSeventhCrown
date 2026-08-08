@@ -607,7 +607,8 @@ class MVPApp(App):
         combatants = [self._state.player]
         pc, pr = self._state.player_pos
         for creature, (ec, er) in self._state.entities:
-            if creature.hp > 0 and creature.faction == "hostile" and abs(ec - pc) <= 5:
+            if creature.hp > 0 and creature.faction == "hostile" \
+               and max(abs(ec - pc), abs(er - pr)) <= creature.vision_range:
                 combatants.append(creature)
                 creature.ap = creature.max_ap
         self._state.combat_initiative = roll_initiative(combatants)
@@ -630,6 +631,17 @@ class MVPApp(App):
 
     def _next_turn(self) -> None:
         if not self._state.in_combat: return
+
+        # 拉入范围内未参战的敌对生物（基于生物自身视野检测玩家）
+        pc, pr = self._state.player_pos
+        for creature, (ec, er) in self._state.entities:
+            if creature.hp > 0 and creature.faction == "hostile" \
+               and max(abs(ec - pc), abs(er - pr)) <= creature.vision_range \
+               and creature not in self._state.combat_initiative:
+                creature.ap = creature.max_ap
+                self._state.combat_initiative.append(creature)
+                self._act_log.add(f"{creature.name} 加入了战斗!")
+
         alive = [e for e in self._state.combat_initiative if e is self._state.player or e.hp > 0]
         hostiles = [e for e in alive if e.faction == "hostile" and e.hp > 0]
         if not hostiles:

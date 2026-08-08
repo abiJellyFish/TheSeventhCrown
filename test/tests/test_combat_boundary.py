@@ -132,6 +132,7 @@ class TestStartCombatBoundary:
             h.hp = 10
             h.faction = "hostile"
             h.max_ap = 6
+            h.vision_range = 8
             h.initiative_bonus.return_value = i
             hostiles.append((h, (5 + i % 3, 4 + i // 3)))
 
@@ -173,6 +174,7 @@ class TestStartCombatBoundary:
         far = MagicMock()
         far.hp = 10
         far.faction = "hostile"
+        far.vision_range = 8
         app._state.entities = [(far, (20, 20))]
         app._next_turn = MagicMock()
 
