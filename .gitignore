@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Claude Code
+.claude/
+
+# 设计草稿
+1/
+备份/
+
+# 文档 & 笔记
+test/docs/
+test/修改方案*.md
+test/修改日志.md
+test/待定计划*.md
+test/代码审查报告.md
+test/ui*.md
+
+# 根目录设计文档 & 笔记
+方案*.md
+游戏设计.md
+灵感.md
+补充*.md
+速度机制*.md
+内容参考_修改.md
+开发流程总结.md
+新建 文本文档*.txt
+
+# 存档运行时
+saves/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

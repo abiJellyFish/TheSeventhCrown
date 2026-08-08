@@ -1,5 +1,4 @@
 [
-  {"id": "precise_strike", "name": "精准攻击", "ap_extra": 1, "effect": "hit_bonus", "value": 2},
   {"id": "power_attack",  "name": "强力攻击", "ap_extra": 1, "effect": "damage_bonus", "value": "1d4"},
   {"id": "disarm",       "name": "缴械攻击", "ap_extra": 1, "effect": "disarm", "save_stat": "str"},
   {"id": "sweep",        "name": "扫腿攻击", "ap_extra": 1, "effect": "knockdown", "save_stat": "dex"}
