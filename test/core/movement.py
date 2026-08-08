@@ -6,7 +6,7 @@
 import heapq
 from enum import Enum, auto
 
-from core.grid import Grid
+from core.grid import Grid, DIRS_8
 
 
 class Terrain(Enum):
@@ -15,13 +15,6 @@ class Terrain(Enum):
     DIFFICULT = auto()
     WALL = auto()
 
-
-# 8 方向偏移
-_DIRS = [
-    (-1, -1), (0, -1), (1, -1),
-    (-1,  0),          (1,  0),
-    (-1,  1), (0,  1), (1,  1),
-]
 
 # 对角线方向的邻边
 _DIAG_CORNERS = {
@@ -132,7 +125,7 @@ def find_path(
             path.reverse()
             return path
 
-        for dc, dr in _DIRS:
+        for dc, dr in DIRS_8:
             nc, nr = current[0] + dc, current[1] + dr
             if not can_enter(nc, nr, grid, entities, current[0], current[1],
                              allow_pass_through=True):

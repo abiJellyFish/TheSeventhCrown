@@ -70,7 +70,7 @@ class TestComfort:
         g[1, 2] = Terrain.WALL  # W
         player.hp = 5
         result = short_rest(player, clock, g, (2, 2))
-        expected = (player.max_hp // 2) * 2
+        expected = int(player.max_hp * 0.5 * 2)
         assert result["hp_restored"] == expected  # doubled
         assert player.hp == min(player.max_hp, 5 + expected)
         assert player.hp == player.max_hp

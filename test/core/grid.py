@@ -9,9 +9,9 @@ from typing import Generic, TypeVar
 T = TypeVar("T")
 
 # 8 方向偏移：(dc, dr)
-_DIRS = [(-1, -1), (0, -1), (1, -1),
-         (-1,  0),          (1,  0),
-         (-1,  1), (0,  1), (1,  1)]
+DIRS_8 = [(-1, -1), (0, -1), (1, -1),
+          (-1,  0),          (1,  0),
+          (-1,  1), (0,  1), (1,  1)]
 
 
 class Grid(Generic[T]):
@@ -56,6 +56,6 @@ class Grid(Generic[T]):
         """返回 8 方向中在边界内的邻居坐标列表。"""
         return [
             (col + dc, row + dr)
-            for dc, dr in _DIRS
+            for dc, dr in DIRS_8
             if self.within_bounds(col + dc, row + dr)
         ]

@@ -40,53 +40,42 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
     return wall_count >= 2
 
 
-def short_rest(player: Player, clock: PendulumClock,
-               terrain_map: Grid[Terrain] | None = None,
-               pos: tuple[int, int] | None = None,
-               bed_positions: set[tuple[int, int]] | None = None) -> dict:
-    """短休：300 钟摆，恢复 50% HP/MP。
-
-    Returns:
-        {"hp_restored": int, "mp_restored": int, "comfort": bool}
-    """
+def _rest(player: Player, clock: PendulumClock, pendulums: int,
+          hp_fraction: float, mp_fraction: float,
+          terrain_map: Grid[Terrain] | None = None,
+          pos: tuple[int, int] | None = None,
+          bed_positions: set[tuple[int, int]] | None = None) -> dict:
+    """休息通用逻辑：短休/长休差异仅钟摆数和恢复比例。"""
     comfort = False
     if terrain_map and pos:
         comfort = is_comfortable(pos, terrain_map, bed_positions)
 
     multiplier = 2 if comfort else 1
-    hp_restore = (player.max_hp // 2) * multiplier
-    mp_restore = (player.max_mp // 2) * multiplier
+    hp_restore = int(player.max_hp * hp_fraction * multiplier)
+    mp_restore = int(player.max_mp * mp_fraction * multiplier)
 
     player.hp = min(player.max_hp, player.hp + hp_restore)
     player.mp = min(player.max_mp, player.mp + mp_restore)
 
-    for _ in range(SHORT_REST_PENDULUMS):
+    for _ in range(pendulums):
         clock.tick_action(cost=1.0)
 
     return {"hp_restored": hp_restore, "mp_restored": mp_restore, "comfort": comfort}
+
+
+def short_rest(player: Player, clock: PendulumClock,
+               terrain_map: Grid[Terrain] | None = None,
+               pos: tuple[int, int] | None = None,
+               bed_positions: set[tuple[int, int]] | None = None) -> dict:
+    """短休：300 钟摆，恢复 50% HP/MP。"""
+    return _rest(player, clock, SHORT_REST_PENDULUMS, 0.5, 0.5,
+                 terrain_map=terrain_map, pos=pos, bed_positions=bed_positions)
 
 
 def long_rest(player: Player, clock: PendulumClock,
               terrain_map: Grid[Terrain] | None = None,
               pos: tuple[int, int] | None = None,
               bed_positions: set[tuple[int, int]] | None = None) -> dict:
-    """长休：1500 钟摆，恢复 100% HP/MP。
-
-    Returns:
-        {"hp_restored": int, "mp_restored": int, "comfort": bool}
-    """
-    comfort = False
-    if terrain_map and pos:
-        comfort = is_comfortable(pos, terrain_map, bed_positions)
-
-    multiplier = 2 if comfort else 1
-    hp_restore = player.max_hp * multiplier
-    mp_restore = player.max_mp * multiplier
-
-    player.hp = min(player.max_hp, player.hp + hp_restore)
-    player.mp = min(player.max_mp, player.mp + mp_restore)
-
-    for _ in range(LONG_REST_PENDULUMS):
-        clock.tick_action(cost=1.0)
-
-    return {"hp_restored": hp_restore, "mp_restored": mp_restore, "comfort": comfort}
+    """长休：1500 钟摆，恢复 100% HP/MP。"""
+    return _rest(player, clock, LONG_REST_PENDULUMS, 1.0, 1.0,
+                 terrain_map=terrain_map, pos=pos, bed_positions=bed_positions)

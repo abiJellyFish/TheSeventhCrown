@@ -66,20 +66,13 @@ def resolve_cover_line(
     sy = 1 if y0 < y1 else -1
     err = dx - dy
 
+    # Bresenham 线标准实现：用 for 循环替代 while True，自然防止死循环。
+    # 先移动再检查，避免检查起点自身。
     cx, cy = x0, y0
-    while True:
-        if (cx, cy) == (x1, y1):
-            return False, None  # 到达目标
-        if (cx, cy) != (x0, y0):
-            cover_ac = _terrain_cover_ac(grid[cx, cy])
-            if cover_ac is not None:
-                if cover_ac == 0:
-                    return True, (cx, cy)  # 全身阻挡
-                if attack_roll >= cover_ac:
-                    return True, (cx, cy)  # 掩体阻挡
-                # attack_roll < cover_ac → 穿过
-        if (cx, cy) == (x1, y1):
-            break
+    steps = max(dx, dy)
+
+    for _ in range(steps):
+        # 计算下一个像素
         e2 = 2 * err
         if e2 > -dy:
             err -= dy
@@ -87,8 +80,17 @@ def resolve_cover_line(
         if e2 < dx:
             err += dx
             cy += sy
-        # 防止死循环
-        if cx == x1 and cy == y1:
-            continue
+
+        # 到达目标
+        if (cx, cy) == (x1, y1):
+            return False, None
+
+        # 检查当前格掩体
+        cover_ac = _terrain_cover_ac(grid[cx, cy])
+        if cover_ac is not None:
+            if cover_ac == 0:
+                return True, (cx, cy)  # 全身阻挡
+            if attack_roll >= cover_ac:
+                return True, (cx, cy)  # 掩体阻挡
 
     return False, None

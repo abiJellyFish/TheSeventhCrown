@@ -65,8 +65,6 @@ def discretize_state(
         keys.add("status:on_fire")
     if npc.has_status("poisoned"):
         keys.add("status:poisoned")
-    if hasattr(npc, "food_ratio") and npc.food_value < npc.food_value * 0.5:  # placeholder
-        pass  # MVP food locked, skip
     # 用 food_locked 判断
     if not getattr(npc, "food_locked", True):
         if npc.food_value < 7500:  # below 50% of 15000

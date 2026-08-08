@@ -9,6 +9,7 @@
 """
 
 import heapq
+import math
 from collections.abc import Callable
 
 
@@ -37,8 +38,10 @@ class PendulumClock:
         self._fire_events()
 
     def tick_move(self, maxS: int) -> int:
-        """移动路径推进：acc += SCALE / maxS。返回本次触发的钟摆数。"""
-        self.pendulum_acc_ticks += self.scale // maxS
+        """移动路径推进：acc += ceil(SCALE / maxS)。返回本次触发的钟摆数。"""
+        if maxS <= 0:
+            maxS = 1
+        self.pendulum_acc_ticks += math.ceil(self.scale / maxS)
         return self._drain()
 
     def tick_action(self, cost: float) -> int:

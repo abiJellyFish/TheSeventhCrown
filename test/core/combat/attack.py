@@ -1,8 +1,34 @@
 """攻击系统 —— 命中检定、部位命中、伤害结算、伤害类型、自动命中。"""
 
+import json
+import os
 import random
 from core.entity import Creature, Weapon
 from core.dice import roll_d20
+
+
+# ═══════════════════════════════════════════════════
+# 数据加载辅助
+# ═══════════════════════════════════════════════════
+
+_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+
+
+def _load_json(path: str) -> dict:
+    """加载 JSON 数据文件，不存在则返回空 dict。"""
+    full = os.path.join(_DATA_DIR, path)
+    if os.path.exists(full):
+        with open(full, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def _resolve_attack_stat(attacker: Creature, weapon: Weapon) -> int:
+    """解析攻击属性调整值。str_or_dex 取较高者。"""
+    stat = weapon.attack_stat
+    if stat == "str_or_dex":
+        return max(attacker.stat_adjust("str"), attacker.stat_adjust("dex"))
+    return attacker.stat_adjust(stat)
 
 
 # ═══════════════════════════════════════════════════
@@ -21,12 +47,7 @@ def hit_check(attacker: Creature, defender: Creature, weapon: Weapon) -> tuple[b
     if roll == 20:
         return True, roll  # 必定命中且重击
 
-    attack_stat = weapon.attack_stat
-    if attack_stat == "str_or_dex":
-        mod = max(attacker.stat_adjust("str"), attacker.stat_adjust("dex"))
-    else:
-        mod = attacker.stat_adjust(attack_stat)
-
+    mod = _resolve_attack_stat(attacker, weapon)
     total = roll + mod
     ac = defender.total_ac("chest")  # 默认打躯干
     return total >= ac, roll
@@ -36,16 +57,26 @@ def hit_check(attacker: Creature, defender: Creature, weapon: Weapon) -> tuple[b
 # 部位命中
 # ═══════════════════════════════════════════════════
 
-HIT_LOCATIONS = {
-    "humanoid": [("chest", 60), ("arms", 15), ("legs", 15), ("head", 10)],
-    "beast": [("chest", 60), ("legs", 30), ("head", 10)],
-    "undead": [("chest", 60), ("arms", 15), ("legs", 15), ("head", 10)],
-}
+def _load_hit_locations() -> dict[str, list[tuple[str, int]]]:
+    """加载部位概率表，优先从 JSON 读取，fallback 到硬编码默认值。"""
+    data = _load_json("hit_locations.json")
+    if data:
+        return {k: [(part, prob) for part, prob in v.items()] for k, v in data.items()}
+    return {
+        "humanoid": [("chest", 60), ("arms", 15), ("legs", 15), ("head", 10)],
+        "beast": [("chest", 60), ("legs", 30), ("head", 10)],
+        "undead": [("chest", 60), ("arms", 15), ("legs", 15), ("head", 10)],
+    }
+
+
+HIT_LOCATIONS = _load_hit_locations()
 
 
 def roll_hit_location(body_type: str) -> str:
     """随机命中部位。"""
-    table = HIT_LOCATIONS.get(body_type, HIT_LOCATIONS["humanoid"])
+    table = HIT_LOCATIONS.get(body_type, HIT_LOCATIONS.get("humanoid", []))
+    if not table:
+        return "chest"
     roll = random.randint(1, 100)
     cumulative = 0
     for part, prob in table:
@@ -89,12 +120,7 @@ def roll_damage(weapon: Weapon, attacker: Creature, critical: bool = False) -> i
         count *= 2
     base = roll_dice(count, sides)
 
-    attack_stat = weapon.attack_stat
-    if attack_stat == "str_or_dex":
-        mod = max(attacker.stat_adjust("str"), attacker.stat_adjust("dex"))
-    else:
-        mod = attacker.stat_adjust(attack_stat)
-
+    mod = _resolve_attack_stat(attacker, weapon)
     return base + mod
 
 
@@ -102,17 +128,22 @@ def roll_damage(weapon: Weapon, attacker: Creature, critical: bool = False) -> i
 # 伤害类型修正
 # ═══════════════════════════════════════════════════
 
-TRAIT_TO_IMMUNITY = {
-    "poison_immune": "poison",
-    "sleep_immune": None,  # handled elsewhere
-}
-TRAIT_TO_RESISTANCE = {
-    "piercing_resist": "piercing",
-}
-TRAIT_TO_VULNERABILITY = {
-    "bludgeoning_vulnerable": "bludgeoning",
-    "radiant_vulnerable": "radiant",
-}
+def _load_damage_modifiers() -> dict[str, dict[str, str | None]]:
+    """加载伤害修正映射表，优先从 JSON 读取，fallback 到硬编码默认值。"""
+    data = _load_json("damage_modifiers.json")
+    if data:
+        return data
+    return {
+        "immunities": {"poison_immune": "poison", "sleep_immune": None},
+        "resistances": {"piercing_resist": "piercing"},
+        "vulnerabilities": {"bludgeoning_vulnerable": "bludgeoning", "radiant_vulnerable": "radiant"},
+    }
+
+
+_DAMAGE_MODIFIERS = _load_damage_modifiers()
+TRAIT_TO_IMMUNITY = _DAMAGE_MODIFIERS.get("immunities", {})
+TRAIT_TO_RESISTANCE = _DAMAGE_MODIFIERS.get("resistances", {})
+TRAIT_TO_VULNERABILITY = _DAMAGE_MODIFIERS.get("vulnerabilities", {})
 
 
 def apply_damage_type_modifiers(damage: int, damage_type: str,
@@ -162,11 +193,7 @@ def resolve_attack(attacker: Creature, defender: Creature, weapon: Weapon) -> di
     # 伤害减半判定：命中值 <= 部位 AC × 1.5 则减半
     # （重击不跳过此判定）
     loc_ac = defender.total_ac(location)
-    attack_stat = weapon.attack_stat
-    if attack_stat == "str_or_dex":
-        mod = max(attacker.stat_adjust("str"), attacker.stat_adjust("dex"))
-    else:
-        mod = attacker.stat_adjust(attack_stat)
+    mod = _resolve_attack_stat(attacker, weapon)
     total_hit = roll + mod
     halved = total_hit <= loc_ac * 1.5
     if halved:

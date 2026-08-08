@@ -51,10 +51,3 @@ class DataLoader:
         """加载任意 JSON 文件（返回原始 dict）。"""
         return self._read(rel_path)
 
-    # ---- 辅助 ----
-
-    @staticmethod
-    def _match_key(entry: dict, name: str) -> bool:
-        """用文件名风格的 key 匹配生物名。"""
-        key = entry.get("key", "")
-        return key == name

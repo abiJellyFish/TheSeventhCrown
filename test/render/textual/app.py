@@ -29,9 +29,11 @@ from core.dice import roll_d20
 from core.ai.engine import BehaviorEngine
 from core.rest import short_rest, long_rest
 from core.loader import DataLoader
+from core.save.database import SaveManager
 import os
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
+SAVE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "saves")
 _loader = DataLoader(DATA_DIR)
 _ai_engine = BehaviorEngine({
     "goblin_brawler": _loader.load_json("ai/goblin_brawler"),
@@ -339,7 +341,10 @@ class TopBar(Static):
                 if available < 4:
                     center = ""
                 elif center_len > available:
-                    center = center[:available - 3] + "..."
+                    # 用 Rich Text 安全截断，不破坏 markup 标签
+                    t = Text.from_markup(center)
+                    t.truncate(available, overflow="ellipsis")
+                    center = t.markup
             center_len = visible_len(center)
             used = left_len + center_len + right_len
             remaining = max(0, width - used)
@@ -810,7 +815,6 @@ class MVPApp(App):
         self._right_panel: RightPanel | None = None
         self._input_bar: Input | None = None
         self._top_bar: TopBar | None = None
-        self._save_data: dict | None = None
         self._last_move: tuple[int, int] = (0, 0)
 
     @property
@@ -851,6 +855,7 @@ class MVPApp(App):
             "weight": 1.0, "price": {"cp": 50},
             "description": "几块晒干的兽肉和浆果，食用恢复饮食值"}))
         _update_fov(self._state)
+        self._save_manager = SaveManager(SAVE_DIR)
 
     def compose(self) -> ComposeResult:
         self._create_game()
@@ -1076,8 +1081,8 @@ class MVPApp(App):
                 self._state.clock.tick_action(1.0)
             _update_fov(self._state); self._refresh_scene(); self.refresh_all()
             self._last_move = (dc, dr)
-            # NPC 自主行为
-            self._tick_npcs()
+            # 统一后处理：NPC 行为 + 战斗检测 + UI 刷新
+            self._post_action_update()
             # 走进地下城入口
             if (not self._state.in_dungeon and self._state.dungeon_entrance
                     and self._state.player_pos == self._state.dungeon_entrance):
@@ -1098,30 +1103,19 @@ class MVPApp(App):
         else:
             self._act_log.add("现在不是你的战斗轮")
 
-    # ── NPC 自主行为 ──
+    # ── 后处理 ──
 
-    def _tick_npcs(self) -> None:
-        """探索模式下 NPC 自主行为：敌对检测 + 随机游荡。"""
-        if self._state.in_combat:
-            return
-        pc, pr = self._state.player_pos
-        for creature, (ec, er) in list(self._state.entities):
-            if creature is self._state.player or creature.hp <= 0:
-                continue
-            # 敌对生物：FOV 内发现玩家 → 开战
-            if creature.faction == "hostile" and (ec, er) in self._state.fov_cache:
-                self._act_log.add(f"{creature.name} 发现了{self._pn}!")
-                self._start_combat(creature)
-                return
-            # 随机游荡
-            if random.random() < 0.25:
-                dx = random.choice([-1, 0, 1])
-                dy = random.choice([-1, 0, 1])
-                if dx == 0 and dy == 0:
-                    continue
-                nx, ny = ec + dx, er + dy
-                if self._state.map.within_bounds(nx, ny):
-                    self._state.move_entity(creature, ec, er, nx, ny)
+    def _post_action_update(self) -> None:
+        """玩家行动后统一处理：检查待开战目标、刷新 UI。"""
+        # 检查是否有 NPC 触发的战斗（由 clock 回调 → _advance_npcs 设置）
+        if self._state.pending_combat_target:
+            target = self._state.pending_combat_target
+            self._state.pending_combat_target = None
+            self._act_log.add(f"{target.name} 发现了{self._pn}!")
+            self._start_combat(target)
+        # 刷新场景和地图
+        _update_fov(self._state)
+        self._refresh_scene()
         self.refresh_all()
 
     # ── Observe ──
@@ -1863,7 +1857,7 @@ class MVPApp(App):
                       self._state.bed_positions)
         comfort = "，睡得很舒适" if r.get("comfort") else ""
         self._act_log.add(f"{self._pn} 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
-        self.refresh_all()
+        self._post_action_update()
 
     # ── Speed modes ──
 
@@ -1918,7 +1912,7 @@ class MVPApp(App):
         for _ in range(30):
             self._state.clock.tick_action(1.0)
         self._act_log.add("时间流逝...")
-        self.refresh_all()
+        self._post_action_update()
 
     # ── Stub actions (待实现) ──
 
@@ -2021,20 +2015,50 @@ class MVPApp(App):
                        self._state.bed_positions)
         comfort = "，睡得很舒适" if r.get("comfort") else ""
         self._act_log.add(f"{self._pn} 短休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
-        self.refresh_all()
+        self._post_action_update()
 
     # ── Save ──
 
     def action_quick_save(self) -> None:
-        self._save_data = {"hp": self._state.player.hp, "mp": self._state.player.mp,
-                           "pos": self._state.player_pos, "map": self._state.current_map}
+        """快速存档 — 固定使用 quicksave 槽位（持久化到磁盘）。"""
+        if self._state.in_combat:
+            self._act_log.add("战斗中无法存档")
+            return
+        self._save_manager.save(self._state, slot="quicksave")
         self._act_log.add("[快速存档] 已保存")
 
     def action_quick_load(self) -> None:
-        if not self._save_data: self._act_log.add("没有存档"); return
-        d = self._save_data
-        self._state.player.hp = d["hp"]; self._state.player.mp = d["mp"]
-        self._state.player_pos = d["pos"]
-        if d["map"] != self._state.current_map: _load_map(self._state, d["map"])
-        self._end_combat(); _update_fov(self._state)
-        self._act_log.add("[快速读档] 已恢复"); self.refresh_all()
+        """快速读档 — 从 quicksave 槽位恢复。"""
+        if self._state.in_combat:
+            self._act_log.add("战斗中无法读档")
+            return
+
+        # 检查存档是否存在
+        import json
+        path = os.path.join(self._save_manager._dir, "quicksave.json")
+        if not os.path.exists(path):
+            self._act_log.add("没有快速存档")
+            return
+
+        # 获取存档中的地图名，必要时重建地图
+        with open(path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        current_map = meta.get("current_map", "")
+        if current_map != self._state.current_map:
+            # 需要加载不同地图：重建世界/地下城
+            if current_map == "世界":
+                _build_world(self._state)
+            elif current_map == "地下城":
+                _build_dungeon(self._state)
+
+        # 恢复状态
+        success = self._save_manager.load(self._state, slot="quicksave", loader=_loader)
+        if success:
+            self._end_combat()
+            _update_fov(self._state)
+            self._refresh_scene()
+            self._act_log.add("[快速读档] 已恢复")
+        else:
+            self._act_log.add("[快速读档] 失败")
+        self.refresh_all()

@@ -1,5 +1,6 @@
 """GameState —— 全局游戏状态，持有地图、实体、时间、战斗状态。"""
 
+import random
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,12 +50,18 @@ class GameState:
     light_map: Grid | None = None
     fov_cache: set = field(default_factory=set)       # 当前 FOV 可见格集合
 
+    # 战技数据
+    maneuvers: list[dict] = field(default_factory=list)
+
     # 观察模式
     observe_mode: bool = False
     observe_cursor: tuple[int, int] = (0, 0)
 
     # 慢速模式
     slow_mode: bool = False
+
+    # NPC 推进回调设置的待开战目标
+    pending_combat_target: Creature | None = None
 
     def __post_init__(self):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.PASSABLE)
@@ -100,5 +107,24 @@ class GameState:
     # ---- NPC 推进 ----
 
     def _advance_npcs(self, delta: float) -> None:
-        """每钟摆 NPC 行动结算（探索模式）。MVP: 只随机游荡，不做复杂 AI。"""
-        pass
+        """每钟摆 NPC 行动结算（探索模式）。MVP: 随机游荡 + 记录敌对发现。"""
+        if self.in_combat:
+            return
+        for creature, (ec, er) in list(self.entities):
+            if creature is self.player or creature.hp <= 0:
+                continue
+            # 随机游荡（25% 概率每钟摆移动一格）
+            if random.random() < 0.25:
+                dx = random.choice([-1, 0, 1])
+                dy = random.choice([-1, 0, 1])
+                if dx == 0 and dy == 0:
+                    continue
+                nx, ny = ec + dx, er + dy
+                if self.map.within_bounds(nx, ny):
+                    self.move_entity(creature, ec, er, nx, ny)
+        # 敌对检测：NPC 游荡后可能进入玩家 FOV
+        pc, pr = self.player_pos
+        for creature, (ec, er) in self.entities:
+            if creature.faction == "hostile" and (ec, er) in self.fov_cache:
+                self.pending_combat_target = creature
+                break
