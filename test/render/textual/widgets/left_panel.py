@@ -181,19 +181,11 @@ _SPECIAL_ACTIONS_CACHE: list | None = None
 
 
 def _load_special_actions() -> list:
-    """加载特殊行动定义，fallback 到硬编码默认值。"""
+    """加载特殊行动定义。"""
     global _SPECIAL_ACTIONS_CACHE
     if _SPECIAL_ACTIONS_CACHE is not None:
         return _SPECIAL_ACTIONS_CACHE
     path = os.path.join(_DATA_DIR, "maneuvers.json")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        _SPECIAL_ACTIONS_CACHE = data.get("special_actions", [])
-    if not _SPECIAL_ACTIONS_CACHE:
-        _SPECIAL_ACTIONS_CACHE = [
-            {"key": "reroll", "name": "奋力一击", "ap_cost": 2, "desc": "额外消耗 2AP，重掷攻击骰"},
-            {"key": "feint", "name": "虚晃一招", "ap_cost": 1, "desc": "消耗 1AP，下次攻击命中+2"},
-            {"key": "taunt", "name": "挑衅", "ap_cost": 1, "desc": "消耗 1AP，目标下回合更容易攻击你"},
-        ]
+    with open(path, "r", encoding="utf-8") as f:
+        _SPECIAL_ACTIONS_CACHE = json.load(f).get("special_actions", [])
     return _SPECIAL_ACTIONS_CACHE

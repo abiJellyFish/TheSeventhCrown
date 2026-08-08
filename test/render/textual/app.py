@@ -63,35 +63,24 @@ _SCENE_ACTIONS_CACHE: dict | None = None
 
 
 def _load_dialogues() -> dict:
-    """加载 NPC 对话数据，fallback 到硬编码默认值。"""
+    """加载 NPC 对话数据。"""
     global _DIALOGUES_CACHE
     if _DIALOGUES_CACHE is not None:
         return _DIALOGUES_CACHE
     path = os.path.join(DATA_DIR, "dialogues.json")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            _DIALOGUES_CACHE = json.load(f)
-    if not _DIALOGUES_CACHE:
-        _DIALOGUES_CACHE = {
-            "idle": {"low": "嗯...你好", "medium": "你好，旅行者", "high": "欢迎！有什么需要帮忙的吗"},
-        }
+    with open(path, "r", encoding="utf-8") as f:
+        _DIALOGUES_CACHE = json.load(f)
     return _DIALOGUES_CACHE
 
 
 def _load_scene_actions() -> dict:
-    """加载场景描述文本，fallback 到硬编码默认值。"""
+    """加载场景描述文本。"""
     global _SCENE_ACTIONS_CACHE
     if _SCENE_ACTIONS_CACHE is not None:
         return _SCENE_ACTIONS_CACHE
     path = os.path.join(DATA_DIR, "scene_actions.json")
-    if os.path.exists(path):
-        with open(path, "r", encoding="utf-8") as f:
-            _SCENE_ACTIONS_CACHE = json.load(f)
-    if not _SCENE_ACTIONS_CACHE:
-        _SCENE_ACTIONS_CACHE = {
-            "idle": "静静地站在原地",
-            "fallback": "待在原地",
-        }
+    with open(path, "r", encoding="utf-8") as f:
+        _SCENE_ACTIONS_CACHE = json.load(f)
     return _SCENE_ACTIONS_CACHE
 
 
@@ -169,42 +158,32 @@ class MVPApp(App):
         return self._state.player.name
 
     def _create_game(self) -> None:
-        # 加载玩家初始数据
         import json
         import core.entity as ent
-        ps_data = {"name": "凯恩", "class": "fighter",
-                   "stats": {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
-                   "boosted_stats": 2, "start_pos": [9, 26],
-                   "equipment": {}, "inventory": []}
-        ps_path = os.path.join(DATA_DIR, "player_start.json")
-        if os.path.exists(ps_path):
-            with open(ps_path, "r", encoding="utf-8") as f:
-                ps_data = json.load(f)
 
-        stats = dict(ps_data.get("stats", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}))
-        boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], ps_data.get("boosted_stats", 2))
+        # 加载玩家初始数据
+        with open(os.path.join(DATA_DIR, "player_start.json"), "r", encoding="utf-8") as f:
+            ps_data = json.load(f)
+
+        stats = dict(ps_data["stats"])
+        boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], ps_data["boosted_stats"])
         for s in boosted:
-            stats[s] = stats.get(s, 8) + 2
+            stats[s] += 2
 
-        player_class = ps_data.get("class", "fighter")
-        if player_class == "fighter":
-            player = Player.create_fighter(name=ps_data.get("name", "凯恩"), stats=stats)
+        if ps_data["class"] == "fighter":
+            player = Player.create_fighter(name=ps_data["name"], stats=stats)
         else:
-            player = Player.create_fighter(name=ps_data.get("name", "凯恩"), stats=stats)
+            player = Player.create_fighter(name=ps_data["name"], stats=stats)
 
         self._state = GameState(player=player, map_width=80, map_height=60)
 
-        # 加载战技数据（新格式含 maneuvers 和 special_actions）
-        maneuver_path = os.path.join(DATA_DIR, "maneuvers.json")
-        if os.path.exists(maneuver_path):
-            with open(maneuver_path, "r", encoding="utf-8") as f:
-                mdata = json.load(f)
-            self._state.maneuvers = mdata.get("maneuvers", mdata if isinstance(mdata, list) else [])
-        else:
-            self._state.maneuvers = []
+        # 加载战技数据
+        with open(os.path.join(DATA_DIR, "maneuvers.json"), "r", encoding="utf-8") as f:
+            mdata = json.load(f)
+        self._state.maneuvers = mdata.get("maneuvers", mdata if isinstance(mdata, list) else [])
 
         build_world(self._state, _loader)
-        self._state.player_pos = tuple(ps_data.get("start_pos", [9, 26]))
+        self._state.player_pos = tuple(ps_data["start_pos"])
 
         # 初始装备
         for slot, item_data in ps_data.get("equipment", {}).items():
