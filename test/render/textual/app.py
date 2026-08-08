@@ -10,6 +10,7 @@ from textual.events import Key
 
 from core.game_state import GameState
 from core.entity import Player, Creature, Weapon
+import core.entity as ent
 from core.movement import Terrain
 from core.grid import Grid
 from core.movement import find_path
@@ -160,7 +161,6 @@ class MVPApp(App):
 
     def _create_game(self) -> None:
         import json
-        import core.entity as ent
 
         # 加载玩家初始数据
         with open(os.path.join(DATA_DIR, "player_start.json"), "r", encoding="utf-8") as f:
@@ -571,7 +571,6 @@ class MVPApp(App):
                 if not (0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height): continue
                 if self._state.map[nc, nr] == Terrain.DIFFICULT:
                     b = random.randint(1, 4)
-                    import core.entity as ent
                     berry = ent.Item.from_dict({
                         "name": "浆果", "item_type": "consumable",
                         "effect": "restore_food", "amount": "500",
