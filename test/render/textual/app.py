@@ -606,7 +606,7 @@ class MVPApp(App):
         combatants = [self._state.player]
         pc, pr = self._state.player_pos
         for creature, (ec, er) in self._state.entities:
-            if creature.hp > 0 and creature is not self._state.player and abs(ec - pc) <= 5:
+            if creature.hp > 0 and creature.faction == "hostile" and abs(ec - pc) <= 5:
                 combatants.append(creature)
                 creature.ap = creature.max_ap
         self._state.combat_initiative = roll_initiative(combatants)
