@@ -313,13 +313,28 @@ class TopBar(Static):
                     nm = f"[bold yellow]{nm}[/]"
                 names.append(nm)
             center = f"{prefix}{' > '.join(names)}{suffix}"
-            used = visible_len(left) + visible_len(center) + visible_len(right)
+            # 确保右侧始终固定在屏幕右端，center 溢出时截断
+            right_len = visible_len(right)
+            left_len = visible_len(left)
+            center_len = visible_len(center)
+            if left_len + center_len + right_len > width:
+                available = width - left_len - right_len
+                if available < 4:
+                    center = ""
+                elif center_len > available:
+                    center = center[:available - 3] + "..."
+            center_len = visible_len(center)
+            used = left_len + center_len + right_len
             remaining = max(0, width - used)
             pad_left = remaining // 2
             pad_right = remaining - pad_left
             return f"{left}{' ' * pad_left}{center}{' ' * pad_right}{right}"
         else:
-            pad = max(1, width - visible_len(left) - visible_len(right) - 2)
+            right_len = visible_len(right)
+            left_len = visible_len(left)
+            if left_len + right_len > width:
+                right = right[:max(0, width - left_len - 3)] + "..." if width - left_len > 6 else ""
+            pad = max(1, width - left_len - visible_len(right) - 2)
             return f"{left}{' ' * pad}{right}"
 
 
@@ -1595,7 +1610,10 @@ class MVPApp(App):
 
         actions_taken = 0
         while npc.ap > 0:
-            nc, nr = pos if (pos := self._find_entity_pos(npc)) else (0, 0)
+            pos = self._find_entity_pos(npc)
+            if pos is None: break
+            nc, nr = pos
+
             # 收集可执行的动作（总 AP 足够 + 条件满足）
             available = []
             for action in npc.actions:
@@ -1604,9 +1622,19 @@ class MVPApp(App):
                     available.append(action)
 
             if not available:
-                if actions_taken == 0:
-                    self._act_log.add(f"{npc.name} 没有可用的动作")
-                break
+                # 无法发动任何动作，但还可以移动：向玩家靠近
+                if max(abs(nc - pc), abs(nr - pr)) <= 1:
+                    # 已在相邻格，确实无可用动作
+                    if actions_taken == 0:
+                        self._act_log.add(f"{npc.name} 没有可用的动作")
+                    break
+                moved = self._move_npc_toward(npc, nc, nr, pc, pr)
+                if moved:
+                    npc.ap -= 1
+                    actions_taken += 1
+                else:
+                    break
+                continue
 
             action = random.choice(available)
             self._execute_npc_action(npc, action, nc, nr, pc, pr)
