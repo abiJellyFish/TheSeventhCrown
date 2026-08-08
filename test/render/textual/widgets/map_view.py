@@ -62,6 +62,8 @@ class MapView(Static):
                     text.append("@", style=f"bold bright_cyan{cur}")
                 elif (col, row) in self.state.bed_positions:
                     text.append("=", style=f"bold cyan{cur}")
+                elif (col, row) in self.state.campfire_positions:
+                    text.append("~", style=f"bold red{cur}")
                 elif self.state.dungeon_entrance and (col, row) == self.state.dungeon_entrance:
                     text.append(">", style=f"bold magenta{cur}")
                 else:
@@ -90,6 +92,8 @@ class MapView(Static):
                 legend_seen.setdefault(ch, terrain_labels[ch])
             if pos in self.state.bed_positions:
                 legend_seen["="] = "床"
+            if pos in self.state.campfire_positions:
+                legend_seen["~"] = "篝火"
             if pos in self.state.door_states:
                 legend_seen["]"] = "门"
             if self.state.dungeon_entrance and pos == self.state.dungeon_entrance:

@@ -25,6 +25,7 @@ class GameState:
     map_exits: list[dict] = field(default_factory=list)
     loot_spots: list[dict] = field(default_factory=list)
     bed_positions: set[tuple[int, int]] = field(default_factory=set)
+    campfire_positions: set[tuple[int, int]] = field(default_factory=set)
     door_states: dict[tuple[int, int], bool] = field(default_factory=dict)
     dungeon_entrance: tuple[int, int] | None = None
     dungeon_exit: tuple[int, int] | None = None

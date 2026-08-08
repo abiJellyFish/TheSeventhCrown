@@ -32,6 +32,10 @@ def _place_zone(state: GameState, data: dict, loader) -> None:
     for dx, dy in data.get("difficult", []):
         state.map[ox + dx, oy + dy] = Terrain.DIFFICULT
 
+    # 篝火
+    for fx, fy in data.get("campfires", []):
+        state.campfire_positions.add((ox + fx, oy + fy))
+
     # 床
     for bx, by in data.get("beds", []):
         state.bed_positions.add((ox + bx, oy + by))
@@ -68,6 +72,7 @@ def build_world(state: GameState, loader) -> None:
     state.map = Grid[Terrain](w, h, Terrain.PASSABLE)
     state.entities = []
     state.bed_positions = set()
+    state.campfire_positions = set()
     state.door_states = {}
     state.location_map = {}
     random.seed(42)
