@@ -233,3 +233,114 @@ class TestCover:
                                           target=(2, 0), grid=g,
                                           weapon_type="thrown")
         assert hit_cover is False  # thrown ignores same-height cover
+
+
+class TestCoverIntegration:
+    """掩体集成测试：resolve_attack 端到端掩体检查。"""
+
+    @pytest.fixture
+    def ranged_weapon(self):
+        return Weapon(name="短弓", weapon_type="ranged", damage="1d6",
+                      damage_type="piercing", attack_stat="dex",
+                      ap_cost=2, range_normal=8, range_max=14,
+                      properties=["ammo", "two_handed"])
+
+    @pytest.fixture
+    def melee_weapon(self):
+        return Weapon(name="长剑", weapon_type="melee", damage="1d8",
+                      damage_type="slashing", attack_stat="str", ap_cost=3)
+
+    def test_ranged_through_wall_blocked(self, player, goblin, ranged_weapon):
+        """远程攻击穿墙时被掩体阻挡。"""
+        import core.combat.attack as atk_mod
+        g = Grid[Terrain](6, 6, Terrain.PASSABLE)
+        g[2, 0] = Terrain.WALL  # 墙在攻击者和目标之间
+        original = atk_mod.roll_d20
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 15
+        try:
+            result = resolve_attack(
+                player, goblin, ranged_weapon,
+                attacker_pos=(0, 0), target_pos=(3, 0), grid=g,
+            )
+            # 墙是全身掩体，必然阻挡
+            assert result["hit"] is False
+            assert result["blocked_by_cover"] is True
+            assert result["cover_pos"] == (2, 0)
+        finally:
+            atk_mod.roll_d20 = original
+
+    def test_ranged_through_difficult_terrain_blocked(self, player, goblin, ranged_weapon):
+        """远程攻击穿过困难地形（半身掩体 AC5）时可能被阻挡。"""
+        import core.combat.attack as atk_mod
+        g = Grid[Terrain](6, 6, Terrain.PASSABLE)
+        g[1, 0] = Terrain.DIFFICULT  # 半身掩体 AC5
+        original = atk_mod.roll_d20
+        # roll=12 先命中目标(12+1>=10 AC)，再被掩体阻挡(12>=5)
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 12
+        try:
+            result = resolve_attack(
+                player, goblin, ranged_weapon,
+                attacker_pos=(0, 0), target_pos=(2, 0), grid=g,
+            )
+            assert result["blocked_by_cover"] is True
+        finally:
+            atk_mod.roll_d20 = original
+
+    def test_ranged_no_cover_passes(self, player, goblin, ranged_weapon):
+        """远程攻击无障碍物时正常命中。"""
+        import core.combat.attack as atk_mod
+        g = Grid[Terrain](6, 6, Terrain.PASSABLE)
+        original = atk_mod.roll_d20
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 18
+        try:
+            result = resolve_attack(
+                player, goblin, ranged_weapon,
+                attacker_pos=(0, 0), target_pos=(3, 0), grid=g,
+            )
+            assert result["hit"] is True
+            assert result["blocked_by_cover"] is False
+        finally:
+            atk_mod.roll_d20 = original
+
+    def test_melee_ignores_cover(self, player, goblin, melee_weapon):
+        """近战攻击无视掩体。"""
+        import core.combat.attack as atk_mod
+        g = Grid[Terrain](6, 6, Terrain.PASSABLE)
+        g[1, 0] = Terrain.WALL  # 墙在中间
+        original = atk_mod.roll_d20
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 15
+        try:
+            result = resolve_attack(
+                player, goblin, melee_weapon,
+                attacker_pos=(0, 0), target_pos=(2, 0), grid=g,
+            )
+            # 近战跳过掩体检查，正常命中
+            assert result["hit"] is True
+            assert result["blocked_by_cover"] is False
+        finally:
+            atk_mod.roll_d20 = original
+
+    def test_no_position_params_skips_cover(self, player, goblin, ranged_weapon):
+        """不传坐标参数时跳过掩体检查（向后兼容）。"""
+        import core.combat.attack as atk_mod
+        original = atk_mod.roll_d20
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 15
+        try:
+            result = resolve_attack(player, goblin, ranged_weapon)
+            # 无坐标时不做掩体检查，正常命中
+            assert result["hit"] is True
+            assert result["blocked_by_cover"] is False
+        finally:
+            atk_mod.roll_d20 = original
+
+    def test_result_always_has_blocked_by_cover_field(self, player, goblin, melee_weapon):
+        """所有攻击结果都应包含 blocked_by_cover 字段。"""
+        import core.combat.attack as atk_mod
+        original = atk_mod.roll_d20
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 1  # 必定未命中
+        try:
+            result = resolve_attack(player, goblin, melee_weapon)
+            assert "blocked_by_cover" in result
+            assert result["blocked_by_cover"] is False
+        finally:
+            atk_mod.roll_d20 = original

@@ -23,6 +23,15 @@
       "effect": "restore_food", "amount": "15000", "ap_cost": 1,
       "weight": 1.0, "price": {"cp": 50},
       "description": "几块晒干的兽肉和浆果，食用恢复饮食值"
+    },
+    {
+      "name": "短弓", "item_type": "weapon",
+      "weapon_type": "ranged", "category": "martial",
+      "damage": "1d6", "damage_type": "piercing", "attack_stat": "dex",
+      "ap_cost": 2, "range_normal": 8, "range_max": 14,
+      "properties": ["ammo", "two_handed"],
+      "weight": 1.0, "price": {"gp": 1, "sp": 50},
+      "description": "短弓，可远程攻击。需要弹药，普通弹药无限免费。"
     }
   ]
 }

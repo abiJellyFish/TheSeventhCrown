@@ -15,7 +15,7 @@ from core.grid import Grid
 from core.movement import find_path
 from core.fov import LightLevel, compute_fov
 from core.combat.initiative import roll_initiative
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice
+from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack
 from core.combat.flow import CombatFlow
 from core.map.generation import build_world, build_dungeon
 from core.dice import roll_d20
@@ -192,7 +192,10 @@ class MVPApp(App):
                 self._state.player.equipment[slot] = ent.Weapon.from_dict(item_data)
         # 预置初始物品
         for item_data in ps_data.get("inventory", []):
-            _add_to_inventory(self._state.player, ent.Item.from_dict(item_data))
+            if item_data.get("item_type") == "weapon":
+                _add_to_inventory(self._state.player, ent.Weapon.from_dict(item_data))
+            else:
+                _add_to_inventory(self._state.player, ent.Item.from_dict(item_data))
 
         _update_fov(self._state)
         self._save_manager = SaveManager(SAVE_DIR)
@@ -360,6 +363,11 @@ class MVPApp(App):
             inv = self._state.player.inventory
             if 0 <= idx < len(inv):
                 item = inv[idx]
+                # 武器装备：从物品栏装备到手上
+                if isinstance(item, ent.Weapon):
+                    self._equip_weapon_from_inventory(item, idx)
+                    self._right_panel.refresh()
+                    return
                 # AP 检查（与武器攻击复用同一模式：item.ap_cost）
                 cost = item.ap_cost
                 if self._state.in_combat and self._state.player.ap < cost:
@@ -379,6 +387,25 @@ class MVPApp(App):
         except (ValueError, IndexError):
             self._act_log.add("用法: :I序号  如 :I1 使用第1个物品")
         self._right_panel.refresh()
+
+    def _equip_weapon_from_inventory(self, weapon: "ent.Weapon", inv_idx: int) -> None:
+        """从物品栏装备武器。双手武器与主手互换，单手武器装备到主手。"""
+        inv = self._state.player.inventory
+        equip = self._state.player.equipment
+        old_weapon = equip.get("right_hand")
+
+        # 从物品栏移除武器
+        inv.pop(inv_idx)
+
+        if old_weapon is not None:
+            # 原武器放回物品栏
+            _add_to_inventory(self._state.player, old_weapon)
+            equip["right_hand"] = weapon
+            self._act_log.add(
+                f"{self._pn} 收起了{old_weapon.name}，装备了{weapon.name}")
+        else:
+            equip["right_hand"] = weapon
+            self._act_log.add(f"{self._pn} 装备了{weapon.name}")
 
     def _apply_item_effect(self, item) -> None:
         """根据物品 effect 字段应用效果，支持数值和骰子字符串。"""
@@ -682,26 +709,35 @@ class MVPApp(App):
         if weapon is None:
             self._act_log.add(f"{self._pn} 赤手空拳!"); return
         if self._state.player.ap < weapon.ap_cost: self._act_log.add("AP 不足"); return
+
+        # 确定有效攻击范围
+        if weapon.weapon_type == "ranged":
+            reach = max(weapon.range_max, 1)
+        else:
+            reach = 1
+
         target = None
         for creature, (ec, er) in self._state.entities:
-            if creature is not self._state.player and creature.hp > 0 and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
+            if (creature is not self._state.player and creature.hp > 0
+                    and abs(ec - pc) <= reach and abs(er - pr) <= reach):
                 target = creature; break
         if target is None: self._act_log.add(f"{self._pn} 环顾四周，没有目标"); return
         self._state.player.ap -= weapon.ap_cost
-        hit, roll = hit_check(self._state.player, target, weapon)
-        if hit:
-            dmg = roll_damage(weapon, self._state.player, critical=(roll == 20))
-            dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
-            target.hp = max(0, target.hp - dmg)
+        result = resolve_attack(
+            self._state.player, target, weapon,
+            attacker_pos=(pc, pr),
+            target_pos=self._find_entity_pos(target),
+            grid=self._state.map,
+        )
+        if result["hit"]:
             self._check_faction_reaction(target)
-            self._act_log.add(f"{self._pn} 挥剑砍中了 {target.name}，{target.name} 发出一声惨叫")
+            self._act_log.add(f"{self._pn} 击中了 {target.name}，{target.name} 发出一声惨叫")
             if target.hp <= 0: self._act_log.add(f"{target.name} 倒在地上，不再动弹")
         else:
-            reduce_tenacity(target, roll)
-            self._act_log.add(f"{self._pn} 挥剑砍向 {target.name}，被躲开了")
-            if target.tenacity == 0 and "incapacitated" not in target.statuses:
-                target.statuses.append("incapacitated")
-                self._act_log.add(f"{target.name} 被击破防御，陷入失能!")
+            if result.get("blocked_by_cover"):
+                self._act_log.add(f"{self._pn} 的攻击被掩体挡住了")
+            else:
+                self._act_log.add(f"{self._pn} 的攻击被 {target.name} 躲开了")
         self.refresh_all()
 
     # ── 攻击流程状态机 ──
@@ -779,22 +815,28 @@ class MVPApp(App):
             damage_type=damage_type, attack_stat=attack_stat_name,
             ap_cost=ap_cost)
 
-        hit, roll = hit_check(npc, target, weapon)
-        if hit:
-            critical = (roll == 20)
-            dmg = roll_damage(weapon, npc, critical=critical)
-            dmg = apply_damage_type_modifiers(dmg, damage_type, target)
-            target.hp = max(0, target.hp - dmg)
+        npc_pos = self._find_entity_pos(npc)
+        target_pos = self._find_entity_pos(target)
+        result = resolve_attack(
+            npc, target, weapon,
+            attacker_pos=npc_pos, target_pos=target_pos,
+            grid=self._state.map,
+        )
+        if result["hit"]:
             self._act_log.add(
                 f"{npc.name}使用{weapon_name}击中了{target.name}，"
-                f"造成 {dmg} 点{damage_type}伤害")
+                f"造成 {result['damage']} 点{damage_type}伤害")
             if target is self._state.player and target.hp <= 0:
                 self._act_log.add(f"{self._pn} 被击倒了! [R]长休恢复")
         else:
-            reduce_tenacity(target, roll)
-            self._act_log.add(
-                f"{npc.name}使用{weapon_name}攻击{target.name}，"
-                f"被躲开了 (roll={roll})")
+            if result.get("blocked_by_cover"):
+                self._act_log.add(
+                    f"{npc.name}使用{weapon_name}攻击{target.name}，"
+                    f"被掩体挡住了")
+            else:
+                self._act_log.add(
+                    f"{npc.name}使用{weapon_name}攻击{target.name}，"
+                    f"被躲开了 (roll={result['roll']})")
 
     def _npc_special_action(self, npc: Creature, action: dict, target,
                              nc: int, nr: int, tc: int, tr: int) -> None:

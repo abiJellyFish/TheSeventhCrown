@@ -5,6 +5,9 @@ import os
 import random
 from core.entity import Creature, Weapon
 from core.dice import roll_d20
+from core.grid import Grid
+from core.movement import Terrain
+from core.combat.cover import resolve_cover_line
 
 
 # ═══════════════════════════════════════════════════
@@ -166,8 +169,21 @@ def apply_damage_type_modifiers(damage: int, damage_type: str,
 # 完整攻击结算
 # ═══════════════════════════════════════════════════
 
-def resolve_attack(attacker: Creature, defender: Creature, weapon: Weapon) -> dict:
-    """完整一次攻击结算。
+def resolve_attack(
+    attacker: Creature, defender: Creature, weapon: Weapon,
+    attacker_pos: tuple[int, int] | None = None,
+    target_pos: tuple[int, int] | None = None,
+    grid: Grid[Terrain] | None = None,
+) -> dict:
+    """完整一次攻击结算（含掩体检查）。
+
+    Args:
+        attacker: 攻击者
+        defender: 防御者
+        weapon: 武器
+        attacker_pos: 攻击者坐标（掩体检查用，可选）
+        target_pos: 目标坐标（掩体检查用，可选）
+        grid: 地形网格（掩体检查用，可选）
 
     Returns:
         {
@@ -177,6 +193,8 @@ def resolve_attack(attacker: Creature, defender: Creature, weapon: Weapon) -> di
             "location": str | None,
             "damage": int,
             "halved": bool,
+            "blocked_by_cover": bool,
+            "cover_pos": tuple | None,
         }
     """
     hit, roll = hit_check(attacker, defender, weapon)
@@ -184,7 +202,19 @@ def resolve_attack(attacker: Creature, defender: Creature, weapon: Weapon) -> di
         # 未命中 → 削韧
         reduce_tenacity(defender, roll)
         return {"hit": False, "critical": False, "roll": roll,
-                "location": None, "damage": 0, "halved": False}
+                "location": None, "damage": 0, "halved": False,
+                "blocked_by_cover": False, "cover_pos": None}
+
+    # 掩体检查（仅远程武器，需要坐标和地形网格）
+    if weapon.weapon_type == "ranged" and attacker_pos and target_pos and grid:
+        blocked, cover_pos = resolve_cover_line(
+            roll, attacker_pos, target_pos, grid, weapon.weapon_type
+        )
+        if blocked:
+            reduce_tenacity(defender, roll)  # 掩体阻挡，等效未命中
+            return {"hit": False, "critical": False, "roll": roll,
+                    "location": None, "damage": 0, "halved": False,
+                    "blocked_by_cover": True, "cover_pos": cover_pos}
 
     critical = (roll == 20)
     location = roll_hit_location(defender.body_type)
@@ -206,7 +236,8 @@ def resolve_attack(attacker: Creature, defender: Creature, weapon: Weapon) -> di
     defender.hp = max(0, defender.hp - damage)
 
     return {"hit": True, "critical": critical, "roll": roll,
-            "location": location, "damage": damage, "halved": halved}
+            "location": location, "damage": damage, "halved": halved,
+            "blocked_by_cover": False, "cover_pos": None}
 
 
 # ═══════════════════════════════════════════════════

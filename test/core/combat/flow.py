@@ -3,7 +3,7 @@
 import random
 from core.entity import Creature, Weapon
 from core.dice import roll_d20
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers
+from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack
 
 
 class CombatFlow:
@@ -325,22 +325,26 @@ class CombatFlow:
 
     # ── 通用 ──
 
+    def _find_entity_pos(self, target: Creature) -> tuple[int, int] | None:
+        """查找生物在地图上的坐标。"""
+        for c, (ec, er) in self._state.entities:
+            if c is target:
+                return (ec, er)
+        return None
+
     def resolve_melee_attack(self, attacker, target, weapon,
                              hit_bonus=0, damage_bonus=0) -> dict:
-        """执行一次近战攻击检定，返回结果 dict。不修改 AP，不切换回合。"""
-        hit, roll = hit_check(attacker, target, weapon)
-        if hit:
-            critical = (roll == 20)
-            dmg = roll_damage(weapon, attacker, critical=critical)
-            dmg += damage_bonus
-            dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
-            target.hp = max(0, target.hp - dmg)
-            return {"hit": True, "critical": critical, "roll": roll,
-                    "damage": dmg, "target_name": target.name}
-        else:
-            reduce_tenacity(target, roll)
-            return {"hit": False, "roll": roll,
-                    "target_name": target.name}
+        """执行一次攻击检定，返回结果 dict。不修改 AP，不切换回合。"""
+        attacker_pos = self._find_entity_pos(attacker)
+        target_pos = self._find_entity_pos(target)
+        result = resolve_attack(
+            attacker, target, weapon,
+            attacker_pos=attacker_pos, target_pos=target_pos,
+            grid=self._state.map,
+        )
+        if result["hit"]:
+            result["damage"] += damage_bonus
+        return result
 
     def check_faction_reaction(self, target: Creature) -> None:
         """玩家攻击非敌对生物后检查阵营反应。"""
