@@ -1,6 +1,7 @@
 """Combat system tests — initiative, hit/damage, death, tenacity, cover."""
 
 import pytest
+from unittest.mock import MagicMock
 from core.combat.initiative import roll_initiative
 from core.combat.attack import (
     hit_check, roll_hit_location, roll_damage, AutoHitAttack,
@@ -316,17 +317,24 @@ class TestRangedTargetFlow:
         finally:
             flow_mod.roll_d20 = original
 
-    def test_confirm_rejects_empty_tile(self, flow, ranged_weapon):
-        """光标位置无目标时不能确认。"""
+    def test_confirm_allows_empty_tile(self, flow, ranged_weapon):
+        """光标在空格子上时允许确认（射空）。"""
+        from core.grid import Grid
+        from core.movement import Terrain
         flow._state.pending_attack = {"weapon": ranged_weapon, "mode": "right_hand"}
         flow._state.observe_cursor = (10, 5)
         flow._state.player_pos = (5, 5)
+        flow._state.fov_cache = {(10, 5)}
         flow._state.combat_phase = "ranged_target"
+        flow._state.map = Grid[Terrain](20, 20, Terrain.PASSABLE)
         flow._state.get_entity_at = lambda cx, cy: None
+        flow._state.in_combat = False
+        flow._state.player = MagicMock()
+        flow._state.player.ap = 6
 
         flow.confirm_ranged_target()
-        # 仍处于 ranged_target，target 未设置
-        assert flow._state.combat_phase == "ranged_target"
+        # 确认后应直接结束攻击，回到 idle（pending_attack 已清空）
+        assert flow._state.combat_phase == "idle"
 
     def test_cancel_ranged_target(self, flow, ranged_weapon):
         """取消远程瞄准返回 select_action。"""

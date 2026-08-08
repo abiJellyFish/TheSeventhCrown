@@ -5,6 +5,7 @@ import os
 from textual.widgets import Static
 
 from core.game_state import GameState
+from core.movement import Terrain
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
 
@@ -110,9 +111,18 @@ class LeftPanel(Static):
         max_range = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
         dist = max(abs(oc - pc), abs(oro - pr))
 
+        # 地表
+        terrain = self.state.map[oc, oro]
+        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形",
+                   Terrain.PASSABLE: "草地/平地"}
+        terrain_name = t_names.get(terrain, "未知")
+
+        # 目标
         target_info = "(空地)"
         ent = self.state.get_entity_at(oc, oro)
-        if ent and ent.hp > 0 and ent is not self.state.player:
+        if terrain == Terrain.WALL:
+            target_info = "(墙壁)"
+        elif ent and ent.hp > 0 and ent is not self.state.player:
             faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
                            "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
             target_info = f"{ent.name} {faction_tag} HP:{ent.hp} AC:{ent.total_ac('chest')}"
@@ -121,11 +131,12 @@ class LeftPanel(Static):
             "── 远程瞄准 ──",
             f"武器: {weapon_name}  射程: {max_range}",
             f"光标: ({oc}, {oro})  距离: {dist}",
+            f"地表: {terrain_name}",
             f"目标: {target_info}",
             "",
-            "[方向键] 移动光标",
-            "[Enter] 确认攻击",
-            "[Esc] 取消瞄准",
+            "[[方向键]] 移动光标",
+            "[[Enter]] 确认攻击",
+            "[[Esc]] 取消瞄准",
         ]
         return "\n".join(lines)
 
@@ -135,23 +146,42 @@ class LeftPanel(Static):
         pc, pr = self.state.player_pos
 
         weapon_name = weapon.name if weapon else "武器"
-        lines = ["── 选择目标 ──",
-                 f"{weapon_name} → 选择目标:"]
+        reach = weapon.reach if weapon and hasattr(weapon, 'reach') and weapon.reach else 1
+        lines = ["── 选择目标格子 ──",
+                 f"{weapon_name} → 攻击范围: {reach}格"]
 
-        targets = []
-        for creature, (ec, er) in self.state.entities:
-            if creature is not self.state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                dist = max(abs(ec - pc), abs(er - pr))
-                targets.append((dist, creature.hp, creature))
-        targets.sort(key=lambda x: (x[0], x[1]))
+        # 收集范围内格子（与 flow._find_melee_tiles 逻辑一致）
+        tiles = []
+        for dc in range(-reach, reach + 1):
+            for dr in range(-reach, reach + 1):
+                if dc == 0 and dr == 0:
+                    continue
+                tc, tr = pc + dc, pr + dr
+                if not self.state.map.within_bounds(tc, tr):
+                    continue
+                if (tc, tr) not in self.state.fov_cache:
+                    continue
+                dist = max(abs(dc), abs(dr))
+                ent = self.state.get_entity_at(tc, tr)
+                if ent is self.state.player:
+                    ent = None
+                if ent and ent.hp <= 0:
+                    ent = None
+                tiles.append((dist, tc, tr, ent))
+        tiles.sort(key=lambda x: (x[0], x[3] is None))
 
-        for i, (_, _, c) in enumerate(targets[:8]):
-            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                           "neutral": "[yellow]中立[/]"}.get(c.faction, c.faction)
-            lines.append(f"[[T{i + 1}]]{c.name} {faction_tag} (HP {c.hp}, AC {c.total_ac('chest')})")
-        if len(targets) > 8:
-            lines.append(f"... 还有 {len(targets) - 8} 个目标")
+        for i, (_, tc, tr, ent) in enumerate(tiles[:9]):
+            if ent:
+                faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                               "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+                label = f"{ent.name} {faction_tag} HP:{ent.hp}"
+            else:
+                terrain = self.state.map[tc, tr]
+                t_name = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木", Terrain.PASSABLE: "空地"}.get(terrain, "空地")
+                label = t_name
+            lines.append(f"[[T{i + 1}]]({tc},{tr}) {label}")
+        if len(tiles) > 9:
+            lines.append(f"... 还有 {len(tiles) - 9} 个格")
         lines.append("[[T0]]取消")
         return "\n".join(lines)
 

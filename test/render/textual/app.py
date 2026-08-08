@@ -140,7 +140,7 @@ class MVPApp(App):
     }
     _COMBAT_IDLE_KEYS = _EXPLORE_KEYS  # 战斗默认面板与探索相同（shift+tab 走 binding）
     _COMBAT_SUB_KEYS = {"X", "C", "I", "enter"}    # 战斗子面板：观察/角色/物品栏 + Enter确认远程目标
-    _RIGHT_PANEL_KEYS = {"X", "C", "I"}   # 物品栏/角色面板：观察/切换键
+    _RIGHT_PANEL_KEYS = _EXPLORE_KEYS   # 物品栏/角色面板：允许所有正常动作键
 
     def __init__(self):
         super().__init__()

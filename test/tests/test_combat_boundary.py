@@ -8,53 +8,73 @@ from unittest.mock import MagicMock, patch
 # CombatFlow._find_adjacent_targets 边界
 # ═══════════════════════════════════════════════════
 
-class TestFindAdjacentTargets:
-    """_find_adjacent_targets 各种实体配置。"""
+class TestFindMeleeTiles:
+    """_find_melee_tiles 各种实体配置。"""
 
     @pytest.fixture
     def flow(self):
         from core.combat.flow import CombatFlow
+        from core.grid import Grid
+        from core.movement import Terrain
         state = MagicMock()
         state.player_pos = (5, 5)
+        state.map = Grid[Terrain](11, 11, Terrain.PASSABLE)
+        state.fov_cache = {(c, r) for c in range(11) for r in range(11)}
+        state.entities = []
+        def _get_entity_at(cx, cy):
+            for ent, (ec, er) in state.entities:
+                if (ec, er) == (cx, cy):
+                    return ent
+            return None
+        state.get_entity_at = _get_entity_at
         flow = CombatFlow(state, MagicMock(), MagicMock(), MagicMock(),
                           MagicMock(), "测试", MagicMock(), MagicMock())
         return flow
 
-    def test_no_entities_returns_empty(self, flow):
-        """0 个实体 → 返回空列表。"""
+    def test_no_entities_returns_tiles(self, flow):
+        """无实体时返回空格子列表。"""
         flow._state.entities = []
-        result = flow._find_adjacent_targets()
-        assert result == []
+        flow._state.player = MagicMock()
+        tiles = flow._find_melee_tiles(1)
+        # 玩家周围 8 格都在 bounds 和 FOV 内，全是空格
+        assert len(tiles) == 8
+        for tc, tr, ent in tiles:
+            assert ent is None
 
-    def test_only_dead_entities_returns_empty(self, flow):
-        """仅死亡实体 → 返回空列表。"""
+    def test_dead_entity_treated_as_empty(self, flow):
+        """死亡实体所在格被当作空格。"""
         dead = MagicMock()
         dead.hp = 0
-        flow._state.entities = [(dead, (5, 6))]
         flow._state.player = MagicMock()
-        result = flow._find_adjacent_targets()
-        assert result == []
+        flow._state.entities = [(dead, (5, 6))]
+        tiles = flow._find_melee_tiles(1)
+        for tc, tr, ent in tiles:
+            if (tc, tr) == (5, 6):
+                assert ent is None  # 死实体被过滤
 
-    def test_only_player_returns_empty(self, flow):
-        """仅玩家自身 → 返回空列表。"""
+    def test_player_at_tile_ignored(self, flow):
+        """玩家所在格不包含在结果中（dc=0,dr=0 跳过）。"""
         player = MagicMock()
         player.hp = 30
         flow._state.player = player
-        flow._state.entities = [(player, (5, 5))]
-        result = flow._find_adjacent_targets()
-        assert result == []
+        tiles = flow._find_melee_tiles(1)
+        # 不应包含 (5,5)
+        for tc, tr, _ in tiles:
+            assert (tc, tr) != (5, 5)
 
     def test_distant_entity_not_included(self, flow):
-        """超出相邻范围的实体不被包含。"""
+        """超出 reach 的实体不被包含。"""
         far = MagicMock()
         far.hp = 10
         flow._state.player = MagicMock()
-        flow._state.entities = [(far, (10, 10))]  # 距离 5，超出相邻
-        result = flow._find_adjacent_targets()
-        assert result == []
+        flow._state.entities = [(far, (10, 10))]  # 距离 5，default reach=1
+        tiles = flow._find_melee_tiles(1)
+        # 不应包含 (10,10)
+        for tc, tr, _ in tiles:
+            assert (tc, tr) != (10, 10)
 
-    def test_eight_surrounding_all_returned(self, flow):
-        """玩家被 8 个实体包围 → 全部返回。"""
+    def test_entities_at_adjacent_returned(self, flow):
+        """玩家被 8 个实体包围 → 8 格全返回带实体。"""
         flow._state.player = MagicMock()
         entities = []
         for dc in (-1, 0, 1):
@@ -65,19 +85,18 @@ class TestFindAdjacentTargets:
                 c.hp = 10
                 entities.append((c, (5 + dc, 5 + dr)))
         flow._state.entities = entities
-        result = flow._find_adjacent_targets()
-        assert len(result) == 8
+        tiles = flow._find_melee_tiles(1)
+        assert len(tiles) == 8
+        # 所有格都应有实体
+        for tc, tr, ent in tiles:
+            assert ent is not None
 
-    def test_sorted_by_distance_then_hp(self, flow):
-        """结果按距离和 HP 排序。"""
+    def test_larger_reach_includes_more(self, flow):
+        """reach=2 包含更多格子。"""
         flow._state.player = MagicMock()
-        c1 = MagicMock(); c1.hp = 1
-        c2 = MagicMock(); c2.hp = 10
-        # c1 距离 1, c2 距离 1 → c1 HP 更低，排前面
-        flow._state.entities = [(c1, (5, 6)), (c2, (6, 5))]
-        result = flow._find_adjacent_targets()
-        assert result[0] is c1
-        assert result[1] is c2
+        tiles1 = flow._find_melee_tiles(1)
+        tiles2 = flow._find_melee_tiles(2)
+        assert len(tiles2) > len(tiles1)
 
 
 # ═══════════════════════════════════════════════════

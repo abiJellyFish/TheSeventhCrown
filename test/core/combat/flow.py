@@ -34,17 +34,29 @@ class CombatFlow:
         self._input_bar.disabled = True
         self._map_view.focus()
 
-    def _find_adjacent_targets(self) -> list:
-        """返回玩家相邻格的所有存活目标，按距离和 HP 排序。"""
+    def _find_melee_tiles(self, reach: int = 1) -> list[tuple[int, int, object | None]]:
+        """返回玩家 Chebyshev 距离 ≤ reach 的所有可攻击格子，按距离排序。
+        每项: (col, row, entity_or_None)"""
         pc, pr = self._state.player_pos
-        targets = []
-        for creature, (ec, er) in self._state.entities:
-            if creature is not self._state.player and creature.hp > 0 \
-               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                dist = max(abs(ec - pc), abs(er - pr))
-                targets.append((dist, creature.hp, creature))
-        targets.sort(key=lambda x: (x[0], x[1]))
-        return [c for _, _, c in targets]
+        tiles = []
+        for dc in range(-reach, reach + 1):
+            for dr in range(-reach, reach + 1):
+                if dc == 0 and dr == 0:
+                    continue
+                tc, tr = pc + dc, pr + dr
+                if not self._state.map.within_bounds(tc, tr):
+                    continue
+                if (tc, tr) not in self._state.fov_cache:
+                    continue
+                dist = max(abs(dc), abs(dr))
+                ent = self._state.get_entity_at(tc, tr)
+                if ent is self._state.player:
+                    ent = None
+                if ent and ent.hp <= 0:
+                    ent = None
+                tiles.append((dist, tc, tr, ent))
+        tiles.sort(key=lambda x: (x[0], x[3] is None))
+        return [(tc, tr, ent) for _, tc, tr, ent in tiles]
 
     # ── 攻击流程入口 ──
 
@@ -116,33 +128,33 @@ class CombatFlow:
             self._refresh_all()
             return
 
-        # 找相邻目标（近战）
-        targets = self._find_adjacent_targets()
+        # 找攻击范围内格子（近战）
+        reach = weapon.reach if hasattr(weapon, 'reach') and weapon.reach else 1
+        tiles = self._find_melee_tiles(reach)
 
-        if len(targets) == 0:
-            self._act_log.add("近战范围内没有目标")
+        if len(tiles) == 0:
+            self._act_log.add("攻击范围内没有可攻击的格子")
             if not self._state.in_combat:
-                # 探索模式无目标，不进入战斗，直接取消
                 self._state.combat_phase = "idle"
                 self._state.pending_attack = {}
                 self._unfocus_input()
             else:
                 self._state.combat_phase = "select_action"
             self._refresh_all()
-        elif len(targets) == 1:
-            target = targets[0]
-            # 探索模式：仅敌对目标进入战斗，非敌对先攻击再根据阵营反应决定
-            if not self._state.in_combat and target.faction == "hostile":
-                self._start_combat_from_ambush(target)
+        elif len(tiles) == 1:
+            tc, tr, target = tiles[0]
+            self._state.pending_attack["target_pos"] = (tc, tr)
             self._state.pending_attack["target"] = target
+            if not self._state.in_combat and target and target.faction == "hostile":
+                self._start_combat_from_ambush(target)
             self.execute_attack_roll()
             self._refresh_all()
         else:
-            # 多目标：存在敌对目标时才进入战斗
             if not self._state.in_combat:
-                hostile = [t for t in targets if t.faction == "hostile"]
-                if hostile:
-                    self._start_combat_from_ambush(hostile[0])
+                for _, _, target in tiles:
+                    if target and target.faction == "hostile":
+                        self._start_combat_from_ambush(target)
+                        break
             self._state.combat_phase = "select_target"
             self._focus_input()
             self._refresh_all()
@@ -150,7 +162,7 @@ class CombatFlow:
     # ── 阶段二：选择目标 ──
 
     def handle_target_input(self, cmd: str) -> None:
-        """阶段二：选择目标。输入 T1~Tn。"""
+        """阶段二：选择目标格子。输入 T1~Tn。"""
         if cmd == "T0":
             self._state.combat_phase = "select_action"
             self._focus_input()
@@ -164,10 +176,14 @@ class CombatFlow:
             self._act_log.add(f"无效选项: {cmd}, 请输入 T序号")
             return
 
-        targets = self._find_adjacent_targets()
+        weapon = self._state.pending_attack.get("weapon") if self._state.pending_attack else None
+        reach = weapon.reach if weapon and hasattr(weapon, 'reach') and weapon.reach else 1
+        tiles = self._find_melee_tiles(reach)
 
-        if 0 <= idx < len(targets):
-            self._state.pending_attack["target"] = targets[idx]
+        if 0 <= idx < len(tiles):
+            tc, tr, target = tiles[idx]
+            self._state.pending_attack["target_pos"] = (tc, tr)
+            self._state.pending_attack["target"] = target
             self.execute_attack_roll()
         else:
             self._act_log.add("目标序号无效")
@@ -176,16 +192,11 @@ class CombatFlow:
     # ── 阶段二B：远程光标选目标 ──
 
     def confirm_ranged_target(self) -> None:
-        """确认远程目标选择，进入攻击检定。"""
+        """确认远程目标选择（以格子为单位），进入攻击检定。"""
         pa = self._state.pending_attack
         if pa is None:
             return
         cursor = self._state.observe_cursor
-        target = self._state.get_entity_at(cursor[0], cursor[1])
-        if target is None or target is self._state.player or target.hp <= 0:
-            self._act_log.add("光标位置没有可攻击的目标")
-            self._refresh_all()
-            return
         # 检查目标是否在射程内
         weapon = pa.get("weapon")
         max_range = weapon.range_max if weapon else 8
@@ -199,9 +210,14 @@ class CombatFlow:
             self._act_log.add("无法瞄准不可见的目标")
             self._refresh_all()
             return
+        # 查找格子上的生物（可为 None）
+        target = self._state.get_entity_at(cursor[0], cursor[1])
+        if target is self._state.player or (target and target.hp <= 0):
+            target = None
+        pa["target_pos"] = cursor
         pa["target"] = target
         # 探索模式：仅敌对目标进入战斗
-        if not self._state.in_combat and target.faction == "hostile":
+        if not self._state.in_combat and target and target.faction == "hostile":
             self._start_combat_from_ambush(target)
         self.execute_attack_roll()
         self._refresh_all()
@@ -217,17 +233,30 @@ class CombatFlow:
     # ── 阶段三：攻击检定 → 进入战技/特殊行动 ──
 
     def execute_attack_roll(self) -> None:
-        """执行攻击检定，根据命中/未命中进入阶段三。"""
+        """执行攻击检定，根据命中/未命中进入阶段三。无目标时直接结束。"""
         pa = self._state.pending_attack
         weapon = pa["weapon"]
-        target = pa["target"]
+        target = pa.get("target")
+        target_pos = pa.get("target_pos")
         p = self._state.player
 
-        # AP 已在 confirm_ranged_target 中扣除（远程），此处处理近战路径
-        if pa.get("_ap_deducted"):
-            pass
-        elif self._state.in_combat:
+        # 扣除 AP
+        if self._state.in_combat:
             p.ap -= weapon.ap_cost
+
+        # 无目标（空格子或障碍物）→ 直接结束
+        if target is None:
+            tc, tr = target_pos if target_pos else (0, 0)
+            terrain = self._state.map[tc, tr]
+            from core.movement import Terrain
+            if terrain == Terrain.WALL:
+                self._act_log.add(f"箭矢射在了墙上")
+            else:
+                self._act_log.add(f"箭矢射空了")
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            self._unfocus_input()
+            return
 
         hit, roll = hit_check(p, target, weapon)
 
@@ -238,19 +267,18 @@ class CombatFlow:
         # 远程武器掩体检查（命中后、进入战技面板前）
         if hit and weapon.weapon_type == "ranged":
             attacker_pos = self._find_entity_pos(p)
-            target_pos = self._find_entity_pos(target)
-            if attacker_pos and target_pos:
-                blocked, cover_pos = resolve_cover_line(
-                    roll, attacker_pos, target_pos,
-                    self._state.map, weapon.weapon_type,
-                )
-                if blocked:
-                    hit = False
-                    pa["hit"] = False
-                    pa["blocked_by_cover"] = True
-                    pa["cover_pos"] = cover_pos
-                    reduce_tenacity(target, roll)
-                    self._act_log.add("攻击被掩体挡住了!")
+            tc, tr = target_pos if target_pos else (0, 0)
+            blocked, cover_pos = resolve_cover_line(
+                roll, attacker_pos, (tc, tr),
+                self._state.map, weapon.weapon_type,
+            )
+            if blocked:
+                hit = False
+                pa["hit"] = False
+                pa["blocked_by_cover"] = True
+                pa["cover_pos"] = cover_pos
+                reduce_tenacity(target, roll)
+                self._act_log.add("攻击被掩体挡住了!")
 
         if hit:
             self._state.combat_phase = "select_maneuver"
