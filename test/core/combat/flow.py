@@ -194,6 +194,11 @@ class CombatFlow:
             self._act_log.add("目标超出了射程")
             self._refresh_all()
             return
+        # 目标必须在视野内
+        if cursor not in self._state.fov_cache:
+            self._act_log.add("无法瞄准不可见的目标")
+            self._refresh_all()
+            return
         pa["target"] = target
         # 探索模式：仅敌对目标进入战斗
         if not self._state.in_combat and target.faction == "hostile":
