@@ -1558,26 +1558,48 @@ class MVPApp(App):
 
     def _npc_special_action(self, npc: Creature, action: dict, target,
                              nc: int, nr: int, tc: int, tr: int) -> None:
-        """NPC 执行特殊动作，按描述结算效果。"""
+        """NPC 执行特殊动作，按 MVP2.md 描述结算效果。"""
         name = action.get("name", "特殊动作")
         ap_cost = action.get("ap_cost", 3)
         npc.ap -= ap_cost
-        desc = action.get("description", "")
 
         if "扑倒" in name:
-            # 目标 DC12 敏捷检定，失败则倒地
+            # DC12 敏捷豁免，失败则倒地
             save_roll = roll_d20() + target.stat_adjust("dex")
             if save_roll < 12:
                 if "prone" not in target.statuses:
                     target.statuses.append("prone")
                 self._act_log.add(
-                    f"{npc.name}使用{name}扑倒了{target.name}!")
+                    f"{npc.name}使用扑倒——{target.name}被扑倒在地!")
             else:
                 self._act_log.add(
-                    f"{npc.name}使用{name}，{target.name}稳住了身形")
+                    f"{npc.name}使用扑倒，{target.name}稳住了身形 (DC12, roll={save_roll})")
+
         elif "跃起" in name:
-            # 跳跃攻击：移动到目标相邻格，部位概率改变
-            self._act_log.add(f"{npc.name}使用{name}高高跃起!")
+            # 跳向 2 格内目标相邻格，用短棒攻击，部位概率: 头40%/躯干60%
+            dist = max(abs(nc - tc), abs(nr - tr))
+            if dist <= 2:
+                # 移动到相邻格
+                for _ in range(dist - 1):
+                    self._move_npc_toward(npc, nc, nr, tc, tr)
+                    npc.ap -= 1
+                    pos = self._find_entity_pos(npc)
+                    if pos: nc, nr = pos
+                # 近战攻击（单手短棒），部位概率改变
+                weapon_action = {"name": "短棒", "weapon": "短棒", "type": "melee_attack",
+                                 "damage": "1d4", "damage_type": "bludgeoning",
+                                 "attack_stat": "str", "ap_cost": 2, "reach": 1}
+                self._act_log.add(f"{npc.name}跃起砸下短棒!")
+                self._npc_melee_attack(npc, weapon_action, target)
+            else:
+                self._act_log.add(f"{npc.name}跃起——距离太远，够不着")
+
+        elif "格挡" in name:
+            # AC+1 直到下回合（用 status 标记）
+            if "guarding" not in npc.statuses:
+                npc.statuses.append("guarding")
+            self._act_log.add(f"{npc.name}举起盾牌格挡，全身 AC+1")
+
         else:
             self._act_log.add(f"{npc.name} 使用了{name}")
 
@@ -1823,7 +1845,10 @@ class MVPApp(App):
             "hunt": "低头寻觅着食物", "idle": "静静地站在原地",
             "sleep": "蜷缩着打盹",
         }
-        return f"{c.name} {hp}{act_map.get(action, '待在原地')}"
+        status_text = ""
+        if c.statuses:
+            status_text = f" [{', '.join(c.statuses)}]"
+        return f"{c.name}{status_text} {hp}{act_map.get(action, '待在原地')}"
 
     # ── Rest ──
 
