@@ -285,15 +285,18 @@ class TopBar(Static):
             return len(Text.from_markup(t).plain)
 
         if s.in_combat and s.combat_initiative:
-            names = ["[red]战斗中[/]"]
+            names = []
             for e in s.combat_initiative:
                 if e.hp <= 0: continue
                 nm = e.name
                 if e is s.combat_turn_entity: nm = f"[bold yellow]{nm}[/]"
                 names.append(nm)
             center = " > ".join(names)
-            pad = max(1, width - visible_len(left) - visible_len(center) - visible_len(right) - 3)
-            return f"{left}  {center}{' ' * pad}{right}"
+            used = visible_len(left) + visible_len(center) + visible_len(right)
+            remaining = max(0, width - used)
+            pad_left = remaining // 2
+            pad_right = remaining - pad_left
+            return f"{left}{' ' * pad_left}{center}{' ' * pad_right}{right}"
         else:
             pad = max(1, width - visible_len(left) - visible_len(right) - 2)
             return f"{left}{' ' * pad}{right}"
@@ -301,20 +304,145 @@ class TopBar(Static):
 
 class LeftPanel(Static):
     state: GameState | None = None
+
     def render(self) -> str:
-        lines = []
-        if self.state and self.state.in_combat:
-            p = self.state.player
-            filled = int(p.ap / max(p.max_ap, 1) * 10)
-            lines.append(f"AP [{'|'*filled}{'.'*(10-filled)}]")
-            lines.append("S-Tab 结束回合")
-        lines.extend([
+        if self.state is None:
+            return ""
+        if self.state.in_combat:
+            phase = self.state.combat_phase
+            if phase == "select_action":
+                return self._render_action_panel()
+            elif phase == "select_target":
+                return self._render_target_panel()
+            elif phase == "select_maneuver":
+                return self._render_maneuver_panel()
+            elif phase == "select_special":
+                return self._render_special_panel()
+            else:
+                return self._render_combat_default()
+        else:
+            return self._render_explore_default()
+
+    def _render_explore_default(self) -> str:
+        return "\n".join([
             "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
             "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
             "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
             "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]动作",
             "[[S]]法术 [[X]]观察 [[Q]]退出",
         ])
+
+    def _render_combat_default(self) -> str:
+        p = self.state.player
+        filled = int(p.ap / max(p.max_ap, 1) * 10)
+        lines = [
+            f"AP [{'|'*filled}{'.'*(10-filled)}]",
+            "S-Tab 结束回合",
+            "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
+            "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
+            "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
+            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]动作",
+            "[[S]]法术 [[X]]观察 [[Q]]退出",
+        ]
+        return "\n".join(lines)
+
+    def _render_action_panel(self) -> str:
+        p = self.state.player
+        left = p.equipment.get("left_hand")
+        right = p.equipment.get("right_hand")
+        lines = ["── 选择攻击方式 ──"]
+
+        # A1 left hand
+        if left and hasattr(left, 'weapon_type'):
+            lines.append(f"[A1]左手武器  {left.name} {left.damage} {left.damage_type} AP:{left.ap_cost}")
+        elif left:
+            lines.append(f"[A1]左手武器  {left.name} (不能攻击)")
+        else:
+            lines.append("[A1]左手武器  (空)")
+
+        # A2 right hand
+        if right and hasattr(right, 'weapon_type'):
+            lines.append(f"[A2]右手武器  {right.name} {right.damage} {right.damage_type} AP:{right.ap_cost}")
+        elif right:
+            lines.append(f"[A2]右手武器  {right.name} (不能攻击)")
+        else:
+            lines.append("[A2]右手武器  (空)")
+
+        # A3 dual wield
+        has_dual = (left and hasattr(left, 'weapon_type')
+                    and right and hasattr(right, 'weapon_type'))
+        if has_dual:
+            lines.append(f"[A3]双持武器  {left.name}+{right.name} AP:3")
+        else:
+            lines.append("[A3]双持武器  (需要两把武器)")
+
+        # A4 two-hand
+        if right and hasattr(right, 'weapon_type') and right.weapon_type == "melee":
+            lines.append(f"[A4]双手并用  {right.name} 命中+1 伤害+2 AP:{right.ap_cost}")
+        else:
+            lines.append("[A4]双手并用  (需要近战武器)")
+
+        lines.append("[A0]返回")
+        return "\n".join(lines)
+
+    def _render_target_panel(self) -> str:
+        pa = self.state.pending_attack or {}
+        weapon = pa.get("weapon")
+        pc, pr = self.state.player_pos
+
+        weapon_name = weapon.name if weapon else "武器"
+        lines = ["── 选择目标 ──",
+                 f"{weapon_name} → 选择目标:"]
+
+        targets = []
+        for creature, (ec, er) in self.state.entities:
+            if creature.faction == "hostile" and creature.hp > 0 \
+               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
+                dist = max(abs(ec - pc), abs(er - pr))
+                targets.append((dist, creature.hp, creature))
+        targets.sort(key=lambda x: (x[0], x[1]))
+
+        for i, (_, _, c) in enumerate(targets[:8]):
+            lines.append(f"[T{i+1}]{c.name} (HP {c.hp}, AC {c.total_ac('chest')})")
+        if len(targets) > 8:
+            lines.append(f"... 还有 {len(targets)-8} 个目标")
+        lines.append("[T0]取消")
+        return "\n".join(lines)
+
+    def _render_maneuver_panel(self) -> str:
+        pa = self.state.pending_attack or {}
+        target = pa.get("target")
+        attack_roll = pa.get("attack_roll", 0)
+        weapon = pa.get("weapon")
+
+        target_name = target.name if target else "目标"
+        target_ac = target.total_ac('chest') if target else 0
+
+        lines = ["── 命中! 选择战技 ──",
+                 f"{weapon.name if weapon else '武器'}击中{target_name} (roll={attack_roll} vs AC={target_ac})",
+                 "[A1]精准攻击  AP+1  命中+2",
+                 "[A2]强力攻击  AP+1  伤害+1d4",
+                 "[A3]缴械攻击  AP+1  目标力量豁免失败则武器掉落",
+                 "[A4]扫腿攻击  AP+1  目标敏捷豁免失败则倒地",
+                 "[A0]直接攻击  不消耗额外AP，正常结算伤害"]
+        return "\n".join(lines)
+
+    def _render_special_panel(self) -> str:
+        pa = self.state.pending_attack or {}
+        target = pa.get("target")
+        attack_roll = pa.get("attack_roll", 0)
+        weapon = pa.get("weapon")
+        p = self.state.player
+
+        target_name = target.name if target else "目标"
+        target_ac = target.total_ac('chest') if target else 0
+
+        lines = ["── 未命中 ──",
+                 f"{weapon.name if weapon else '武器'}挥空{target_name} (roll={attack_roll} vs AC={target_ac})"]
+        lines.append(f"[A1]奋力一击  额外消耗 2AP，重掷攻击骰 {'[dim]AP不足[/]' if p.ap < 2 else ''}")
+        lines.append(f"[A2]虚晃一招  消耗 1AP，下次攻击命中+2 {'[dim]AP不足[/]' if p.ap < 1 else ''}")
+        lines.append(f"[A3]挑衅      消耗 1AP，目标下回合更容易攻击你 {'[dim]AP不足[/]' if p.ap < 1 else ''}")
+        lines.append("[A0]削韧      不消耗AP，削减目标韧性")
         return "\n".join(lines)
 
 
@@ -576,6 +704,11 @@ class MVPApp(App):
         self._save_data: dict | None = None
         self._last_move: tuple[int, int] = (0, 0)
 
+    @property
+    def _pn(self) -> str:
+        """玩家名称快捷访问。后续自定义名称只需改 Player 构造处。"""
+        return self._state.player.name
+
     def _create_game(self) -> None:
         stats = {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}
         boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], 2)
@@ -662,10 +795,20 @@ class MVPApp(App):
         self._input_bar.value = ""
         self._input_bar.disabled = True
         if cmd:
-            self._act_log.add(f"> :{cmd}")
-            if cmd.startswith("I") and self._right_panel.view_mode == "inventory":
+            phase = self._state.combat_phase if self._state else "idle"
+            if phase == "select_action":
+                self._handle_action_input(cmd)
+            elif phase == "select_target":
+                self._handle_target_input(cmd)
+            elif phase == "select_maneuver":
+                self._handle_maneuver_input(cmd)
+            elif phase == "select_special":
+                self._handle_special_input(cmd)
+            elif cmd.startswith("I") and self._right_panel.view_mode == "inventory":
+                self._act_log.add(f"> :{cmd}")
                 self._use_item(cmd)
             else:
+                self._act_log.add(f"> :{cmd}")
                 self._act_log.add("此功能待开发")
         self._map_view.focus()
 
@@ -680,7 +823,7 @@ class MVPApp(App):
                     item.count -= 1
                 else:
                     inv.pop(idx)
-                self._act_log.add(f"凯恩 使用了 {item.name}")
+                self._act_log.add(f"{self._pn} 使用了 {item.name}")
                 self._apply_item_effect(item)
             else:
                 self._act_log.add("物品序号无效")
@@ -759,7 +902,7 @@ class MVPApp(App):
                 continue
             # 敌对生物：FOV 内发现玩家 → 开战
             if creature.faction == "hostile" and (ec, er) in self._state.fov_cache:
-                self._act_log.add(f"{creature.name} 发现了凯恩!")
+                self._act_log.add(f"{creature.name} 发现了{self._pn}!")
                 self._start_combat(creature)
                 return
             # 随机游荡
@@ -838,16 +981,16 @@ class MVPApp(App):
                         "count": b,
                     })
                     _add_to_inventory(self._state.player, berry)
-                    self._act_log.add(f"凯恩 从灌木丛摘到 {b} 个浆果")
+                    self._act_log.add(f"{self._pn} 从灌木丛摘到 {b} 个浆果")
                     self.refresh_all(); return
-        self._act_log.add("凯恩 环顾四周，这里没什么特别的")
+        self._act_log.add(f"{self._pn} 环顾四周，这里没什么特别的")
         self.refresh_all()
 
     def _interact_creature(self, c: Creature, pos: tuple[int, int]) -> None:
         if c.faction == "hostile":
-            self._act_log.add(f"凯恩 拔剑冲向 {c.name}!"); self._start_combat(c)
+            self._act_log.add(f"{self._pn} 拔剑冲向 {c.name}!"); self._start_combat(c)
         else:
-            self._act_log.add(f"凯恩 向 {c.name} 搭话")
+            self._act_log.add(f"{self._pn} 向 {c.name} 搭话")
             self._act_log.add(self._get_npc_dialogue(c))
 
     def _get_npc_dialogue(self, c: Creature) -> str:
@@ -894,7 +1037,7 @@ class MVPApp(App):
         }
         _build_dungeon(self._state)
         self._state.in_dungeon = True
-        self._act_log.add("凯恩 走入了地下城...")
+        self._act_log.add(f"{self._pn} 走入了地下城...")
         self._end_combat(); _update_fov(self._state)
         self._refresh_scene(); self.refresh_all()
 
@@ -910,7 +1053,7 @@ class MVPApp(App):
             self._state.door_states = ws["door_states"]
             self._state.location_map = ws.get("location_map", {})
         self._state.in_dungeon = False
-        self._act_log.add("凯恩 回到了地面")
+        self._act_log.add(f"{self._pn} 回到了地面")
         self._end_combat(); _update_fov(self._state)
         self._refresh_scene(); self.refresh_all()
 
@@ -936,13 +1079,33 @@ class MVPApp(App):
     def _next_turn(self) -> None:
         if not self._state.in_combat: return
         alive = [e for e in self._state.combat_initiative if e is self._state.player or e.hp > 0]
-        if not any(e.faction == "hostile" and e.hp > 0 for e in alive):
+        hostiles = [e for e in alive if e.faction == "hostile" and e.hp > 0]
+        if not hostiles:
             self._end_combat(); self.refresh_all(); return
+
+        # 距离脱战：玩家离开所有敌对生物的视野范围
+        pc, pr = self._state.player_pos
+        all_out_of_sight = True
+        for e in hostiles:
+            epos = None
+            for c, (ec, er) in self._state.entities:
+                if c is e:
+                    epos = (ec, er); break
+            if epos is None:
+                continue
+            dist = max(abs(epos[0] - pc), abs(epos[1] - pr))
+            if dist <= e.vision_range:
+                all_out_of_sight = False
+                break
+        if all_out_of_sight:
+            self._act_log.add(f"{self._pn} 脱离了敌人的视野，战斗结束")
+            self._end_combat(); self.refresh_all(); return
+
         self._state.combat_initiative = alive
         idx = (self._state.combat_turn_index + 1) % len(alive)
         self._state.combat_turn_index = idx; turn = alive[idx]
         self._state.combat_turn_entity = turn; turn.ap = turn.max_ap
-        if turn is self._state.player: self._act_log.add(">>> 凯恩的回合 <<<")
+        if turn is self._state.player: self._act_log.add(f">>> {self._pn}的回合 <<<")
         else: self._npc_turn(turn)
         self.refresh_all()
 
@@ -950,28 +1113,283 @@ class MVPApp(App):
         pc, pr = self._state.player_pos
         weapon = self._state.player.equipment.get("right_hand")
         if weapon is None:
-            self._act_log.add("凯恩 赤手空拳!"); return
+            self._act_log.add(f"{self._pn} 赤手空拳!"); return
         if self._state.player.ap < weapon.ap_cost: self._act_log.add("AP 不足"); return
         target = None
         for creature, (ec, er) in self._state.entities:
             if creature.faction == "hostile" and creature.hp > 0 and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
                 target = creature; break
-        if target is None: self._act_log.add("凯恩 环顾四周，没有目标"); return
+        if target is None: self._act_log.add(f"{self._pn} 环顾四周，没有目标"); return
         self._state.player.ap -= weapon.ap_cost
         hit, roll = hit_check(self._state.player, target, weapon)
         if hit:
             dmg = roll_damage(weapon, self._state.player, critical=(roll == 20))
             dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
             target.hp = max(0, target.hp - dmg)
-            self._act_log.add(f"凯恩 挥剑砍中了 {target.name}，{target.name} 发出一声惨叫")
+            self._act_log.add(f"{self._pn} 挥剑砍中了 {target.name}，{target.name} 发出一声惨叫")
             if target.hp <= 0: self._act_log.add(f"{target.name} 倒在地上，不再动弹")
         else:
             reduce_tenacity(target, roll)
-            self._act_log.add(f"凯恩 挥剑砍向 {target.name}，被躲开了")
+            self._act_log.add(f"{self._pn} 挥剑砍向 {target.name}，被躲开了")
             if target.tenacity == 0 and "incapacitated" not in target.statuses:
                 target.statuses.append("incapacitated")
                 self._act_log.add(f"{target.name} 被击破防御，陷入失能!")
         if self._state.player.ap <= 0: self._next_turn()
+        self.refresh_all()
+
+    # ── 攻击流程状态机 ──
+
+    def _resolve_melee_attack(self, attacker, target, weapon,
+                               hit_bonus=0, damage_bonus=0) -> dict:
+        """执行一次近战攻击检定，返回结果 dict。不修改 AP，不切换回合。"""
+        hit, roll = hit_check(attacker, target, weapon)
+        effective_roll = roll + hit_bonus
+        if hit:
+            critical = (roll == 20)
+            dmg = roll_damage(weapon, attacker, critical=critical)
+            dmg += damage_bonus
+            dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
+            target.hp = max(0, target.hp - dmg)
+            return {"hit": True, "critical": critical, "roll": roll,
+                    "damage": dmg, "target_name": target.name}
+        else:
+            reduce_tenacity(target, roll)
+            return {"hit": False, "roll": roll,
+                    "target_name": target.name}
+
+    def _handle_action_input(self, cmd: str) -> None:
+        """阶段一：选择攻击方式。输入 A1~A4。"""
+        p = self._state.player
+        left = p.equipment.get("left_hand")
+        right = p.equipment.get("right_hand")
+
+        if cmd == "A0":
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            self._act_log.add("取消攻击")
+            self.refresh_all()
+            return
+
+        weapon = None
+        mode = ""
+        hit_bonus = 0
+        damage_bonus = 0
+
+        if cmd == "A1":
+            if left and hasattr(left, 'weapon_type'):
+                weapon = left; mode = "left_hand"
+            elif left:
+                self._act_log.add(f"{left.name} 无法用于攻击")
+                return
+            else:
+                self._act_log.add("左手没有武器")
+                return
+        elif cmd == "A2":
+            if right and hasattr(right, 'weapon_type'):
+                weapon = right; mode = "right_hand"
+            elif right:
+                self._act_log.add(f"{right.name} 无法用于攻击")
+                return
+            else:
+                self._act_log.add("右手没有武器")
+                return
+        elif cmd == "A3":
+            if left and hasattr(left, 'weapon_type') and right and hasattr(right, 'weapon_type'):
+                weapon = right; mode = "dual_wield"
+            else:
+                self._act_log.add("需要两把武器才能双持")
+                return
+        elif cmd == "A4":
+            if right and hasattr(right, 'weapon_type') and right.weapon_type == "melee":
+                weapon = right; mode = "two_hand"
+                hit_bonus = 1; damage_bonus = 2
+            else:
+                self._act_log.add("需要近战武器才能双手并用")
+                return
+        else:
+            self._act_log.add(f"无效选项: {cmd}, 请输入 A1~A4")
+            return
+
+        if p.ap < weapon.ap_cost:
+            self._act_log.add("AP 不足")
+            return
+
+        self._state.pending_attack = {
+            "mode": mode, "weapon": weapon,
+            "hit_bonus": hit_bonus, "damage_bonus": damage_bonus,
+            "attack_roll": None, "target": None,
+        }
+
+        # 找相邻敌对目标
+        pc, pr = self._state.player_pos
+        targets = []
+        for creature, (ec, er) in self._state.entities:
+            if creature.faction == "hostile" and creature.hp > 0 \
+               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
+                targets.append(creature)
+
+        if len(targets) == 0:
+            self._act_log.add("近战范围内没有目标")
+            self._state.combat_phase = "select_action"
+            self.refresh_all()
+        elif len(targets) == 1:
+            # 唯一目标，直接攻击检定
+            self._state.pending_attack["target"] = targets[0]
+            self._execute_attack_roll()
+            self.refresh_all()
+        else:
+            self._state.combat_phase = "select_target"
+            self.refresh_all()
+
+    def _handle_target_input(self, cmd: str) -> None:
+        """阶段二：选择目标。输入 T1~Tn。"""
+        if cmd == "T0":
+            self._state.combat_phase = "select_action"
+            self._act_log.add("取消目标选择")
+            self.refresh_all()
+            return
+
+        try:
+            idx = int(cmd[1:]) - 1
+        except (ValueError, IndexError):
+            self._act_log.add(f"无效选项: {cmd}, 请输入 T序号")
+            return
+
+        pc, pr = self._state.player_pos
+        targets = []
+        for creature, (ec, er) in self._state.entities:
+            if creature.faction == "hostile" and creature.hp > 0 \
+               and abs(ec - pc) <= 1 and abs(er - pr) <= 1:
+                dist = max(abs(ec - pc), abs(er - pr))
+                targets.append((dist, creature.hp, creature))
+        targets.sort(key=lambda x: (x[0], x[1]))
+
+        if 0 <= idx < len(targets):
+            self._state.pending_attack["target"] = targets[idx][2]
+            self._execute_attack_roll()
+        else:
+            self._act_log.add("目标序号无效")
+        self.refresh_all()
+
+    def _execute_attack_roll(self) -> None:
+        """执行攻击检定，根据命中/未命中进入阶段三。"""
+        pa = self._state.pending_attack
+        weapon = pa["weapon"]
+        target = pa["target"]
+        p = self._state.player
+
+        p.ap -= weapon.ap_cost
+        hit, roll = hit_check(p, target, weapon)
+
+        pa["attack_roll"] = roll
+        self._act_log.add(f"{self._pn} 挥动{weapon.name}砍向 {target.name}! (roll={roll})")
+
+        if hit:
+            self._state.combat_phase = "select_maneuver"
+        else:
+            self._state.combat_phase = "select_special"
+
+    def _handle_maneuver_input(self, cmd: str) -> None:
+        """阶段三A：命中后选择战技。输入 A0~A4。"""
+        pa = self._state.pending_attack
+        weapon = pa["weapon"]
+        target = pa["target"]
+        p = self._state.player
+
+        if cmd == "A0":
+            # 直接攻击，正常结算
+            pass
+        elif cmd == "A1":
+            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 1; pa["hit_bonus"] = pa.get("hit_bonus", 0) + 2
+            self._act_log.add("精准攻击! 命中+2")
+        elif cmd == "A2":
+            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 1
+            # 掷 1d4 额外伤害
+            bonus = roll_d20() % 4 + 1  # 简单替代 roll_d4
+            pa["damage_bonus"] = pa.get("damage_bonus", 0) + bonus
+            self._act_log.add(f"强力攻击! 伤害+{bonus}")
+        elif cmd == "A3":
+            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 1
+            # 缴械：目标力量豁免
+            t_roll = roll_d20() + target.stat_adjust("str")
+            if t_roll < 12:
+                self._act_log.add(f"缴械成功! {target.name} 的武器被打落")
+            else:
+                self._act_log.add(f"{target.name} 握紧了武器")
+        elif cmd == "A4":
+            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 1
+            # 扫腿：目标敏捷豁免
+            t_roll = roll_d20() + target.stat_adjust("dex")
+            if t_roll < 12:
+                if "prone" not in target.statuses:
+                    target.statuses.append("prone")
+                self._act_log.add(f"扫腿成功! {target.name} 摔倒在地")
+            else:
+                self._act_log.add(f"{target.name} 稳住了身形")
+        else:
+            self._act_log.add(f"无效选项: {cmd}, 请输入 A0~A4")
+            self.refresh_all()
+            return
+
+        # 结算基础伤害
+        result = self._resolve_melee_attack(
+            p, target, weapon,
+            hit_bonus=pa.get("hit_bonus", 0),
+            damage_bonus=pa.get("damage_bonus", 0))
+        if result["hit"]:
+            self._act_log.add(f"{self._pn} 砍中了 {target.name}, 造成 {result['damage']} 点伤害")
+            if target.hp <= 0:
+                self._act_log.add(f"{target.name} 倒在地上，不再动弹")
+        else:
+            self._act_log.add(f"{self._pn} 的攻击被 {target.name} 躲开了")
+
+        self._state.combat_phase = "idle"
+        self._state.pending_attack = {}
+        if p.ap <= 0: self._next_turn()
+        self.refresh_all()
+
+    def _handle_special_input(self, cmd: str) -> None:
+        """阶段三B：未命中后选择特殊行动。输入 A0~A3。"""
+        pa = self._state.pending_attack
+        target = pa["target"]
+        weapon = pa["weapon"]
+        p = self._state.player
+        roll = pa.get("attack_roll", 0)
+
+        if cmd == "A0":
+            # 削韧（已在 _execute_attack_roll 中由 hit_check → reduce_tenacity 执行）
+            self._act_log.add(f"削韧: {target.name} 韧性被削减")
+        elif cmd == "A1":
+            if p.ap < 2: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 2
+            # 重掷攻击骰
+            self._act_log.add("奋力一击! 重掷攻击骰")
+            result = self._resolve_melee_attack(p, target, weapon)
+            if result["hit"]:
+                self._act_log.add(f"命中! 造成 {result['damage']} 点伤害")
+            else:
+                self._act_log.add("再次未命中...")
+        elif cmd == "A2":
+            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 1
+            # 下次攻击命中+2（通过 pending_attack 传递）
+            self._act_log.add("虚晃一招 — 下次攻击命中+2")
+        elif cmd == "A3":
+            if p.ap < 1: self._act_log.add("AP 不足"); self.refresh_all(); return
+            p.ap -= 1
+            self._act_log.add(f"{self._pn} 挑衅了 {target.name}")
+        else:
+            self._act_log.add(f"无效选项: {cmd}, 请输入 A0~A3")
+            self.refresh_all()
+            return
+
+        self._state.combat_phase = "idle"
+        self._state.pending_attack = {}
+        if p.ap <= 0: self._next_turn()
         self.refresh_all()
 
     def _npc_turn(self, npc: Creature) -> None:
@@ -992,14 +1410,14 @@ class MVPApp(App):
             if abs(nc - pc) <= 1 and abs(nr - pr) <= 1:
                 dmg = max(1, roll_d20() // 4)
                 self._state.player.hp = max(0, self._state.player.hp - dmg)
-                self._act_log.add(f"{npc.name} 挥动武器击中了凯恩!")
-                if self._state.player.hp <= 0: self._act_log.add("凯恩 被击倒了! [R]长休恢复")
+                self._act_log.add(f"{npc.name} 挥动武器击中了{self._pn}!")
+                if self._state.player.hp <= 0: self._act_log.add(f"{self._pn} 被击倒了! [R]长休恢复")
             else:
                 dc = 1 if pc > nc else (-1 if pc < nc else 0)
                 dr = 1 if pr > nr else (-1 if pr < nr else 0)
                 if self._state.move_entity(npc, nc, nr, nc + dc, nr + dr):
                     self._act_log.add(f"{npc.name} 向前逼近")
-        else: self._act_log.add(f"{npc.name} 警惕地盯着凯恩")
+        else: self._act_log.add(f"{npc.name} 警惕地盯着{self._pn}")
         self._next_turn(); self.refresh_all()
 
     # ── Long Rest ──
@@ -1010,7 +1428,7 @@ class MVPApp(App):
                       self._state.map, self._state.player_pos,
                       self._state.bed_positions)
         comfort = "，睡得很舒适" if r.get("comfort") else ""
-        self._act_log.add(f"凯恩 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
+        self._act_log.add(f"{self._pn} 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
         self.refresh_all()
 
     # ── Speed modes ──
@@ -1029,7 +1447,7 @@ class MVPApp(App):
             return
         dc, dr = self._last_move
         if dc == 0 and dr == 0:
-            self._act_log.add("凯恩 原地踱步")
+            self._act_log.add(f"{self._pn} 原地踱步")
             return
         self._move_player(dc, dr)
 
@@ -1054,9 +1472,9 @@ class MVPApp(App):
                 elif self._state.map[nc, nr] == Terrain.WALL:
                     found.append("墙壁")
         if found:
-            self._act_log.add(f"凯恩 环顾四周: {', '.join(found)}")
+            self._act_log.add(f"{self._pn} 环顾四周: {', '.join(found)}")
         else:
-            self._act_log.add("凯恩 环顾四周，没有特别的东西")
+            self._act_log.add(f"{self._pn} 环顾四周，没有特别的东西")
         self.refresh_all()
 
     # ── Wait ──
@@ -1079,7 +1497,16 @@ class MVPApp(App):
     def action_7(self): self._act_log.add("[推撞] 此功能待开发")
     def action_8(self): self._act_log.add("[擒抱] 此功能待开发")
     def action_toggle_knockout(self): self._act_log.add("[击晕] 此功能待开发")
-    def action_show_actions(self): self._act_log.add("[动作] 此功能待开发")
+    def action_show_actions(self):
+        """按 A 键 → 进入攻击方式选择阶段。"""
+        if not self._state.in_combat:
+            self._act_log.add("[动作] 非战斗无需选择动作")
+            return
+        self._state.combat_phase = "select_action"
+        self._state.pending_attack = {}
+        self._input_bar.disabled = False
+        self._input_bar.focus()
+        self.refresh_all()
     def action_show_spells(self): self._act_log.add("[法术] 此功能待开发")
     def action_char_panel(self):
         if self._right_panel.view_mode == "character":
@@ -1136,7 +1563,7 @@ class MVPApp(App):
 
         act_map = {
             "flee": "惊慌失措地试图逃窜", "surrender": "举起双手投降",
-            "attack": "死死盯着凯恩" if enemy_count else "警惕地巡视四周",
+            "attack": f"死死盯着{self._pn}" if enemy_count else "警惕地巡视四周",
             "advance": "向前逼近" if enemy_count else "来回踱步",
             "defend": "摆出防御姿态", "patrol": "漫无目的地游荡",
             "hunt": "低头寻觅着食物", "idle": "静静地站在原地",
@@ -1152,7 +1579,7 @@ class MVPApp(App):
                        self._state.map, self._state.player_pos,
                        self._state.bed_positions)
         comfort = "，睡得很舒适" if r.get("comfort") else ""
-        self._act_log.add(f"凯恩 短休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
+        self._act_log.add(f"{self._pn} 短休 (HP+{r['hp_restored']} MP+{r['mp_restored']}){comfort}")
         self.refresh_all()
 
     # ── Save ──

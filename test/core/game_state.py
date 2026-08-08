@@ -42,6 +42,8 @@ class GameState:
     combat_initiative: list[Creature] = field(default_factory=list)
     current_turn_index: int = 0
     combat_turn_entity: Creature | None = None
+    combat_phase: str = "idle"              # 攻击流程状态机: "idle"|"select_action"|"select_target"|"select_maneuver"|"select_special"
+    pending_attack: dict | None = None      # 当前攻击上下文 {"mode":..., "weapon":..., "attack_roll":None, "target":None}
 
     # 光照与视野
     light_map: Grid | None = None
