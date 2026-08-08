@@ -487,12 +487,19 @@ class LeftPanel(Static):
         target_name = target.name if target else "目标"
         target_ac = target.total_ac('chest') if target else 0
 
-        self._special_map = {1: "reroll", 2: "feint", 3: "taunt", 0: "tenacity"}
+        specials = [
+            {"key": "reroll", "name": "奋力一击", "ap_cost": 2, "desc": "额外消耗 2AP，重掷攻击骰"},
+            {"key": "feint",  "name": "虚晃一招", "ap_cost": 1, "desc": "消耗 1AP，下次攻击命中+2"},
+            {"key": "taunt",  "name": "挑衅",     "ap_cost": 1, "desc": "消耗 1AP，目标下回合更容易攻击你"},
+        ]
+        self._special_map = {}
         lines = ["── 未命中 ──",
                  f"{weapon.name if weapon else '武器'}挥空{target_name} (roll={attack_roll} vs AC={target_ac})"]
-        lines.append(f"[A1]奋力一击  额外消耗 2AP，重掷攻击骰 {'[dim]AP不足[/]' if p.ap < 2 else ''}")
-        lines.append(f"[A2]虚晃一招  消耗 1AP，下次攻击命中+2 {'[dim]AP不足[/]' if p.ap < 1 else ''}")
-        lines.append(f"[A3]挑衅      消耗 1AP，目标下回合更容易攻击你 {'[dim]AP不足[/]' if p.ap < 1 else ''}")
+        for i, s in enumerate(specials, 1):
+            self._special_map[i] = s["key"]
+            ap_note = " [dim]AP不足[/]" if p.ap < s["ap_cost"] else ""
+            lines.append(f"[A{i}]{s['name']}  {s['desc']}{ap_note}")
+        self._special_map[0] = "tenacity"
         lines.append("[A0]削韧      不消耗AP，削减目标韧性")
         return "\n".join(lines)
 
