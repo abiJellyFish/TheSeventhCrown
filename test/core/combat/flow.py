@@ -266,7 +266,7 @@ class CombatFlow:
 
         # 远程武器掩体检查（命中后、进入战技面板前）
         if hit and weapon.weapon_type == "ranged":
-            attacker_pos = self._find_entity_pos(p)
+            attacker_pos = self._find_entity_pos(p) or self._state.player_pos
             tc, tr = target_pos if target_pos else (0, 0)
             blocked, cover_pos = resolve_cover_line(
                 roll, attacker_pos, (tc, tr),
