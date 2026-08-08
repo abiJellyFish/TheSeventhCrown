@@ -61,6 +61,9 @@ class GameState:
     # 慢速模式
     slow_mode: bool = False
 
+    # 灼烧计时（id(creature) → 剩余钟摆数）
+    burn_timers: dict[int, int] = field(default_factory=dict)
+
     # NPC 推进回调设置的待开战目标
     pending_combat_target: Creature | None = None
 
@@ -72,6 +75,11 @@ class GameState:
 
     def add_entity(self, creature: Creature, pos: tuple[int, int]) -> None:
         self.entities.append((creature, pos))
+        if pos in self.campfire_positions:
+            cid = id(creature)
+            self.burn_timers[cid] = 5
+            if "灼烧" not in creature.statuses:
+                creature.statuses.append("灼烧")
 
     def remove_entity(self, creature: Creature) -> None:
         self.entities = [(c, p) for c, p in self.entities if c is not creature]
@@ -88,6 +96,7 @@ class GameState:
         if can_enter(col, row, self.map, self.entities,
                      self.player_pos[0], self.player_pos[1]):
             self.player_pos = (col, row)
+            self._check_campfire_burn(self.player)
             if not self.in_combat:
                 self.clock.tick_move(self.player.speed)
             return True
@@ -102,15 +111,61 @@ class GameState:
             for i, (c, (ec, er)) in enumerate(self.entities):
                 if c is creature and (ec, er) == (from_col, from_row):
                     self.entities[i] = (c, (to_col, to_row))
+                    self._check_campfire_burn(creature)
                     return True
         return False
 
     # ---- NPC 推进 ----
 
+    def _check_campfire_burn(self, creature: Creature) -> None:
+        """若生物站在篝火上，施加灼烧状态（5 钟摆）。"""
+        pos = None
+        if creature is self.player:
+            pos = self.player_pos
+        else:
+            for c, (ec, er) in self.entities:
+                if c is creature:
+                    pos = (ec, er)
+                    break
+        if pos and pos in self.campfire_positions:
+            cid = id(creature)
+            self.burn_timers[cid] = 5
+            if "灼烧" not in creature.statuses:
+                creature.statuses.append("灼烧")
+
+    def _tick_burn_timers(self) -> None:
+        """每钟摆结算灼烧计时，归零时移除状态。"""
+        expired = []
+        for cid, remaining in list(self.burn_timers.items()):
+            new_remaining = remaining - 1
+            if new_remaining <= 0:
+                expired.append(cid)
+            else:
+                self.burn_timers[cid] = new_remaining
+        for cid in expired:
+            del self.burn_timers[cid]
+            # 查找对应生物并移除灼烧状态
+            if id(self.player) == cid:
+                if "灼烧" in self.player.statuses:
+                    self.player.statuses.remove("灼烧")
+            else:
+                for c, _ in self.entities:
+                    if id(c) == cid:
+                        if "灼烧" in c.statuses:
+                            c.statuses.remove("灼烧")
+                        break
+
     def _advance_npcs(self, delta: float) -> None:
         """每钟摆 NPC 行动结算（探索模式）。MVP: 随机游荡 + 记录敌对发现。"""
         if self.in_combat:
+            # 战斗中也要结算灼烧计时
+            self._tick_burn_timers()
             return
+        # 结算灼烧
+        self._tick_burn_timers()
+        # 玩家站在篝火上（回合开始时已在上面）
+        if self.player_pos in self.campfire_positions:
+            self._check_campfire_burn(self.player)
         for creature, (ec, er) in list(self.entities):
             if creature is self.player or creature.hp <= 0:
                 continue
