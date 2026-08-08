@@ -848,9 +848,9 @@ class MVPApp(App):
         # 先移动到攻击范围内
         while dist > reach and npc.ap > 0:
             moved = self._move_npc_toward(npc, nc, nr, pc, pr)
+            npc.ap -= 1  # 尝试移动即消耗 AP（无论成功与否）
             if not moved:
                 break
-            npc.ap -= 1
             pos = self._find_entity_pos(npc)
             if pos:
                 nc, nr = pos
@@ -901,8 +901,12 @@ class MVPApp(App):
                 continue
 
             action = random.choice(available)
+            ap_before = npc.ap
             self._execute_npc_action(npc, action, nc, nr, pc, pr)
             actions_taken += 1
+            if npc.ap >= ap_before:
+                # 动作未能执行（被阻挡/无法移动），跳出防止死循环
+                break
 
         self._next_turn(); self.refresh_all()
 
