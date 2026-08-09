@@ -90,6 +90,46 @@
     "description": "树枝穿起的烤兽肉散发浓郁的香气"
   },
   {
+    "name": "地精角",
+    "type": "material",
+    "effect": "material",
+    "weight": 0.0,
+    "price": {"sp": 1},
+    "description": "形如弯刀的兽角，材料"
+  },
+  {
+    "name": "犬牙",
+    "type": "material",
+    "effect": "material",
+    "weight": 0.0,
+    "price": {"cp": 20},
+    "description": "坚硬的兽牙，材料"
+  },
+  {
+    "name": "猪牙",
+    "type": "material",
+    "effect": "material",
+    "weight": 0.0,
+    "price": {"cp": 20},
+    "description": "坚硬的兽牙，材料"
+  },
+  {
+    "name": "犬毛",
+    "type": "material",
+    "effect": "material",
+    "weight": 0.0,
+    "price": {"sp": 2},
+    "description": "细腻的绒毛，易燃"
+  },
+  {
+    "name": "猪皮",
+    "type": "material",
+    "effect": "material",
+    "weight": 0.0,
+    "price": {"sp": 4},
+    "description": "粗糙的野兽皮，易燃"
+  },
+  {
     "name": "红宝石",
     "type": "misc",
     "effect": "quest_item",

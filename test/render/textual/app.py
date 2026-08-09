@@ -146,16 +146,29 @@ class MVPApp(App):
         Binding("f9", "quick_load", "读档", priority=True),
     ]
 
-    # ── 各面板允许的快捷键集合 ──
+    # ── 视图注册表：每个视图声明支持的按键和输入命令 ──
 
     _EXPLORE_KEYS = {
         "0", "1", "2", "3", "4", "5", "6", "7", "8",
         "slash", "g", "G", "r", "R", "comma", "A", "S", "Q",
         "X", "C", "I", "B", "Z", "K", "Y", "H", "M", "E",
     }
-    _COMBAT_IDLE_KEYS = _EXPLORE_KEYS  # 战斗默认面板与探索相同（shift+tab 走 binding）
-    _COMBAT_SUB_KEYS = {"X", "C", "I", "enter"}    # 战斗子面板：观察/角色/物品栏 + Enter确认远程目标
-    _RIGHT_PANEL_KEYS = _EXPLORE_KEYS   # 物品栏/角色面板：允许所有正常动作键
+
+    VIEW_DEFS = {
+        "explore":                {"keys": _EXPLORE_KEYS, "commands": {}},
+        "combat_idle":            {"keys": _EXPLORE_KEYS, "commands": {}},
+        "inventory":              {"keys": _EXPLORE_KEYS, "commands": {"I": "_use_item", "U": "_handle_unequip", "W": "_swap_hands"}},
+        "character":              {"keys": _EXPLORE_KEYS, "commands": {}},
+        "observe":                {"keys": _EXPLORE_KEYS, "commands": {}},
+        "trading":                {"keys": _EXPLORE_KEYS, "commands": {"B": "_cmd_trade_buy", "S": "_cmd_trade_sell"}},
+        "talking":                {"keys": _EXPLORE_KEYS, "commands": {}},
+        "interact_menu":          {"keys": _EXPLORE_KEYS, "commands": {}},
+        "combat_select_action":   {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_action_input"}},
+        "combat_select_target":   {"keys": {"X", "C", "I", "enter"}, "commands": {"T": "_cmd_target_input"}},
+        "combat_select_maneuver": {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_maneuver_input"}},
+        "combat_select_special":  {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_special_input"}},
+        "combat_ranged_target":   {"keys": {}, "commands": {}},
+    }
 
     def __init__(self):
         super().__init__()
@@ -259,11 +272,7 @@ class MVPApp(App):
         # ── 0. Escape（全局：取消交互 / 取消远程瞄准 / 退出输入栏 / 退出右侧栏视图）──
         if key == "escape":
             if state and state.interact_phase:
-                state.interact_phase = ""
-                state.interact_targets = []
-                state.interact_target = None
-                state.shop_data = None
-                self.refresh_all()
+                self._cancel_interact()
                 event.stop()
                 return
             if state and state.combat_phase == "ranged_target":
@@ -286,48 +295,21 @@ class MVPApp(App):
         if self._input_bar and self._input_bar.has_focus:
             return
 
-        # ── 1.5. 交互阶段特殊按键处理 ──
+        # ── 1.5. 交互阶段专用按键 ──
         if state and state.interact_phase:
-            # 交互菜单：数字键选择目标
-            if state.interact_phase == "menu" and key.isdigit():
-                self._handle_interact_menu_select(int(key))
+            if self._try_interact_key(key):
                 event.stop()
-                return
-            # 交谈面板：T 键进入交易
-            if state.interact_phase == "talking" and key == "T":
-                target = getattr(state, 'interact_target', None)
-                if target and target.extra.get("can_trade"):
-                    self._interact_trade_start()
-                event.stop()
-                return
-            # 交易面板：0 键离开
-            if state.interact_phase == "trading" and key == "0":
-                state.interact_phase = ""
-                state.shop_data = None
-                state.interact_target = None
-                self.refresh_all()
-                event.stop()
-                return
-            # 交互阶段其他按键不响应（除了已允许的 escape/colon）
-            if key != "colon":
                 return
 
-        # ── 2. 根据当前上下文确定允许的键 ──
+        # ── 2. 合并活跃视图的按键集 ──
         if state is None:
             return
-        view = self._right_panel.view_mode if self._right_panel else "default"
-        phase = state.combat_phase
+        allowed = set()
+        for view_name in self._get_active_views():
+            vdef = self.VIEW_DEFS.get(view_name, {})
+            allowed |= vdef.get("keys", set())
 
-        if view in ("inventory", "character"):
-            allowed = self._RIGHT_PANEL_KEYS
-        elif phase != "idle":
-            allowed = self._COMBAT_SUB_KEYS
-        elif state.in_combat:
-            allowed = self._COMBAT_IDLE_KEYS
-        else:
-            allowed = self._EXPLORE_KEYS
-
-        if key not in allowed:
+        if key not in allowed and key != "enter":
             return
 
         # ── 3. 分发 ──
@@ -382,66 +364,101 @@ class MVPApp(App):
         self._input_bar.disabled = False
         self._input_bar.focus()
 
+    def _get_active_views(self) -> list[str]:
+        """返回当前活跃视图列表。多个视图可同时活跃（如 trading + inventory）。"""
+        views = []
+        state = self._state
+        # 交互覆盖层
+        ip = state.interact_phase
+        if ip:
+            views.append(ip)
+        # 战斗子阶段
+        cp = state.combat_phase
+        if cp != "idle":
+            views.append("combat_" + cp)
+        # 右侧面板
+        rv = self._right_panel.view_mode if self._right_panel else "default"
+        if rv != "default":
+            views.append(rv)
+        # 观察模式
+        if state.observe_mode:
+            views.append("observe")
+        # 基础视图
+        if not views:
+            views.append("combat_idle" if state.in_combat else "explore")
+        return views
+
+    def _try_interact_key(self, key: str) -> bool:
+        """处理交互阶段专用按键。返回 True 表示已处理。"""
+        ip = self._state.interact_phase
+        if ip == "menu" and key.isdigit():
+            self._handle_interact_menu_select(int(key))
+            return True
+        if ip == "talking":
+            if key == "T":
+                target = getattr(self._state, 'interact_target', None)
+                if target and target.extra.get("can_trade"):
+                    self._interact_trade_start()
+                return True
+            if key == "0":
+                self._cancel_interact(); return True
+        if ip == "trading" and key == "0":
+            self._cancel_interact(); return True
+        return False
+
+    # ── 命令包装器（供 VIEW_DEFS 的 commands 查表调用）──
+
+    def _cmd_trade_buy(self, cmd: str) -> None:
+        try:
+            self._handle_trade_buy(int(cmd[1:]) - 1)
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :B序号  如 :B1 购买第1件商品")
+
+    def _cmd_trade_sell(self, cmd: str) -> None:
+        try:
+            self._handle_trade_sell(int(cmd[1:]) - 1)
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :S序号  如 :S1 出售第1件物品")
+
+    def _cmd_action_input(self, cmd: str) -> None:
+        self._combat_flow.handle_action_input(cmd)
+
+    def _cmd_target_input(self, cmd: str) -> None:
+        self._combat_flow.handle_target_input(cmd)
+
+    def _cmd_maneuver_input(self, cmd: str) -> None:
+        self._combat_flow.handle_maneuver_input(cmd)
+
+    def _cmd_special_input(self, cmd: str) -> None:
+        self._combat_flow.handle_special_input(cmd)
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         cmd = event.value.strip()
         self._input_bar.value = ""
         self._input_bar.disabled = True
-        if cmd:
-            is_combat_cmd = False
-            iphase = self._state.interact_phase if self._state else ""
-            phase = self._state.combat_phase if self._state else "idle"
-            # ── 交互阶段命令 ──
-            if iphase == "trading":
-                if cmd.upper().startswith("B"):
-                    try:
-                        idx = int(cmd[1:]) - 1
-                        self._handle_trade_buy(idx)
-                    except (ValueError, IndexError):
-                        self._act_log.add("用法: :B序号  如 :B1 购买第1件商品")
-                    self._map_view.focus()
-                    return
-                if cmd.upper().startswith("S"):
-                    try:
-                        idx = int(cmd[1:]) - 1
-                        self._handle_trade_sell(idx)
-                    except (ValueError, IndexError):
-                        self._act_log.add("用法: :S序号  如 :S1 出售第1件物品")
-                    self._map_view.focus()
-                    return
-                self._map_view.focus()
-                return
-            if iphase == "menu":
-                if cmd.isdigit():
-                    self._handle_interact_menu_select(int(cmd))
-                self._map_view.focus()
-                return
-            if iphase == "talking":
-                if cmd.upper() == "T":
-                    target = getattr(self._state, 'interact_target', None)
-                    if target and target.extra.get("can_trade"):
-                        self._interact_trade_start()
-                self._map_view.focus()
-                return
-            # ── 战斗阶段命令 ──
-            if phase == "select_action":
-                self._handle_action_input(cmd); is_combat_cmd = True
-            elif phase == "select_target":
-                self._handle_target_input(cmd); is_combat_cmd = True
-            elif phase == "select_maneuver":
-                self._handle_maneuver_input(cmd); is_combat_cmd = True
-            elif phase == "select_special":
-                self._handle_special_input(cmd); is_combat_cmd = True
-            elif cmd.startswith("I") and self._right_panel.view_mode == "inventory":
+        if not cmd:
+            self._map_view.focus()
+            return
+
+        # 合并所有活跃视图的命令表
+        all_commands = {}
+        for view_name in self._get_active_views():
+            vdef = self.VIEW_DEFS.get(view_name, {})
+            all_commands.update(vdef.get("commands", {}))
+
+        # 按命令前缀查表分发
+        prefix = cmd[0].upper() if cmd else ""
+        handler_name = all_commands.get(prefix)
+        if handler_name:
+            handler = getattr(self, handler_name, None)
+            if handler:
                 self._act_log.add(f"> :{cmd}")
-                self._use_item(cmd)
+                handler(cmd)
                 self._map_view.focus()
-            else:
-                self._act_log.add(f"> :{cmd}")
-                self._act_log.add("功能待定")
-                self._map_view.focus()
-            # 战斗阶段的 handler 自行管理焦点，此处不抢
-            if is_combat_cmd:
                 return
+
+        self._act_log.add(f"> :{cmd}")
+        self._act_log.add("功能待定")
         self._map_view.focus()
 
     def _use_item(self, cmd: str) -> None:
@@ -451,12 +468,15 @@ class MVPApp(App):
             inv = self._state.player.inventory
             if 0 <= idx < len(inv):
                 item = inv[idx]
-                # 武器装备：从物品栏装备到手上
                 if isinstance(item, ent.Weapon):
-                    self._equip_weapon_from_inventory(item, idx)
+                    self._equip_to_hand(item, idx)
                     self._right_panel.refresh()
                     return
-                # AP 检查（与武器攻击复用同一模式：item.ap_cost）
+                if isinstance(item, ent.Armor):
+                    self._equip_armor_from_inventory(item, idx)
+                    self._right_panel.refresh()
+                    return
+                # 消耗品
                 cost = item.ap_cost
                 if self._state.in_combat and self._state.player.ap < cost:
                     self._act_log.add("AP 不足，无法使用物品")
@@ -476,24 +496,163 @@ class MVPApp(App):
             self._act_log.add("用法: :I序号  如 :I1 使用第1个物品")
         self._right_panel.refresh()
 
-    def _equip_weapon_from_inventory(self, weapon: "ent.Weapon", inv_idx: int) -> None:
-        """从物品栏装备武器。双手武器与主手互换，单手武器装备到主手。"""
+    # ── 装备/卸除/互换 ──
+
+    def _equip_to_hand(self, item, inv_idx: int) -> None:
+        """装备单手武器/盾牌到手部。先试左手，被占试右手，都被占则与左手互换。"""
         inv = self._state.player.inventory
         equip = self._state.player.equipment
-        old_weapon = equip.get("right_hand")
-
-        # 从物品栏移除武器
         inv.pop(inv_idx)
 
-        if old_weapon is not None:
-            # 原武器放回物品栏
-            _add_to_inventory(self._state.player, old_weapon)
-            equip["right_hand"] = weapon
-            self._act_log.add(
-                f"{self._pn} 收起了{old_weapon.name}，装备了{weapon.name}")
+        # 双手武器：先装到空闲手，另一手自动卸除
+        props = getattr(item, 'properties', []) or []
+        is_two_handed = 'two_handed' in props
+
+        if is_two_handed:
+            # 自动卸除另一只手
+            other = equip.get("left_hand") if equip.get("right_hand") is None else equip.get("right_hand")
+            if other is not None:
+                _add_to_inventory(self._state.player, other)
+            # 装备到空闲手
+            if equip.get("left_hand") is None:
+                equip["left_hand"] = item
+            else:
+                equip["right_hand"] = item
+            if equip.get("left_hand") and equip.get("right_hand"):
+                # 另一只手仍有装备，卸除
+                other_hand = "right_hand" if equip["left_hand"] is item else "left_hand"
+                if equip.get(other_hand) and equip[other_hand] is not item:
+                    _add_to_inventory(self._state.player, equip[other_hand])
+                    equip[other_hand] = None
+            self._act_log.add(f"{self._pn} 双手握持了 {item.name}")
+            return
+
+        # 单手：左 → 右 顺序
+        for hand in ("left_hand", "right_hand"):
+            if equip.get(hand) is None:
+                equip[hand] = item
+                hand_name = "左手" if hand == "left_hand" else "右手"
+                self._act_log.add(f"{self._pn} 装备了 {item.name}（{hand_name}）")
+                return
+
+        # 都占，与左手互换
+        old = equip["left_hand"]
+        equip["left_hand"] = item
+        _add_to_inventory(self._state.player, old)
+        self._act_log.add(f"{self._pn} 收起了{old.name}，装备了{item.name}（左手）")
+
+    def _equip_armor_from_inventory(self, armor: "ent.Armor", inv_idx: int) -> None:
+        """从物品栏装备护甲到对应部位。"""
+        inv = self._state.player.inventory
+        equip = self._state.player.equipment
+        p = self._state.player
+
+        slot = armor.slot
+        # 盾牌视作单手装备
+        if armor.armor_type == "shield":
+            inv.pop(inv_idx)
+            self._equip_shield(armor)
+            return
+        # 全身服饰 → 胸甲位
+        if slot == "full_body":
+            slot = "chest"
+
+        inv.pop(inv_idx)
+        old = equip.get(slot)
+        if old is not None:
+            _add_to_inventory(self._state.player, old)
+
+        equip[slot] = armor
+        # 更新 AC
+        ac_field = {"head": "ac_head", "chest": "ac_chest", "arms": "ac_arms", "legs": "ac_legs"}.get(slot)
+        if ac_field:
+            setattr(p, ac_field, getattr(p, ac_field) + armor.ac_bonus)
+        self._act_log.add(f"{self._pn} 装备了 {armor.name}")
+
+    def _equip_shield(self, shield) -> None:
+        """装备盾牌：先试左手，被占试右手，都被占则与左手互换（与单手武器规则一致）。"""
+        equip = self._state.player.equipment
+        p = self._state.player
+
+        for hand in ("left_hand", "right_hand"):
+            if equip.get(hand) is None:
+                equip[hand] = shield
+                p.ac_shield += shield.ac_bonus
+                hand_name = "左手" if hand == "left_hand" else "右手"
+                self._act_log.add(f"{self._pn} 装备了 {shield.name}（{hand_name}）")
+                return
+
+        # 都占，与左手互换
+        old = equip["left_hand"]
+        equip["left_hand"] = shield
+        _add_to_inventory(self._state.player, old)
+        # AC：去除旧物品的 shield AC（如果是盾牌），添加新盾牌 AC
+        if isinstance(old, ent.Armor) and old.armor_type == "shield":
+            p.ac_shield = max(0, p.ac_shield - old.ac_bonus)
+        p.ac_shield += shield.ac_bonus
+        self._act_log.add(f"{self._pn} 收起了{old.name}，装备了 {shield.name}（左手）")
+
+    def _unequip_slot(self, slot: str) -> None:
+        """卸除指定部位的装备，放入背包。"""
+        p = self._state.player
+        equip = p.equipment
+        item = equip.get(slot)
+        if item is None:
+            self._act_log.add(f"该部位没有装备")
+            return
+
+        equip[slot] = None
+        _add_to_inventory(self._state.player, item)
+
+        # 重算对应 AC
+        if slot in ("left_hand", "right_hand"):
+            if isinstance(item, ent.Armor) and item.armor_type == "shield":
+                p.ac_shield = max(0, p.ac_shield - item.ac_bonus)
         else:
-            equip["right_hand"] = weapon
-            self._act_log.add(f"{self._pn} 装备了{weapon.name}")
+            ac_field = {"head": "ac_head", "chest": "ac_chest", "arms": "ac_arms", "legs": "ac_legs"}.get(slot)
+            if ac_field and isinstance(item, ent.Armor):
+                setattr(p, ac_field, max(0, getattr(p, ac_field) - item.ac_bonus))
+
+        slot_names = {"left_hand": "左手", "right_hand": "右手", "head": "头部",
+                      "chest": "躯干", "arms": "双臂", "legs": "双腿"}
+        slot_name = slot_names.get(slot, slot)
+        self._act_log.add(f"{self._pn} 卸下了 {item.name}（{slot_name}）")
+        self._right_panel.refresh()
+
+    UNEQUIP_SLOTS = {
+        1: "left_hand", 2: "right_hand",
+        3: "head", 4: "chest", 5: "arms", 6: "legs",
+    }
+
+    def _handle_unequip(self, cmd: str) -> None:
+        """处理卸除命令：:U1~:U6。"""
+        try:
+            idx = int(cmd[1:])
+            slot = self.UNEQUIP_SLOTS.get(idx)
+            if slot is None:
+                self._act_log.add("用法: :U1 左手 :U2 右手 :U3 头部 :U4 躯干 :U5 双臂 :U6 双腿")
+                return
+            self._unequip_slot(slot)
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :U1 左手 :U2 右手 :U3 头部 :U4 躯干 :U5 双臂 :U6 双腿")
+        self._right_panel.refresh()
+
+    def _swap_hands(self) -> None:
+        """交换左右手装备。"""
+        equip = self._state.player.equipment
+        left = equip.get("left_hand")
+        right = equip.get("right_hand")
+
+        # 检查双手武器
+        for item in (left, right):
+            if item is not None and hasattr(item, 'properties') and item.properties:
+                if 'two_handed' in item.properties:
+                    self._act_log.add("双手武器不能交换")
+                    return
+
+        equip["left_hand"], equip["right_hand"] = right, left
+        self._act_log.add(f"{self._pn} 交换了左右手装备")
+        self._right_panel.refresh()
 
     def _apply_item_effect(self, item) -> None:
         """根据物品 effect 字段应用效果，支持数值和骰子字符串。"""
@@ -565,6 +724,15 @@ class MVPApp(App):
             self._last_move = (dc, dr)
             # 统一后处理：NPC 行为 + 战斗检测 + UI 刷新
             self._post_action_update()
+            # 交互阶段：移动离开交互范围则自动退出
+            if self._state.interact_phase:
+                target = getattr(self._state, 'interact_target', None)
+                if target is not None:
+                    tx, ty = target.pos
+                    px, py = self._state.player_pos
+                    if max(abs(px - tx), abs(py - ty)) > 1:
+                        self._cancel_interact()
+                        self._act_log.add("离开了交互范围")
             # 走进地下城入口
             if (not self._state.in_dungeon and self._state.dungeon_entrance
                     and self._state.player_pos == self._state.dungeon_entrance):
@@ -618,15 +786,19 @@ class MVPApp(App):
 
     # ── Interact（重构）──
 
+    def _cancel_interact(self) -> None:
+        """取消交互，恢复默认状态。"""
+        self._state.interact_phase = ""
+        self._state.interact_targets = []
+        self._state.interact_target = None
+        self._state.shop_data = None
+        self.refresh_all()
+
     def action_interact(self) -> None:
         """按 0 交互：扫描可交互目标 → 单目标直接触发，多目标弹菜单。"""
         # 已在交互阶段 → 按 0 离开
         if self._state.interact_phase:
-            self._state.interact_phase = ""
-            self._state.interact_targets = []
-            self._state.interact_target = None
-            self._state.shop_data = None
-            self.refresh_all()
+            self._cancel_interact()
             return
         targets = scan_interact_targets(self._state)
         if not targets:

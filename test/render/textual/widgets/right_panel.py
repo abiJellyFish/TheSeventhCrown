@@ -24,11 +24,12 @@ class RightPanel(Static):
     def _render_default(self) -> str:
         p = self.state.player
         slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
+        food_pct = p.food_value * 100 // 15000
         lines = [
             f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  饮食 {food_pct}%",
             "",
             "[[X]]观察 [[Q]]退出",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
@@ -43,8 +44,8 @@ class RightPanel(Static):
         p = self.state.player
         max_h = self.size.height
         lines = [
-            f"[bold]物品栏[/] [dim]I/Esc返回  输入 :I序号 使用[/]",
-            f"金币: {p.gp}GP",
+            f"[bold]物品栏[/] [dim]I/Esc返回[/]",
+            f"金币: {p.gp}GP  饮食: {p.food_value * 100 // 15000}%",
             "── 装备 ──",
         ]
         lines.extend(self._render_equipment_lines(p))
@@ -55,7 +56,7 @@ class RightPanel(Static):
                 item_lines.append(f"  [{i + 1}] {item.name} x{item.count}")
                 if item.description:
                     item_lines.append(f"      {item.description[:20]}")
-            available = max_h - len(lines) - 1
+            available = max_h - len(lines) - 3
             if available >= len(item_lines):
                 lines.extend(item_lines)
             elif available > 1:
@@ -65,6 +66,8 @@ class RightPanel(Static):
                 lines.extend(item_lines[:max(1, available)])
         else:
             lines.append("  (空)")
+        lines.append("")
+        lines.append("[dim]:I序号 装备/使用  :U1-U6 卸除  :W 互换左右手[/]")
         return "\n".join(lines)
 
     def _render_character(self) -> str:
@@ -74,7 +77,7 @@ class RightPanel(Static):
             f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP  饮食: {p.food_value * 100 // 15000}%",
             "",
         ]
         for key, label in [("str", "力量"), ("dex", "敏捷"), ("con", "体质"), ("int", "智力"), ("wis", "感知"), ("cha", "魅力")]:
@@ -116,6 +119,8 @@ class RightPanel(Static):
             faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
                            "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
             lines.append(f"生物: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
+            if ent.food_value > 0:
+                lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
             if ent.statuses:
                 lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
 

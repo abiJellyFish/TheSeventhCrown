@@ -29,7 +29,7 @@
       "weapon_type": "ranged", "category": "martial",
       "damage": "1d6", "damage_type": "piercing", "attack_stat": "dex",
       "ap_cost": 2, "range_normal": 8, "range_max": 14,
-      "properties": ["ammo", "two_handed"],
+      "properties": ["ammo"],
       "weight": 1.0, "price": {"gp": 1, "sp": 50},
       "description": "短弓，可远程攻击。需要弹药，普通弹药无限免费。"
     }

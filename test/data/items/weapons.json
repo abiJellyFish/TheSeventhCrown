@@ -21,7 +21,8 @@
     "ap_cost": 2,
     "properties": ["versatile(1d6)"],
     "weight": 1.0,
-    "price": {"sp": 30}
+    "price": {"sp": 30},
+    "description": "短棒，可单手或双手持用"
   },
   {
     "name": "长剑",
@@ -33,7 +34,8 @@
     "ap_cost": 3,
     "properties": ["versatile(1d10)"],
     "weight": 2.0,
-    "price": {"gp": 3, "sp": 50}
+    "price": {"gp": 3, "sp": 50},
+    "description": "长剑，可单手或双手持用，制式武器"
   },
   {
     "name": "短弓",
@@ -45,9 +47,10 @@
     "ap_cost": 2,
     "range_normal": 8,
     "range_max": 14,
-    "properties": ["ammo", "two_handed"],
+    "properties": ["ammo"],
     "weight": 1.0,
-    "price": {"gp": 1, "sp": 50}
+    "price": {"gp": 1, "sp": 50},
+    "description": "短弓，远程武器，普通弹药无限免费"
   },
   {
     "name": "匕首",
@@ -61,7 +64,8 @@
     "range_max": 6,
     "properties": ["light", "thrown(4/6)"],
     "weight": 0.5,
-    "price": {"gp": 2}
+    "price": {"gp": 2},
+    "description": "灵巧匕首，轻型，可投掷"
   },
   {
     "name": "火把",
@@ -74,7 +78,8 @@
     "properties": ["light_5", "ignite_surface"],
     "special_damage": {"amount": "1d4", "type": "fire", "condition": "lit"},
     "weight": 1.0,
-    "price": {"sp": 40}
+    "price": {"sp": 40},
+    "description": "点燃后提供5格明亮照明，可引燃地表，灼烧敌人"
   },
   {
     "name": "长杖",
@@ -86,6 +91,7 @@
     "ap_cost": 2,
     "properties": ["versatile(1d10)"],
     "weight": 1.5,
-    "price": {"gp": 1, "sp": 50}
+    "price": {"gp": 1, "sp": 50},
+    "description": "长杖，可单手或双手持用"
   }
 ]
