@@ -20,14 +20,12 @@ COVER_AC = {
 
 
 def _terrain_cover_ac(terrain: Terrain) -> int | None:
-    """获取地形的掩体 AC。None = 不提供掩体, 0 = 全身阻挡。"""
+    """获取地形的掩体 AC。None = 不提供掩体, 30 = 全身阻挡, 5 = 半身掩体。"""
     if terrain == Terrain.WALL:
-        return 0  # 全身阻挡
-    # 矮墙和灌木丛都使用 DIFFICULT 类型，但掩体等级不同
-    # 目前简化：DIFFICULT 地形默认视为半身掩体(AC 5)
+        return 30  # 全身阻挡（d20 < 30 永远成立）
     if terrain == Terrain.DIFFICULT:
         return 5  # 半身掩体
-    return None  # 无掩体
+    return None
 
 
 def resolve_cover_line(
@@ -88,8 +86,6 @@ def resolve_cover_line(
         # 检查当前格掩体
         cover_ac = _terrain_cover_ac(grid[cx, cy])
         if cover_ac is not None:
-            if cover_ac == 0:
-                return True, (cx, cy)  # 全身阻挡（AC0 无法穿透）
             if attack_roll < cover_ac:
                 return True, (cx, cy)  # 掩体阻挡（命中骰低于掩体AC）
 
