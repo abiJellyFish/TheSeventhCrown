@@ -24,6 +24,8 @@ from core.ai.engine import BehaviorEngine
 from core.rest import short_rest, long_rest
 from core.loader import DataLoader
 from core.save.database import SaveManager
+from core.interact import InteractType, scan_interact_targets
+from core.trade import load_shop, trade_buy, trade_sell, price_to_text, copper_to_currency, shop_gold_text
 from render.textual.widgets import (
     TopBar, LeftPanel, MapView, RightPanel, ActionLog, SceneLog,
 )
@@ -84,6 +86,18 @@ def _load_scene_actions() -> dict:
     with open(path, "r", encoding="utf-8") as f:
         _SCENE_ACTIONS_CACHE = json.load(f)
     return _SCENE_ACTIONS_CACHE
+
+
+# ── 交互分发哈希表（新增交互类型只需加一行）──
+
+_INTERACT_DISPATCH = {
+    InteractType.TALK: "_interact_talk",
+    InteractType.LOOT: "_interact_loot",
+    InteractType.PICK: "_interact_pick",
+    InteractType.REST: "_interact_rest",
+    InteractType.OPEN: "_interact_door",
+    InteractType.ENTER: "_interact_entrance",
+}
 
 
 def _update_fov(state: GameState) -> None:
@@ -242,8 +256,16 @@ class MVPApp(App):
         key = event.key
         state = self._state
 
-        # ── 0. Escape（全局：取消远程瞄准 / 退出输入栏 / 退出右侧栏视图）──
+        # ── 0. Escape（全局：取消交互 / 取消远程瞄准 / 退出输入栏 / 退出右侧栏视图）──
         if key == "escape":
+            if state and state.interact_phase:
+                state.interact_phase = ""
+                state.interact_targets = []
+                state.interact_target = None
+                state.shop_data = None
+                self.refresh_all()
+                event.stop()
+                return
             if state and state.combat_phase == "ranged_target":
                 self._combat_flow.cancel_ranged_target()
                 event.stop()
@@ -263,6 +285,32 @@ class MVPApp(App):
         # ── 1. 输入栏聚焦时 → 不响应任何快捷键 ──
         if self._input_bar and self._input_bar.has_focus:
             return
+
+        # ── 1.5. 交互阶段特殊按键处理 ──
+        if state and state.interact_phase:
+            # 交互菜单：数字键选择目标
+            if state.interact_phase == "menu" and key.isdigit():
+                self._handle_interact_menu_select(int(key))
+                event.stop()
+                return
+            # 交谈面板：T 键进入交易
+            if state.interact_phase == "talking" and key == "T":
+                target = getattr(state, 'interact_target', None)
+                if target and target.extra.get("can_trade"):
+                    self._interact_trade_start()
+                event.stop()
+                return
+            # 交易面板：0 键离开
+            if state.interact_phase == "trading" and key == "0":
+                state.interact_phase = ""
+                state.shop_data = None
+                state.interact_target = None
+                self.refresh_all()
+                event.stop()
+                return
+            # 交互阶段其他按键不响应（除了已允许的 escape/colon）
+            if key != "colon":
+                return
 
         # ── 2. 根据当前上下文确定允许的键 ──
         if state is None:
@@ -340,7 +388,41 @@ class MVPApp(App):
         self._input_bar.disabled = True
         if cmd:
             is_combat_cmd = False
+            iphase = self._state.interact_phase if self._state else ""
             phase = self._state.combat_phase if self._state else "idle"
+            # ── 交互阶段命令 ──
+            if iphase == "trading":
+                if cmd.upper().startswith("B"):
+                    try:
+                        idx = int(cmd[1:]) - 1
+                        self._handle_trade_buy(idx)
+                    except (ValueError, IndexError):
+                        self._act_log.add("用法: :B序号  如 :B1 购买第1件商品")
+                    self._map_view.focus()
+                    return
+                if cmd.upper().startswith("S"):
+                    try:
+                        idx = int(cmd[1:]) - 1
+                        self._handle_trade_sell(idx)
+                    except (ValueError, IndexError):
+                        self._act_log.add("用法: :S序号  如 :S1 出售第1件物品")
+                    self._map_view.focus()
+                    return
+                self._map_view.focus()
+                return
+            if iphase == "menu":
+                if cmd.isdigit():
+                    self._handle_interact_menu_select(int(cmd))
+                self._map_view.focus()
+                return
+            if iphase == "talking":
+                if cmd.upper() == "T":
+                    target = getattr(self._state, 'interact_target', None)
+                    if target and target.extra.get("can_trade"):
+                        self._interact_trade_start()
+                self._map_view.focus()
+                return
+            # ── 战斗阶段命令 ──
             if phase == "select_action":
                 self._handle_action_input(cmd); is_combat_cmd = True
             elif phase == "select_target":
@@ -534,70 +616,164 @@ class MVPApp(App):
         else: self._act_log.add("退出观察模式")
         self.refresh_all()
 
-    # ── Interact ──
+    # ── Interact（重构）──
 
     def action_interact(self) -> None:
-        pc, pr = self._state.player_pos
-        # 门交互
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                door_pos = (pc + dc, pr + dr)
-                if door_pos in self._state.door_states:
-                    is_open = self._state.door_states[door_pos]
-                    if is_open:
-                        self._state.door_states[door_pos] = False
-                        self._state.map[door_pos] = Terrain.WALL
-                        self._act_log.add("门关上了")
-                    else:
-                        self._state.door_states[door_pos] = True
-                        self._state.map[door_pos] = Terrain.PASSABLE
-                        self._act_log.add("门打开了")
-                    _update_fov(self._state)
-                    self.refresh_all(); return
-        # 地下城入口
-        if self._state.dungeon_entrance and (pc, pr) == self._state.dungeon_entrance:
-            self._enter_dungeon(); return
-        # 地下城出口
-        if self._state.in_dungeon and self._state.dungeon_exit and (pc, pr) == self._state.dungeon_exit:
-            self._exit_dungeon(); return
-        # 床交互
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                if (pc + dc, pr + dr) in self._state.bed_positions:
-                    self._act_log.add("不妨在床上度过舒适的一晚")
-                    self.refresh_all(); return
-        for creature, (ec, er) in self._state.entities:
-            if creature is self._state.player: continue
-            if abs(ec - pc) <= 1 and abs(er - pr) <= 1:
-                if creature.hp <= 0: self._loot_corpse(creature); return
-                self._interact_creature(creature, (ec, er)); return
-        # 灌木丛（自身格 + 相邻格）
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                nc, nr = pc + dc, pr + dr
-                if not (0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height): continue
-                if self._state.map[nc, nr] == Terrain.DIFFICULT:
-                    b = random.randint(1, 4)
-                    berry = ent.Item.from_dict({
-                        "name": "浆果", "item_type": "consumable",
-                        "effect": "restore_food", "amount": "500",
-                        "ap_cost": 1, "weight": 0.1,
-                        "price": {"cp": 2},
-                        "description": "多汁的浆果",
-                        "count": b,
-                    })
-                    _add_to_inventory(self._state.player, berry)
-                    self._act_log.add(f"{self._pn} 从灌木丛摘到 {b} 个浆果")
-                    self.refresh_all(); return
-        self._act_log.add(f"{self._pn} 环顾四周，这里没什么特别的")
+        """按 0 交互：扫描可交互目标 → 单目标直接触发，多目标弹菜单。"""
+        # 已在交互阶段 → 按 0 离开
+        if self._state.interact_phase:
+            self._state.interact_phase = ""
+            self._state.interact_targets = []
+            self._state.interact_target = None
+            self._state.shop_data = None
+            self.refresh_all()
+            return
+        targets = scan_interact_targets(self._state)
+        if not targets:
+            self._act_log.add(f"{self._pn} 环顾四周，这里没什么特别的")
+            return
+        if len(targets) == 1:
+            self._dispatch_interact(targets[0])
+            return
+        # 多个目标 → 弹菜单
+        self._state.interact_targets = targets
+        self._state.interact_phase = "menu"
         self.refresh_all()
 
-    def _interact_creature(self, c: Creature, pos: tuple[int, int]) -> None:
+    def _dispatch_interact(self, target) -> None:
+        """哈希表分发交互。"""
+        method_name = _INTERACT_DISPATCH.get(target.interact_type)
+        if method_name:
+            getattr(self, method_name)(target)
+
+    def _handle_interact_menu_select(self, num: int) -> None:
+        """交互菜单选择（数字 0~N）。"""
+        targets = self._state.interact_targets
+        if num == 0:
+            self._state.interact_phase = ""
+            self._state.interact_targets = []
+            self._state.interact_target = None
+            self.refresh_all()
+            return
+        if 1 <= num <= len(targets):
+            self._state.interact_phase = ""
+            self._dispatch_interact(targets[num - 1])
+
+    # ── 各交互类型处理方法 ──
+
+    def _interact_talk(self, target) -> None:
+        """与生物交谈。敌对生物直接开战。"""
+        c = target.creature
+        if c is None:
+            return
         if c.faction == "hostile":
-            self._act_log.add(f"{self._pn} 拔剑冲向 {c.name}!"); self._start_combat(c)
+            self._act_log.add(f"{self._pn} 拔剑冲向 {c.name}!")
+            self._start_combat(c)
+            return
+        self._state.interact_target = target
+        self._state.interact_phase = "talking"
+        self._act_log.add(f"{self._pn} 向 {c.name} 搭话")
+        self._act_log.add(self._get_npc_dialogue(c))
+        self.refresh_all()
+
+    def _interact_loot(self, target) -> None:
+        """搜刮尸体。"""
+        c = target.creature
+        if c is None:
+            return
+        if getattr(c, '_looted', False):
+            self._act_log.add("已经搜刮过了")
+            return
+        c._looted = True
+        self._act_log.add(f"[搜刮] {c.name}: 获得了一些物品")
+        self.refresh_all()
+
+    def _interact_pick(self, target) -> None:
+        """采摘灌木丛。"""
+        tc, tr = target.pos
+        b = random.randint(1, 4)
+        berry = ent.Item.from_dict({
+            "name": "浆果", "item_type": "consumable",
+            "effect": "restore_food", "amount": "500",
+            "ap_cost": 1, "weight": 0.1,
+            "price": {"cp": 2},
+            "description": "多汁的浆果",
+            "count": b,
+        })
+        _add_to_inventory(self._state.player, berry)
+        self._act_log.add(f"{self._pn} 从灌木丛摘到 {b} 个浆果")
+        self.refresh_all()
+
+    def _interact_rest(self, target) -> None:
+        """床铺休息。"""
+        self._act_log.add("不妨在床上度过舒适的一晚")
+        self.refresh_all()
+
+    def _interact_door(self, target) -> None:
+        """开关门。"""
+        pos = target.pos
+        if pos not in self._state.door_states:
+            return
+        is_open = self._state.door_states[pos]
+        if is_open:
+            self._state.door_states[pos] = False
+            self._state.map[pos] = Terrain.WALL
+            self._act_log.add("门关上了")
         else:
-            self._act_log.add(f"{self._pn} 向 {c.name} 搭话")
-            self._act_log.add(self._get_npc_dialogue(c))
+            self._state.door_states[pos] = True
+            self._state.map[pos] = Terrain.PASSABLE
+            self._act_log.add("门打开了")
+        _update_fov(self._state)
+        self.refresh_all()
+
+    def _interact_entrance(self, target) -> None:
+        """进入/离开地下城。"""
+        direction = target.extra.get("direction", "enter")
+        if direction == "exit":
+            self._exit_dungeon()
+        else:
+            self._enter_dungeon()
+        self.refresh_all()
+
+    # ── 交易流程 ──
+
+    def _interact_trade_start(self) -> None:
+        """从交谈界面进入交易。"""
+        target = getattr(self._state, 'interact_target', None)
+        if target is None or target.creature is None:
+            return
+        shop_id = getattr(target.creature, 'template_name', '')
+        if not shop_id:
+            self._act_log.add("商店数据异常")
+            return
+        shop = load_shop(shop_id)
+        if shop is None:
+            self._act_log.add(f"商店 '{shop_id}' 数据不存在")
+            return
+        self._state.shop_data = shop
+        self._state.interact_phase = "trading"
+        self._act_log.add(f"可以 :B序号 购买商品，:S序号 出售物品")
+        self.refresh_all()
+
+    def _handle_trade_buy(self, index: int) -> None:
+        """购买商店商品。"""
+        shop = self._state.shop_data
+        if shop is None:
+            return
+        ok, msg = trade_buy(self._state.player, shop, index)
+        self._act_log.add(msg)
+        self.refresh_all()
+
+    def _handle_trade_sell(self, index: int) -> None:
+        """出售背包物品给商店。"""
+        shop = self._state.shop_data
+        if shop is None:
+            return
+        ok, msg = trade_sell(self._state.player, shop, index)
+        self._act_log.add(msg)
+        self.refresh_all()
+
+    # ── NPC 对话 ──
 
     def _get_npc_dialogue(self, c: Creature) -> str:
         """基于 AI 状态生成 NPC 对话，从 dialogues.json 加载文本。"""
@@ -616,11 +792,6 @@ class MVPApp(App):
         tier = brave if brave in ("low", "medium", "high") else "medium"
         action_dialogues = dialogue.get(action, dialogue.get("idle", {}))
         return f"{c.name}: {action_dialogues.get(tier, action_dialogues.get('medium', '...'))}"
-
-    def _loot_corpse(self, c: Creature) -> None:
-        if getattr(c, '_looted', False): self._act_log.add("已经搜刮过了"); return
-        c._looted = True
-        self._act_log.add(f"[搜刮] {c.name}: 获得了一些物品")
 
     def _enter_dungeon(self) -> None:
         """保存世界状态，进入地下城。"""

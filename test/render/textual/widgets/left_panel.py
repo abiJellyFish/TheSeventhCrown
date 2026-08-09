@@ -22,8 +22,16 @@ class LeftPanel(Static):
     def render(self) -> str:
         if self.state is None:
             return ""
+        # ── 交互覆盖层（优先级最高）──
+        iphase = self.state.interact_phase
+        if iphase == "menu":
+            return self._render_interact_menu()
+        if iphase == "talking":
+            return self._render_talk_panel()
+        if iphase == "trading":
+            return self._render_trade_panel()
+        # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
-        # 攻击流程子面板 — 探索/战斗模式共用
         if phase == "select_action":
             return self._render_action_panel()
         elif phase == "ranged_target":
@@ -250,6 +258,107 @@ class LeftPanel(Static):
         self._special_map[0] = "tenacity"
         lines.append("[[A0]]削韧      不消耗AP，削减目标韧性")
         return "\n".join(lines)
+
+
+    # ── 交互覆盖层子面板 ──
+
+    def _render_interact_menu(self) -> str:
+        """交互目标选择菜单。"""
+        targets = self.state.interact_targets
+        max_h = self.size.height
+        lines = ["[bold]── 交互 ──[/]", ""]
+        for i, t in enumerate(targets, 1):
+            if len(lines) >= max_h - 1:
+                lines.append(f"  ... 还有 {len(targets) - i + 1} 个目标")
+                break
+            lines.append(f"[[{i}]]{t.label}")
+        lines.append("")
+        lines.append("[[0]]离开")
+        return "\n".join(lines[:max_h])
+
+    def _render_talk_panel(self) -> str:
+        """交谈面板。"""
+        target = self.state.interact_target
+        max_h = self.size.height
+        if target is None or target.creature is None:
+            return "── 交谈 ──\n\n(无目标)\n\n[[0]]离开"
+        c = target.creature
+        lines = [
+            f"[bold]── 与{c.name}交谈 ──[/]",
+            "",
+        ]
+        # 显示基本状态
+        hp_pct = c.hp / max(c.max_hp, 1) * 100
+        faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
+                       "neutral": "[yellow]中立[/]"}.get(c.faction, c.faction)
+        lines.append(f"HP {c.hp}/{c.max_hp} ({hp_pct:.0f}%)  {faction_tag}")
+        if c.statuses:
+            lines.append(f"状态: {', '.join(s.name for s in c.statuses)}")
+        lines.append("")
+        # 交易选项
+        if target.extra.get("can_trade"):
+            lines.append("[[T]]交易")
+        lines.append("[[0]]离开")
+        return "\n".join(lines[:max_h])
+
+    def _render_trade_panel(self) -> str:
+        """交易面板：商店库存 + 玩家背包。"""
+        from core.trade import shop_gold_text, price_to_text
+
+        shop = self.state.shop_data
+        p = self.state.player
+        max_h = self.size.height
+
+        if shop is None:
+            return "── 交易 ──\n\n商店数据异常\n\n[[0]]离开"
+
+        shop_name = shop.get("name", "商店")
+        lines = [
+            f"[bold]── 交易 ── {shop_name}[/]  资金: {shop_gold_text(shop)}",
+            f"你的金币: {p.gp}GP {p.sp}SP {p.cp}CP",
+            "",
+            "[bold]商店库存[/]",
+        ]
+
+        # 商店库存
+        stock = shop.get("_resolved_stock", [])
+        for i, entry in enumerate(stock, 1):
+            item = entry["item"]
+            price_text = price_to_text(entry["price"])
+            lines.append(f"[[B{i}]]{item.name}  {price_text}")
+        if not stock:
+            lines.append("  (已售罄)")
+
+        lines.append("")
+        lines.append("[bold]你的背包[/]")
+
+        # 玩家背包（只显示可出售的物品，不显示已装备的）
+        equip_names = set()
+        for slot_name, equip_item in p.equipment.items():
+            if equip_item is not None:
+                equip_names.add(equip_item.name)
+                # 也记录 id，同一类型物品可能有多件
+        inv_idx = 0
+        shown = 0
+        for item in p.inventory:
+            inv_idx += 1
+            # 如果已被装备，跳过
+            # (简化：通过名称判断；同名人可能有两件，只跳第一件装备的。TODO 后续用 id)
+            sell_p = sell_price_local(item.price)
+            lines.append(f"[[S{shown + 1}]]{item.name} x{item.count}  售价:{price_to_text(sell_p)}")
+            shown += 1
+        if shown == 0:
+            lines.append("  (无可出售物品)")
+
+        lines.append("")
+        lines.append(":B序号 购买  :S序号 出售  [[0]]离开")
+        return "\n".join(lines[:max_h])
+
+
+def sell_price_local(price: dict) -> dict:
+    """半价收购价（避免循环导入）。"""
+    from core.trade import sell_price
+    return sell_price(price)
 
 
 _SPECIAL_ACTIONS_CACHE: list | None = None

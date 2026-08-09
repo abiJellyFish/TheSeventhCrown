@@ -62,6 +62,12 @@ class GameState:
     # 慢速模式
     slow_mode: bool = False
 
+    # 交互系统
+    interact_phase: str = ""              # "" | "menu" | "talking" | "trading"
+    interact_targets: list = field(default_factory=list)
+    interact_target: object | None = None  # 当前交互目标 (InteractTarget)
+    shop_data: dict | None = None         # 当前交易中的商店数据
+
     # NPC 推进回调设置的待开战目标
     pending_combat_target: Creature | None = None
 

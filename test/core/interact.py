@@ -1,0 +1,156 @@
+"""通用交互系统 —— 可交互目标检测、交互类型定义、哈希表分发。
+
+新增交互目标类型：
+  1. 写一个 _detect_xxx(state) → list[InteractTarget]
+  2. 追加到 _DETECTORS 列表
+  3. 在 app.py 的 _INTERACT_DISPATCH 加一行
+
+新增生物 trait 标记：
+  在 CREATURE_TRAIT_FLAGS 加一行即可。
+"""
+
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from core.movement import Terrain
+
+
+class InteractType(Enum):
+    TALK = auto()        # 交谈
+    LOOT = auto()        # 搜刮尸体
+    PICK = auto()        # 采摘（灌木）
+    REST = auto()        # 休息（床）
+    OPEN = auto()        # 开门/关门
+    ENTER = auto()       # 进入地城
+
+
+@dataclass
+class InteractTarget:
+    """可交互目标。"""
+    label: str                          # 中文显示名，如"商人""灌木丛""关闭的门"
+    interact_type: InteractType
+    pos: tuple[int, int]
+    creature: object | None = None      # Creature 或 None
+    extra: dict = field(default_factory=dict)
+
+
+# ═══════════════════════════════════════════════════
+# 生物 trait → 特殊交互标记（新增 trait 只需加一行）
+# ═══════════════════════════════════════════════════
+
+CREATURE_TRAIT_FLAGS: dict[str, str] = {
+    "merchant": "can_trade",
+}
+
+
+# ═══════════════════════════════════════════════════
+# 检测器（新增可交互类型只需追加函数到 _DETECTORS）
+# ═══════════════════════════════════════════════════
+
+def _detect_creatures(state) -> list[InteractTarget]:
+    """检测相邻格生物：活着 → TALK，死亡 → LOOT。"""
+    pc, pr = state.player_pos
+    results = []
+    for creature, (ec, er) in state.entities:
+        if creature is state.player:
+            continue
+        if max(abs(ec - pc), abs(er - pr)) > 1:
+            continue
+        if creature.hp <= 0:
+            results.append(InteractTarget(
+                label=f"{creature.name}的尸体",
+                interact_type=InteractType.LOOT,
+                pos=(ec, er), creature=creature,
+            ))
+        else:
+            flags = {}
+            for trait in getattr(creature, 'traits', []) or []:
+                if trait in CREATURE_TRAIT_FLAGS:
+                    flags[CREATURE_TRAIT_FLAGS[trait]] = True
+            results.append(InteractTarget(
+                label=creature.name,
+                interact_type=InteractType.TALK,
+                pos=(ec, er), creature=creature,
+                extra=flags,
+            ))
+    return results
+
+
+def _detect_doors(state) -> list[InteractTarget]:
+    """检测相邻格门。"""
+    pc, pr = state.player_pos
+    results = []
+    for dc in (-1, 0, 1):
+        for dr in (-1, 0, 1):
+            pos = (pc + dc, pr + dr)
+            if pos in state.door_states:
+                label = "打开的门" if state.door_states[pos] else "关闭的门"
+                results.append(InteractTarget(
+                    label=label, interact_type=InteractType.OPEN,
+                    pos=pos, extra={"is_open": state.door_states[pos]},
+                ))
+    return results
+
+
+def _detect_beds(state) -> list[InteractTarget]:
+    """检测相邻格床。"""
+    pc, pr = state.player_pos
+    results = []
+    for dc in (-1, 0, 1):
+        for dr in (-1, 0, 1):
+            pos = (pc + dc, pr + dr)
+            if pos in state.bed_positions:
+                results.append(InteractTarget(
+                    label="床铺", interact_type=InteractType.REST, pos=pos,
+                ))
+    return results
+
+
+def _detect_bushes(state) -> list[InteractTarget]:
+    """检测相邻格灌木（可采摘浆果，排除石头）。"""
+    pc, pr = state.player_pos
+    results = []
+    for dc in (-1, 0, 1):
+        for dr in (-1, 0, 1):
+            nc, nr = pc + dc, pr + dr
+            if not state.map.within_bounds(nc, nr):
+                continue
+            if state.map[nc, nr] == Terrain.DIFFICULT and (nc, nr) not in state.stone_positions:
+                results.append(InteractTarget(
+                    label="灌木丛", interact_type=InteractType.PICK, pos=(nc, nr),
+                ))
+    return results
+
+
+def _detect_entrances(state) -> list[InteractTarget]:
+    """检测自身格是否为地城入口/出口。"""
+    pc, pr = state.player_pos
+    results = []
+    if state.dungeon_entrance and (pc, pr) == state.dungeon_entrance:
+        results.append(InteractTarget(
+            label="地下城入口", interact_type=InteractType.ENTER,
+            pos=(pc, pr), extra={"direction": "enter"},
+        ))
+    if state.in_dungeon and state.dungeon_exit and (pc, pr) == state.dungeon_exit:
+        results.append(InteractTarget(
+            label="地下城出口", interact_type=InteractType.ENTER,
+            pos=(pc, pr), extra={"direction": "exit"},
+        ))
+    return results
+
+
+# 检测器注册列表（新增目标类型只需追加函数）
+_DETECTORS: list = [
+    _detect_doors,
+    _detect_entrances,
+    _detect_beds,
+    _detect_creatures,
+    _detect_bushes,
+]
+
+
+def scan_interact_targets(state) -> list[InteractTarget]:
+    """扫描玩家周围可交互目标。遍历所有检测器，聚合结果。"""
+    targets = []
+    for detector in _DETECTORS:
+        targets.extend(detector(state))
+    return targets
