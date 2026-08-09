@@ -89,8 +89,8 @@ def resolve_cover_line(
         cover_ac = _terrain_cover_ac(grid[cx, cy])
         if cover_ac is not None:
             if cover_ac == 0:
-                return True, (cx, cy)  # 全身阻挡
-            if attack_roll >= cover_ac:
-                return True, (cx, cy)  # 掩体阻挡
+                return True, (cx, cy)  # 全身阻挡（AC0 无法穿透）
+            if attack_roll < cover_ac:
+                return True, (cx, cy)  # 掩体阻挡（命中骰低于掩体AC）
 
     return False, None

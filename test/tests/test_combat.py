@@ -416,17 +416,19 @@ class TestCoverIntegration:
         finally:
             atk_mod.roll_d20 = original
 
-    def test_ranged_through_difficult_terrain_blocked(self, player, goblin, ranged_weapon):
-        """远程攻击穿过困难地形（半身掩体 AC5）时可能被阻挡。"""
+    def test_ranged_through_difficult_terrain_blocked(self, player, ranged_weapon):
+        """远程攻击穿过半身掩体(AC5)，低骰(roll<5)被阻挡。用低AC目标确保命中。"""
         import core.combat.attack as atk_mod
+        weak = Creature(name="Weak", faction="hostile", hp=5, max_hp=5,
+                        tenacity=2, max_tenacity=2, ac_base=3,
+                        stats={"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         g = Grid[Terrain](6, 6, Terrain.PASSABLE)
         g[1, 0] = Terrain.DIFFICULT  # 半身掩体 AC5
         original = atk_mod.roll_d20
-        # roll=12 先命中目标(12+1>=10 AC)，再被掩体阻挡(12>=5)
-        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 12
+        atk_mod.roll_d20 = lambda advantage=0, disadvantage=0: 3  # roll=3 命中AC4(3+1=4) 但 < 掩体AC5 → 被挡
         try:
             result = resolve_attack(
-                player, goblin, ranged_weapon,
+                player, weak, ranged_weapon,
                 attacker_pos=(0, 0), target_pos=(2, 0), grid=g,
             )
             assert result["blocked_by_cover"] is True
