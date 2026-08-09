@@ -283,8 +283,10 @@ class CombatFlow:
                     cx, cy = cover_pos
                     terrain = self._state.map[cx, cy]
                     cover_type = "墙壁(全身)" if terrain == Terrain.WALL else "灌木(半身)"
+                    cover_ac = 0 if terrain == Terrain.WALL else 5
                     self._act_log.add(
-                        f"攻击被掩体挡住了! 位置({cx},{cy}) {cover_type}")
+                        f"攻击被掩体挡住了! roll={roll} >= 掩体AC{cover_ac}, "
+                        f"位置({cx},{cy}) {cover_type}")
                 else:
                     self._act_log.add("攻击被掩体挡住了!")
 
