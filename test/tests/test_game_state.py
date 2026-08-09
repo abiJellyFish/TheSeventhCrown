@@ -48,3 +48,14 @@ class TestGameState:
         state.add_entity(goblin, (5, 5))
         state.remove_entity(goblin)
         assert state.get_entity_at(5, 5) is None
+
+    def test_npc_cannot_move_onto_player(self, state):
+        """NPC 不能移动到玩家所在格。"""
+        state.player_pos = (5, 5)
+        goblin = Creature(name="Goblin", faction="hostile")
+        state.add_entity(goblin, (5, 4))
+        # NPC 尝试移动到玩家位置
+        result = state.move_entity(goblin, 5, 4, 5, 5)
+        assert result is False
+        # NPC 仍在原位
+        assert state.get_entity_at(5, 4) is goblin

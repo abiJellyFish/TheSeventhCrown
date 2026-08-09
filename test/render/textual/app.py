@@ -27,7 +27,7 @@ from core.save.database import SaveManager
 from core.interact import InteractType, scan_interact_targets
 from core.trade import load_shop, trade_buy, trade_sell, price_to_text, copper_to_currency, shop_gold_text
 from render.textual.widgets import (
-    TopBar, LeftPanel, MapView, RightPanel, ActionLog, SceneLog,
+    TopBar, LeftPanel, MapView, MapLegend, RightPanel, ActionLog, SceneLog,
 )
 import os
 
@@ -124,7 +124,9 @@ class MVPApp(App):
 
     #main { height: 3fr; min-height: 15; }
     #left { width: 2fr; min-width: 14; height: 100%; border-right: solid #444444; padding: 0 1; }
-    MapView { width: 3fr; min-width: 20; content-align: center middle; }
+    #map-column { width: 3fr; min-width: 20; height: 100%; }
+    MapView { width: 100%; height: 1fr; content-align: center middle; }
+    #map-legend { height: 3; padding: 0 1; }
     #right { width: 2fr; min-width: 18; height: 100%; border-left: solid #444444; padding: 0 1; }
 
     #input-bar { height: 3; border: solid #444444; }
@@ -243,7 +245,9 @@ class MVPApp(App):
         self._top_bar = TopBar(id="top"); yield self._top_bar
         with Horizontal(id="main"):
             self._left_panel = LeftPanel(id="left"); yield self._left_panel
-            self._map_view = MapView(); yield self._map_view
+            with Vertical(id="map-column"):
+                self._map_view = MapView(); yield self._map_view
+                self._map_legend = MapLegend(id="map-legend"); yield self._map_legend
             self._right_panel = RightPanel(id="right"); yield self._right_panel
         self._input_bar = GameInput(placeholder=": 输入命令 (按 Esc 退出输入)", id="input-bar", disabled=True)
         yield self._input_bar
@@ -252,7 +256,7 @@ class MVPApp(App):
             self._scene_log = SceneLog(id="scene-log"); yield self._scene_log
 
     def on_mount(self) -> None:
-        for w in [self._map_view, self._left_panel, self._right_panel, self._top_bar]:
+        for w in [self._map_view, self._map_legend, self._left_panel, self._right_panel, self._top_bar]:
             w.state = self._state
         self._init_combat_flow()
         self._refresh_scene()
@@ -260,8 +264,8 @@ class MVPApp(App):
         self._map_view.focus()
 
     def refresh_all(self) -> None:
-        for w in [self._map_view, self._left_panel, self._right_panel,
-                  self._top_bar, self._act_log, self._scene_log]:
+        for w in [self._map_view, self._map_legend, self._left_panel,
+                  self._right_panel, self._top_bar, self._act_log, self._scene_log]:
             if w: w.refresh()
 
     def on_key(self, event) -> None:

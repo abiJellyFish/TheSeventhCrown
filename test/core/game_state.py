@@ -105,7 +105,9 @@ class GameState:
 
     def move_entity(self, creature: Creature, from_col: int, from_row: int,
                     to_col: int, to_row: int) -> bool:
-        """移动非玩家实体。"""
+        """移动非玩家实体。不能移动到玩家所在格。"""
+        if (to_col, to_row) == self.player_pos:
+            return False
         if can_enter(to_col, to_row, self.map, self.entities,
                      from_col, from_row):
             # 更新位置
@@ -156,6 +158,8 @@ class GameState:
                 if dx == 0 and dy == 0:
                     continue
                 nx, ny = ec + dx, er + dy
+                if (nx, ny) == self.player_pos:
+                    continue  # 不能走到玩家所在格
                 if self.map.within_bounds(nx, ny):
                     self.move_entity(creature, ec, er, nx, ny)
         # 敌对检测：NPC 游荡后可能进入玩家 FOV

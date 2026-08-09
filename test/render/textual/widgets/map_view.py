@@ -25,9 +25,10 @@ class MapView(Static):
         pc, pr = self.state.player_pos
         fov = self.state.fov_cache
         r = self.state.player.vision_range
-        # 单字符渲染，视口宽度翻倍补偿
-        vw = min((r + 2) * 2, gmap.width)
-        vh = min(r * 2 + 1, gmap.height)
+
+        # 视口尺寸：基于视野范围对称计算（宽不再 ×2 避免晃动）
+        vw = min(r * 2 + 3, gmap.width)
+        vh = min(r * 2 + 3, gmap.height)
         ox = max(0, min(pc - vw // 2, gmap.width - vw))
         oy = max(0, min(pr - vh // 2, gmap.height - vh))
 
@@ -79,30 +80,4 @@ class MapView(Static):
                         text.append(ch, style=f"{TERRAIN_COLORS.get(t, '')}{cur}")
             if row < min(oy + vh, gmap.height) - 1:
                 text.append("\n")
-        text.append("\n")
-        # 图例 — FOV 内动态生成
-        legend_seen: dict[str, str] = {"@": "玩家"}
-        for creature, (ec, er) in self.state.entities:
-            if (ec, er) in fov and creature.hp > 0:
-                legend_seen[creature.char] = creature.name
-        terrain_map = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}
-        terrain_labels = {"#": "墙壁", '"': "灌木", ".": "草地"}
-        for pos in fov:
-            t = gmap[pos]
-            ch = terrain_map.get(t)
-            if ch:
-                legend_seen.setdefault(ch, terrain_labels[ch])
-            if pos in self.state.bed_positions:
-                legend_seen["="] = "床"
-            if pos in self.state.stone_positions:
-                legend_seen["o"] = "石头"
-            if pos in self.state.campfire_positions:
-                legend_seen["~"] = "篝火"
-            if pos in self.state.door_states:
-                legend_seen["]"] = "门"
-            if self.state.dungeon_entrance and pos == self.state.dungeon_entrance:
-                legend_seen[">"] = "入口"
-        player_part = "@玩家"
-        others = " ".join(f"{ch}{name}" for ch, name in legend_seen.items() if ch != "@")
-        text.append(f"{player_part} {others}".strip(), style="dim")
         return text
