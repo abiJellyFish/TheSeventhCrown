@@ -1,0 +1,11 @@
+[
+  {"name": "草地", "char": ".", "passable": true, "difficult": false, "cover": "none", "description": "无"},
+  {"name": "石材地面", "char": ".", "passable": true, "difficult": false, "cover": "none", "description": "无"},
+  {"name": "墙壁", "char": "#", "passable": false, "difficult": false, "cover": "full", "blocks_vision": true, "description": "无"},
+  {"name": "水", "char": "~", "passable": true, "difficult": true, "cover": "none", "effects": ["wet"], "description": "潮湿（火焰抗性，闪电易伤）"},
+  {"name": "门(未锁)", "char": "+", "passable": true, "difficult": false, "cover": "full", "interactive": true, "interact_action": "toggle_door", "description": "交互切换打开或关闭门"},
+  {"name": "矮墙", "char": "=", "passable": true, "difficult": true, "cover": "three_quarter", "description": "四分之三障碍"},
+  {"name": "灌木丛", "char": "\"", "passable": true, "difficult": true, "cover": "half", "interactive": true, "interact_action": "forage_berries", "description": "半身障碍，交互采摘浆果"},
+  {"name": "篝火", "char": "%", "passable": false, "difficult": false, "cover": "none", "effects": ["burning_surface", "light_3"], "description": "燃烧地表，光源"},
+  {"name": "床铺", "char": "=", "passable": true, "difficult": false, "cover": "none", "interactive": true, "interact_action": "rest", "comfort": true, "description": "舒适休息环境"}
+]

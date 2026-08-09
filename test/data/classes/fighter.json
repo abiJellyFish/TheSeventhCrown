@@ -1,0 +1,22 @@
+{
+  "name": "战士",
+  "description": "力量属性+2，体质属性+2，生命上限+5",
+  "bonuses": {
+    "str": 2,
+    "con": 2,
+    "max_hp": 5
+  },
+  "proficiencies": {
+    "weapons": ["martial_melee"],
+    "skills": []
+  },
+  "starting_equipment": [],
+  "abilities": [
+    {
+      "name": "横扫",
+      "ap_cost": 4,
+      "hit_threshold": 14,
+      "description": "发动近战攻击时，同时攻击到前方所有生物"
+    }
+  ]
+}

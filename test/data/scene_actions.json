@@ -1,0 +1,12 @@
+{
+  "flee": "惊慌失措地试图逃窜",
+  "surrender": "举起双手投降",
+  "attack": {"enemy": "死死盯着{player}", "no_enemy": "警惕地巡视四周"},
+  "advance": {"enemy": "向前逼近", "no_enemy": "来回踱步"},
+  "defend": "摆出防御姿态",
+  "patrol": "漫无目的地游荡",
+  "hunt": "低头寻觅着食物",
+  "idle": "静静地站在原地",
+  "sleep": "蜷缩着打盹",
+  "fallback": "待在原地"
+}

@@ -1,0 +1,26 @@
+{
+  "name": "魔法使",
+  "description": "智力属性+2，初始 MP 100，一环法术位 2 枚",
+  "bonuses": {
+    "int": 2
+  },
+  "mp": 100,
+  "spell_slots": {
+    "1": 2
+  },
+  "domains": {
+    "evocation": {
+      "name": "塑能",
+      "level": 1,
+      "spells": ["魔法飞弹"]
+    },
+    "abjuration": {
+      "name": "防护",
+      "level": 1,
+      "spells": ["护盾术", "疗伤术"]
+    }
+  },
+  "starting_equipment": [
+    {"name": "法术残页", "type": "spellbook"}
+  ]
+}

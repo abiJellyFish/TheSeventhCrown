@@ -1,0 +1,5 @@
+{
+  "immunities": {"poison_immune": "poison", "sleep_immune": null},
+  "resistances": {"piercing_resist": "piercing"},
+  "vulnerabilities": {"bludgeoning_vulnerable": "bludgeoning", "radiant_vulnerable": "radiant"}
+}

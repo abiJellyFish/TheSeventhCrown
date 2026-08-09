@@ -1,0 +1,5 @@
+{
+  "humanoid": {"chest": 60, "arms": 15, "legs": 15, "head": 10},
+  "beast": {"chest": 60, "legs": 30, "head": 10},
+  "undead": {"chest": 60, "arms": 15, "legs": 15, "head": 10}
+}

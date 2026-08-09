@@ -1,0 +1,13 @@
+{
+  "maneuvers": [
+    {"id": "power_attack",  "name": "强力攻击", "ap_extra": 1, "effect": "damage_bonus", "value": "1d4"},
+    {"id": "disarm",       "name": "缴械攻击", "ap_extra": 1, "effect": "disarm", "save_stat": "str"},
+    {"id": "sweep",        "name": "扫腿攻击", "ap_extra": 1, "effect": "knockdown", "save_stat": "dex"}
+  ],
+  "special_actions": [
+    {"key": "reroll", "name": "奋力一击", "ap_cost": 2, "desc": "额外消耗 2AP，重掷攻击骰"},
+    {"key": "feint",  "name": "虚晃一招", "ap_cost": 1, "desc": "消耗 1AP，下次攻击命中+2"},
+    {"key": "taunt",  "name": "挑衅",     "ap_cost": 1, "desc": "消耗 1AP，目标下回合更容易攻击你"}
+  ],
+  "tenacity_action": {"key": "tenacity", "name": "削韧", "desc": "不消耗AP，削减目标韧性"}
+}

@@ -1,0 +1,24 @@
+{
+  "name": "地精营地",
+  "offset": [68, 10],
+  "walls": [
+    [0,0],[1,0],[2,0],[3,0],[4,0],           [6,0],[7,0],
+    [7,1],[7,2],
+    [0,1],[0,2],[0,3],
+    [4,5],[5,5],[7,5],
+    [0,4],[1,4]
+  ],
+  "difficult": [[3, 3]],
+  "entities": [
+    {"key": "goblin_brawler", "pos": [2, 2]},
+    {"key": "goblin_brawler", "pos": [5, 1]},
+    {"key": "goblin_brawler", "pos": [6, 3]},
+    {"key": "goblin_brawler", "pos": [1, 4]},
+    {"key": "long_ear_dog", "pos": [4, 1]},
+    {"key": "long_ear_dog", "pos": [5, 4]},
+    {"key": "long_ear_dog", "pos": [2, 3]}
+  ],
+  "location_name": "营地",
+  "width": 9,
+  "height": 15
+}
