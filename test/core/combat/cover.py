@@ -1,31 +1,32 @@
 """掩体结算 —— 远程直线攻击沿弹道逐个检查掩体。
 
-掩体 AC: 半身=5, 四分之三=8, 全身=阻挡。
+掩体 AC: 半身=5, 四分之三=8(预留), 全身=30。
 投掷武器走抛物线，无视同高度掩体。
 暂定掩体不被破坏、弹药不弹射，命中掩体即终止。
+
+新增掩体类型只需修改 COVER_TABLE，无需改动其他文件。
 """
 
 from core.grid import Grid
 from core.movement import Terrain
 
-# 掩体 AC 映射
-COVER_AC = {
-    Terrain.WALL: None,          # 全身 → 直接阻挡
-    Terrain.DIFFICULT: None,     # 困难地形不提供掩体（除非是矮墙/灌木丛）
-    Terrain.PASSABLE: None,      # 无掩体
+# 掩体唯一数据源：(AC, 中文标签)。None = 不提供掩体。
+COVER_TABLE: dict[Terrain, tuple[int, str] | None] = {
+    Terrain.WALL:      (30, "墙壁(全身)"),
+    Terrain.DIFFICULT: (5,  "灌木(半身)"),
+    # Terrain.XXX:    (8,  "矮墙(3/4)"),  # 预留扩展
 }
 
-# 需要更精确的映射——用字符串标记掩体等级会更简单
-# 但实际上我们在 resolve_cover_line 中用 Terrain 直接判断
+
+def terrain_cover_info(terrain: Terrain) -> tuple[int, str] | None:
+    """查询地形掩体：(AC, 中文标签)，无掩体返回 None。"""
+    return COVER_TABLE.get(terrain)
 
 
 def _terrain_cover_ac(terrain: Terrain) -> int | None:
-    """获取地形的掩体 AC。None = 不提供掩体, 30 = 全身阻挡, 5 = 半身掩体。"""
-    if terrain == Terrain.WALL:
-        return 30  # 全身阻挡（d20 < 30 永远成立）
-    if terrain == Terrain.DIFFICULT:
-        return 5  # 半身掩体
-    return None
+    """获取地形的掩体 AC。None = 不提供掩体。"""
+    info = COVER_TABLE.get(terrain)
+    return info[0] if info else None
 
 
 def resolve_cover_line(
