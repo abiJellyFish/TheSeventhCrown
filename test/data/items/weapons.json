@@ -34,7 +34,7 @@
     "ap_cost": 3,
     "properties": ["versatile(1d10)"],
     "weight": 2.0,
-    "price": {"gp": 3, "sp": 50},
+    "price": {"gp": 3, "sp": 5},
     "description": "长剑，可单手或双手持用，制式武器"
   },
   {
@@ -47,9 +47,10 @@
     "ap_cost": 2,
     "range_normal": 8,
     "range_max": 14,
-    "properties": ["ammo"],
+    "properties": ["ammo", "two_handed"],
     "weight": 1.0,
-    "price": {"gp": 1, "sp": 50},
+    "price": {"gp": 1, "sp": 5},
+    "melee": {"damage": "1d4", "damage_type": "bludgeoning", "attack_stat": "str", "ap_cost": 2},
     "description": "短弓，远程武器，普通弹药无限免费"
   },
   {
@@ -91,7 +92,7 @@
     "ap_cost": 2,
     "properties": ["versatile(1d10)"],
     "weight": 1.5,
-    "price": {"gp": 1, "sp": 50},
+    "price": {"gp": 1, "sp": 5},
     "description": "长杖，可单手或双手持用"
   }
 ]

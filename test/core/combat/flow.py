@@ -3,9 +3,15 @@
 import random
 from core.entity import Creature, Weapon
 from core.dice import roll_d20
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack
+from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack, miss_message, cover_message
 from core.combat.cover import resolve_cover_line, terrain_cover_info
 from core.movement import Terrain
+
+# 空目标日志 — 按武器类型区分
+EMPTY_TARGET_FLAVOR = {
+    "ranged": {"wall": "箭矢射在了墙上", "empty": "箭矢射空了"},
+    "melee":  {"wall": "{weapon}砍在了墙上", "empty": "{weapon}挥空了"},
+}
 
 
 class CombatFlow:
@@ -15,7 +21,8 @@ class CombatFlow:
     """
 
     def __init__(self, state, act_log, left_panel, input_bar, map_view,
-                 pn: str, start_combat_cb, refresh_all_cb):
+                 pn: str, start_combat_cb, refresh_all_cb,
+                 on_two_hand_cb=None, wake_cb=None):
         self._state = state
         self._act_log = act_log
         self._left_panel = left_panel
@@ -24,16 +31,16 @@ class CombatFlow:
         self._pn = pn
         self._start_combat_from_ambush = start_combat_cb
         self._refresh_all = refresh_all_cb
+        self._on_two_hand = on_two_hand_cb
+        self._wake_cb = wake_cb
 
     # ── 辅助 ──
 
-    def _focus_input(self) -> None:
-        self._input_bar.disabled = False
-        self._input_bar.focus()
-
-    def _unfocus_input(self) -> None:
-        self._input_bar.disabled = True
-        self._map_view.focus()
+    def _target_can_see_attacker(self, target_pos, target) -> bool:
+        """目标能否看到攻击者？（Chebyshev 距离 ≤ 目标视野范围）"""
+        pc, pr = self._state.player_pos
+        dist = max(abs(target_pos[0] - pc), abs(target_pos[1] - pr))
+        return dist <= getattr(target, 'vision_range', 0)
 
     def _find_melee_tiles(self, reach: int = 1) -> list[tuple[int, int, object | None]]:
         """返回玩家 Chebyshev 距离 ≤ reach 的所有可攻击格子，按距离排序。
@@ -68,14 +75,17 @@ class CombatFlow:
         self._state.combat_phase = "select_action"
         self._state.pending_attack = {}
         self._act_log.add("[攻击] 选择武器 — 输入 A序号 确认, A0 取消")
-        self._focus_input()
         self._refresh_all()
+        if self._wake_cb: self._wake_cb()
 
     # ── 阶段一：选择攻击方式 ──
 
     def handle_action_input(self, cmd: str) -> None:
         """阶段一：选择攻击方式。按动态 action_map 解析序号。"""
+        from core.combat.dual_wield import dual_wield_mode, dual_wield_ap_cost
+
         p = self._state.player
+        equip = p.equipment
         action_map = self._left_panel._action_map
 
         try:
@@ -87,7 +97,6 @@ class CombatFlow:
         if num == 0:
             self._state.combat_phase = "idle"
             self._state.pending_attack = {}
-            self._unfocus_input()
             self._act_log.add("取消攻击")
             self._refresh_all()
             return
@@ -104,13 +113,97 @@ class CombatFlow:
         if mode.endswith("_blocked"):
             self._act_log.add(f"{weapon.name} 无法用于攻击")
             return
+
+        # 徒手打击 — 创建临时武器
+        if mode in ("unarmed_left", "unarmed_right"):
+            weapon = Weapon(name="徒手打击", weapon_type="melee",
+                            damage="1", damage_type="bludgeoning",
+                            attack_stat="str", ap_cost=1,
+                            properties=["light"])
+
+        # 远程武器近战攻击 — 用 melee 数据构造近战武器
+        if mode == "ranged_melee":
+            m = weapon.melee
+            weapon = Weapon(name=f"{weapon.name}(近战)", weapon_type="melee",
+                            damage=m["damage"], damage_type=m["damage_type"],
+                            attack_stat=m["attack_stat"], ap_cost=m["ap_cost"])
+
+        # 双持中徒手 → weapon 可能是字符串 "unarmed"
+        if mode in ("dual_wield", "dual_attack") and (weapon is None or weapon == "unarmed"):
+            weapon = Weapon(name="徒手打击", weapon_type="melee",
+                            damage="1", damage_type="bludgeoning",
+                            attack_stat="str", ap_cost=1,
+                            properties=["light"])
+
         if mode == "two_hand":
+            # 双手武器（two_handed）— 不加 bonus，不卸除（已占用两手）
+            pass
+        elif mode in ("two_hand_left", "two_hand_right"):
+            hand = "left" if mode == "two_hand_left" else "right"
             hit_bonus = 1
             damage_bonus = 2
+            if self._on_two_hand:
+                self._on_two_hand(weapon, hand=hand)
 
-        if self._state.in_combat and p.ap < weapon.ap_cost:
-            self._act_log.add("AP 不足")
+        # ── 双持武器：两把轻型，一次 AP ──
+        if mode == "dual_wield":
+            left_w = equip.get("left_hand") or Weapon(name="徒手打击", weapon_type="melee",
+                damage="1", damage_type="bludgeoning", attack_stat="str", ap_cost=1, properties=["light"])
+            right_w = equip.get("right_hand") or Weapon(name="徒手打击", weapon_type="melee",
+                damage="1", damage_type="bludgeoning", attack_stat="str", ap_cost=1, properties=["light"])
+            ap = dual_wield_ap_cost(left_w, right_w)
+            if self._state.in_combat and p.ap < ap:
+                self._act_log.add("AP 不足")
+                return
+            if self._state.in_combat:
+                p.ap -= ap
+            self._state.pending_attack = {
+                "mode": mode, "weapon": right_w,
+                "weapon_left": left_w, "weapon_right": right_w,
+                "hit_bonus": 0, "damage_bonus": 0,
+                "attack_roll": None, "target": None,
+                "step": "left",
+            }
+            self._enter_target_phase(weapon)
             return
+
+        # ── 双持攻击：至少一把非轻型，分别扣 AP ──
+        if mode == "dual_attack":
+            left_w = equip.get("left_hand") or Weapon(name="徒手打击", weapon_type="melee",
+                damage="1", damage_type="bludgeoning", attack_stat="str", ap_cost=1, properties=["light"])
+            right_w = equip.get("right_hand") or Weapon(name="徒手打击", weapon_type="melee",
+                damage="1", damage_type="bludgeoning", attack_stat="str", ap_cost=1, properties=["light"])
+            if self._state.in_combat and p.ap < left_w.ap_cost:
+                self._act_log.add("AP 不足")
+                return
+            self._state.pending_attack = {
+                "mode": mode, "weapon": right_w,
+                "weapon_left": left_w, "weapon_right": right_w,
+                "hit_bonus": 0, "damage_bonus": 0,
+                "attack_roll": None, "target": None,
+                "step": "left",
+            }
+            self._enter_target_phase(left_w)
+            return
+
+        # ── 单手 / 双手 / 远程 ──
+        # 弹药武器未装填 → 需额外 1AP 装填
+        ammo_load_cost = 0
+        props = getattr(weapon, 'properties', []) or []
+        if "ammo" in props and not getattr(weapon, 'loaded', True):
+            ammo_load_cost = 1
+
+        total_ap = weapon.ap_cost + ammo_load_cost
+        if self._state.in_combat and p.ap < total_ap:
+            suffix = "（含装填）" if ammo_load_cost else ""
+            self._act_log.add(f"AP 不足{suffix}")
+            return
+
+        if self._state.in_combat:
+            p.ap -= total_ap
+            if ammo_load_cost:
+                weapon.loaded = True
+                self._act_log.add(f"{self._pn} 装填了 {weapon.name}")
 
         self._state.pending_attack = {
             "mode": mode, "weapon": weapon,
@@ -122,14 +215,16 @@ class CombatFlow:
         if weapon.weapon_type == "ranged":
             self._state.combat_phase = "ranged_target"
             self._state.observe_cursor = self._state.player_pos
-            self._unfocus_input()
             self._act_log.add(
                 f"选择远程目标 — 射程:{weapon.range_max} "
                 f"[方向键]移动光标 [Enter]确认 [Esc]取消")
             self._refresh_all()
             return
 
-        # 找攻击范围内格子（近战）
+        self._enter_target_phase(weapon)
+
+    def _enter_target_phase(self, weapon) -> None:
+        """进入目标选择阶段（近战通用）。"""
         reach = weapon.reach if hasattr(weapon, 'reach') and weapon.reach else 1
         tiles = self._find_melee_tiles(reach)
 
@@ -138,27 +233,21 @@ class CombatFlow:
             if not self._state.in_combat:
                 self._state.combat_phase = "idle"
                 self._state.pending_attack = {}
-                self._unfocus_input()
             else:
                 self._state.combat_phase = "select_action"
             self._refresh_all()
+            if self._wake_cb: self._wake_cb()
         elif len(tiles) == 1:
             tc, tr, target = tiles[0]
             self._state.pending_attack["target_pos"] = (tc, tr)
             self._state.pending_attack["target"] = target
-            if not self._state.in_combat and target and target.faction == "hostile":
-                self._start_combat_from_ambush(target)
             self.execute_attack_roll()
             self._refresh_all()
+            if self._wake_cb: self._wake_cb()
         else:
-            if not self._state.in_combat:
-                for _, _, target in tiles:
-                    if target and target.faction == "hostile":
-                        self._start_combat_from_ambush(target)
-                        break
             self._state.combat_phase = "select_target"
-            self._focus_input()
             self._refresh_all()
+            if self._wake_cb: self._wake_cb()
 
     # ── 阶段二：选择目标 ──
 
@@ -166,7 +255,6 @@ class CombatFlow:
         """阶段二：选择目标格子。输入 T1~Tn。"""
         if cmd == "T0":
             self._state.combat_phase = "select_action"
-            self._focus_input()
             self._act_log.add("取消目标选择")
             self._refresh_all()
             return
@@ -217,9 +305,6 @@ class CombatFlow:
             target = None
         pa["target_pos"] = cursor
         pa["target"] = target
-        # 探索模式：仅敌对目标进入战斗
-        if not self._state.in_combat and target and target.faction == "hostile":
-            self._start_combat_from_ambush(target)
         self.execute_attack_roll()
         self._refresh_all()
 
@@ -227,36 +312,44 @@ class CombatFlow:
         """取消远程目标选择，返回攻击方式选择。"""
         self._state.combat_phase = "select_action"
         self._state.pending_attack = {}
-        self._focus_input()
         self._act_log.add("取消远程攻击")
         self._refresh_all()
 
     # ── 阶段三：攻击检定 → 进入战技/特殊行动 ──
 
     def execute_attack_roll(self) -> None:
-        """执行攻击检定，根据命中/未命中进入阶段三。无目标时直接结束。"""
+        """执行攻击检定，根据命中/未命中进入阶段三。
+
+        双持模式委托给 _execute_dual_step() 分步处理。
+        """
         pa = self._state.pending_attack
+        mode = pa.get("mode", "")
+
+        # 双持模式 → 分步结算
+        if mode in ("dual_wield", "dual_attack"):
+            self._execute_dual_step()
+            return
+
         weapon = pa["weapon"]
         target = pa.get("target")
         target_pos = pa.get("target_pos")
         p = self._state.player
 
-        # 扣除 AP
-        if self._state.in_combat:
-            p.ap -= weapon.ap_cost
+        # AP 已在 handle_action_input 中扣除（含装填），此处不再重复
 
         # 无目标（空格子或障碍物）→ 直接结束
         if target is None:
-            tc, tr = target_pos if target_pos else (0, 0)
-            terrain = self._state.map[tc, tr]
-            if terrain == Terrain.WALL:
-                self._act_log.add(f"箭矢射在了墙上")
-            else:
-                self._act_log.add(f"箭矢射空了")
+            self._log_empty_target(weapon, target_pos)
             self._state.combat_phase = "idle"
             self._state.pending_attack = {}
-            self._unfocus_input()
             return
+
+        # 攻击掷骰前：目标能看到攻击者 → 变敌对 + 进战斗
+        if not self._state.in_combat and self._target_can_see_attacker(target_pos, target):
+            if target.faction != "hostile":
+                target.faction = "hostile"
+                self._act_log.add(f"{target.name} 变为敌对!")
+            self._start_combat_from_ambush(target)
 
         hit, roll = hit_check(p, target, weapon)
 
@@ -278,7 +371,6 @@ class CombatFlow:
                 pa["blocked_by_cover"] = True
                 pa["cover_pos"] = cover_pos
                 reduce_tenacity(target, roll)
-                # 掩体类型判定（从 cover 模块统一查询）
                 if cover_pos:
                     cx, cy = cover_pos
                     terrain = self._state.map[cx, cy]
@@ -286,25 +378,134 @@ class CombatFlow:
                     if info:
                         cover_ac, cover_type = info
                         self._act_log.add(
-                            f"攻击被掩体挡住了! roll={roll} < 掩体AC{cover_ac}, "
+                            f"{cover_message(weapon.damage_type)}! roll={roll} < 掩体AC{cover_ac}, "
                             f"位置({cx},{cy}) {cover_type}")
                     else:
-                        self._act_log.add("攻击被掩体挡住了!")
+                        self._act_log.add(f"{cover_message(weapon.damage_type)}!")
                 else:
-                    self._act_log.add("攻击被掩体挡住了!")
+                    self._act_log.add(f"{cover_message(weapon.damage_type)}!")
+
+        # 弹药武器攻击后变为未装填
+        self._unload_ammo(weapon)
 
         if hit:
             self._state.combat_phase = "select_maneuver"
         else:
             self._state.combat_phase = "select_special"
-        self._focus_input()
+            if not pa.get("blocked_by_cover"):
+                self._act_log.add(miss_message(self._pn, target.name, weapon.damage_type)
+                                  + f" (roll={roll})")
+
+    def _unload_ammo(self, weapon) -> None:
+        """弹药武器攻击后变为未装填。"""
+        props = getattr(weapon, 'properties', []) or []
+        if "ammo" in props:
+            weapon.loaded = False
+
+    def _log_empty_target(self, weapon, target_pos) -> None:
+        """空目标日志 — 按武器类型查表。"""
+        tc, tr = target_pos if target_pos else (0, 0)
+        terrain = self._state.map[tc, tr]
+        flavor = EMPTY_TARGET_FLAVOR.get(weapon.weapon_type, EMPTY_TARGET_FLAVOR["melee"])
+        key = "wall" if terrain == Terrain.WALL else "empty"
+        self._act_log.add(flavor[key].format(weapon=weapon.name))
+
+    # ── 双持分步结算 ──
+
+    def _execute_dual_step(self) -> None:
+        """执行双持模式下的当前步（左手或右手）攻击检定。"""
+        pa = self._state.pending_attack
+        step = pa.get("step", "left")
+        p = self._state.player
+        target = pa.get("target")
+        target_pos = pa.get("target_pos")
+
+        # 确定当前武器
+        if step == "left":
+            weapon = pa.get("weapon_left")
+        else:
+            weapon = pa.get("weapon_right")
+
+        if weapon is None:
+            self._act_log.add("双持: 武器丢失")
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            return
+
+        # dual_attack 模式：每步单独扣 AP
+        if pa["mode"] == "dual_attack" and self._state.in_combat:
+            if p.ap < weapon.ap_cost:
+                hand_name = "左手" if step == "left" else "右手"
+                self._act_log.add(f"AP 不足，无法发动{hand_name}攻击")
+                # 如果是左手 AP 不足则直接结束；右手则只跳过右手
+                if step == "left":
+                    self._state.combat_phase = "idle"
+                    self._state.pending_attack = {}
+                else:
+                    self._finish_dual()
+                return
+            p.ap -= weapon.ap_cost
+
+        # 攻击掷骰前（仅第一步）：目标能看到攻击者 → 变敌对 + 进战斗
+        if step == "left" and not self._state.in_combat and target \
+           and self._target_can_see_attacker(target_pos, target):
+            if target.faction != "hostile":
+                target.faction = "hostile"
+                self._act_log.add(f"{target.name} 变为敌对!")
+            self._start_combat_from_ambush(target)
+
+        # 无目标 → 直接结束双持
+        if target is None:
+            self._log_empty_target(weapon, target_pos)
+            self._finish_dual()
+            return
+
+        hand_name = "左手" if step == "left" else "右手"
+        hit, roll = hit_check(p, target, weapon)
+
+        pa["attack_roll"] = roll
+        pa["hit"] = hit
+        self._act_log.add(f"{self._pn} {hand_name}{weapon.name}攻击 {target.name}! (roll={roll})")
+
+        self._unload_ammo(weapon)
+
+        if hit:
+            self._state.combat_phase = "select_maneuver"
+        else:
+            self._state.combat_phase = "select_special"
+            self._act_log.add(miss_message(self._pn, target.name, weapon.damage_type)
+                              + f" (roll={roll})")
+
+    def _finish_dual(self) -> None:
+        """结束双持流程。"""
+        self._state.combat_phase = "idle"
+        self._state.pending_attack = {}
+
+    def _continue_dual(self) -> None:
+        """左手结算完毕 → 继续右手。"""
+        pa = self._state.pending_attack
+        pa["step"] = "right"
+        pa["attack_roll"] = None
+        pa["hit"] = None
+        self._execute_dual_step()
 
     # ── 阶段三A：命中后选择战技 ──
+
+    def _get_active_weapon(self) -> tuple:
+        """返回当前步骤应使用的 (weapon, hand_label)。"""
+        pa = self._state.pending_attack or {}
+        step = pa.get("step", "")
+        mode = pa.get("mode", "")
+        if mode in ("dual_wield", "dual_attack") and step == "left":
+            return pa.get("weapon_left"), "左手"
+        if mode in ("dual_wield", "dual_attack") and step == "right":
+            return pa.get("weapon_right"), "右手"
+        return pa.get("weapon"), ""
 
     def handle_maneuver_input(self, cmd: str) -> None:
         """阶段三A：命中后选择战技。按 maneuver_map 解析。"""
         pa = self._state.pending_attack
-        weapon = pa["weapon"]
+        weapon, hand_label = self._get_active_weapon()
         target = pa["target"]
         p = self._state.player
         mmap = self._left_panel._maneuver_map
@@ -317,7 +518,6 @@ class CombatFlow:
             return
 
         if num == 0:
-            # 直接攻击，正常结算
             pass
         elif num in mmap and mmap[num] is not None:
             m = mmap[num]
@@ -329,7 +529,7 @@ class CombatFlow:
                 p.ap -= m["ap_extra"]
             effect = m["effect"]
             if effect == "damage_bonus":
-                bonus = roll_d20() % 4 + 1  # 1d4
+                bonus = roll_d20() % 4 + 1
                 pa["damage_bonus"] = pa.get("damage_bonus", 0) + bonus
                 self._act_log.add(f"{m['name']}! 伤害+{bonus}")
             elif effect == "disarm":
@@ -351,26 +551,33 @@ class CombatFlow:
             self._refresh_all()
             return
 
-        # 结算伤害 — 命中已确认，不再重做命中检定
+        # 结算伤害
         roll = pa.get("attack_roll", 0)
         critical = (roll == 20)
         dmg = roll_damage(weapon, p, critical=critical)
         dmg += pa.get("damage_bonus", 0)
         dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
         target.hp = max(0, target.hp - dmg)
-        self.check_faction_reaction(target)
+        self.check_faction_reaction(target, pa.get("target_pos"))
 
-        self._act_log.add(f"{self._pn} 砍中了 {target.name}, 造成 {dmg} 点伤害")
+        hand_prefix = f"{hand_label}" if hand_label else ""
+        self._act_log.add(f"{self._pn} {hand_prefix}{weapon.name}砍中了 {target.name}, 造成 {dmg} 点伤害")
         if target.hp <= 0:
             self._act_log.add(f"{target.name} 倒在地上，不再动弹")
 
-        # 探索模式：攻击后目标变为敌对 → 进入战斗
-        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0:
+        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0 \
+           and self._target_can_see_attacker(pa.get("target_pos"), target):
             self._start_combat_from_ambush(target)
+
+        # 双持模式：左手打完继续右手
+        if pa.get("mode") in ("dual_wield", "dual_attack") and pa.get("step") == "left":
+            self._continue_dual()
+            self._refresh_all()
+            if self._wake_cb: self._wake_cb()
+            return
 
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
-        self._unfocus_input()
         self._refresh_all()
 
     # ── 阶段三B：未命中后选择特殊行动 ──
@@ -379,7 +586,7 @@ class CombatFlow:
         """阶段三B：未命中后选择特殊行动。输入 A0~A3。"""
         pa = self._state.pending_attack
         target = pa["target"]
-        weapon = pa["weapon"]
+        weapon, hand_label = self._get_active_weapon()
         p = self._state.player
 
         smap = self._left_panel._special_map
@@ -408,7 +615,7 @@ class CombatFlow:
             self._act_log.add("奋力一击! 重掷攻击骰")
             result = self.resolve_melee_attack(p, target, weapon)
             if result["hit"]:
-                self.check_faction_reaction(target)
+                self.check_faction_reaction(target, pa.get("target_pos"))
                 self._act_log.add(f"命中! 造成 {result['damage']} 点伤害")
             else:
                 self._act_log.add("再次未命中...")
@@ -429,13 +636,19 @@ class CombatFlow:
                 p.ap -= 1
             self._act_log.add(f"{self._pn} 挑衅了 {target.name}")
 
-        # 探索模式：攻击后目标变为敌对 → 进入战斗
-        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0:
+        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0 \
+           and self._target_can_see_attacker(pa.get("target_pos"), target):
             self._start_combat_from_ambush(target)
+
+        # 双持模式：左手打完继续右手
+        if pa.get("mode") in ("dual_wield", "dual_attack") and pa.get("step") == "left":
+            self._continue_dual()
+            self._refresh_all()
+            if self._wake_cb: self._wake_cb()
+            return
 
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
-        self._unfocus_input()
         self._refresh_all()
 
     # ── 通用 ──
@@ -461,10 +674,13 @@ class CombatFlow:
             result["damage"] += damage_bonus
         return result
 
-    def check_faction_reaction(self, target: Creature) -> None:
-        """玩家攻击非敌对生物后检查阵营反应。"""
+    def check_faction_reaction(self, target: Creature,
+                                target_pos: tuple = None) -> None:
+        """玩家攻击非敌对生物后检查阵营反应。视野外攻击不触发。"""
         if target.faction == "hostile":
             return
+        if target_pos and not self._target_can_see_attacker(target_pos, target):
+            return  # 目标看不到攻击者，不知道谁打的
         if target.faction == "neutral" and not target.hostility_triggered:
             target.hostility_triggered = True
             target.original_faction = "neutral"

@@ -29,7 +29,7 @@
     "tenacity_bonus": 1,
     "str_requirement": 8,
     "weight": 6.0,
-    "price": {"gp": 4, "sp": 50},
+    "price": {"gp": 4, "sp": 5},
     "description": "厚实的布制长袍，提供全身基础防护"
   },
   {

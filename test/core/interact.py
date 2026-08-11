@@ -21,6 +21,7 @@ class InteractType(Enum):
     REST = auto()        # 休息（床）
     OPEN = auto()        # 开门/关门
     ENTER = auto()       # 进入地城
+    PICKUP = auto()      # 捡起地上物品
 
 
 @dataclass
@@ -138,6 +139,34 @@ def _detect_entrances(state) -> list[InteractTarget]:
     return results
 
 
+def _detect_ground_items(state) -> list[InteractTarget]:
+    """检测玩家所在格及相邻格的地上物品。"""
+    pc, pr = state.player_pos
+    results = []
+    seen: set[tuple[int, int]] = set()
+    for item, (ic, ir) in state.ground_items:
+        if max(abs(ic - pc), abs(ir - pr)) > 1:
+            continue
+        pos_key = (ic, ir)
+        if pos_key in seen:
+            continue
+        seen.add(pos_key)
+        # 收集该格所有物品信息
+        items_at_tile = [it for it, (col, row) in state.ground_items if (col, row) == pos_key]
+        if items_at_tile:
+            # 显示第一个物品名，堆叠物品显示总数
+            total_count = sum(it.count for it in items_at_tile)
+            first_item = items_at_tile[0]
+            label = f"{first_item.name}"
+            if total_count > 1:
+                label += f" x{total_count}"
+            results.append(InteractTarget(
+                label=label, interact_type=InteractType.PICKUP,
+                pos=pos_key, extra={"items": items_at_tile},
+            ))
+    return results
+
+
 # 检测器注册列表（新增目标类型只需追加函数）
 _DETECTORS: list = [
     _detect_doors,
@@ -145,6 +174,7 @@ _DETECTORS: list = [
     _detect_beds,
     _detect_creatures,
     _detect_bushes,
+    _detect_ground_items,
 ]
 
 

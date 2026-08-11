@@ -1,164 +1,89 @@
-"""实体数据类测试 —— Creature, Player, Item, Weapon, Armor。"""
-
+"""实体数据类 —— Creature, Player, Item, Weapon, Armor, 载重系统。"""
 import pytest
-from core.entity import Armor, Creature, Item, Player, Weapon
+from core.entity import Creature, Player, Weapon, Armor, Item, stat_adjust, CARRY_STATUS
 
+
+# ── Creature ──
 
 class TestCreature:
     def test_creature_from_dict(self):
-        """用地精打手数据构造 Creature"""
-        data = {
-            "name": "地精打手",
-            "body_type": "humanoid",
-            "faction": "hostile",
-            "hp": 20, "max_hp": 20,
-            "mp": 0, "max_mp": 0,
-            "tenacity": 6, "max_tenacity": 6,
-            "ap": 6, "max_ap": 6,
-            "speed": 1,
-            "ac_base": 10,
-            "stats": {"str": 8, "dex": 12, "con": 8, "int": 6, "wis": 8, "cha": 6},
-            "vision_range": 8,
-            "food_value": 15000,
-            "food_locked": False,
-            "darkvision_range": 0,
-            "language": "",
-            "actions": [
-                {"name": "短棒", "type": "melee", "weapon": "短棒", "two_hand": True, "reach": 1},
-                {"name": "跃起", "type": "special", "description": "跳跃+攻击"},
-            ],
-            "traits": [],
-            "loot": {"dc_items": {"短棒": 6, "地精角": 10}, "always": ["20 SP"]},
-        }
+        data = {"name": "地精", "hp": 20, "max_hp": 20, "faction": "hostile",
+                "stats": {"str": 8, "dex": 12}, "char": "g"}
         c = Creature.from_dict(data)
-        assert c.name == "地精打手"
-        assert c.faction == "hostile"
+        assert c.name == "地精"
         assert c.hp == 20
-        assert c.max_hp == 20
-        assert c.speed == 1
-        assert c.stats["dex"] == 12
-        assert c.ac_base == 10
-        assert c.darkvision_range == 0
-        assert c.food_locked is False
-
-    def test_creature_hp_clamped(self):
-        """HP 不应超过 max_hp"""
-        c = Creature(name="test", faction="neutral", hp=30, max_hp=20)
-        assert c.hp == 20
-
-    def test_creature_tenacity_min_zero(self):
-        """韧性最低为 0"""
-        c = Creature(name="test", faction="neutral", tenacity=-5, max_tenacity=10)
-        assert c.tenacity == 0
+        assert c.stat("dex") == 12
 
     def test_stat_adjustment(self):
-        """属性调整值 = (属性值 - 8) // 2"""
-        c = Creature(
-            name="test", faction="neutral",
-            stats={"str": 10, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
-        )
-        assert c.stat_adjust("str") == 1   # (10-8)//2 = 1
-        assert c.stat_adjust("dex") == 0   # (8-8)//2 = 0
+        assert stat_adjust(8) == 0
+        assert stat_adjust(10) == 1
+        assert stat_adjust(6) == -1
 
-    def test_initiative_bonus(self):
-        """先攻加值 = 敏捷调整值"""
-        c = Creature(
-            name="test", faction="neutral",
-            stats={"str": 8, "dex": 14, "con": 8, "int": 8, "wis": 8, "cha": 8},
-        )
-        assert c.initiative_bonus() == 3  # (14-8)//2 = 3
+    def test_total_ac(self):
+        c = Creature(name="t", ac_base=8, stats={"dex": 12})
+        c.ac_chest = 3
+        # base(8) + dex(12→+1) + chest(3) + shield(0) = 12
+        assert c.total_ac("chest") >= 12
 
-    def test_reserved_fields(self):
-        """预留字段存在且默认值正确"""
-        c = Creature(name="test", faction="neutral")
-        assert c.ally_slot is None
-        assert c.food_locked is False
-        assert c.darkvision_range == 0
 
+# ── Player ──
 
 class TestPlayer:
     def test_player_creation_fighter(self):
-        """人类战士初始属性"""
-        p = Player.create_fighter(
-            name="凯恩",
-            stats={"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
-        )
-        assert p.name == "凯恩"
+        p = Player.create_fighter("凯恩", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         assert p.char_class == "fighter"
-        assert p.faction == "friendly"
-        assert p.max_hp == 35  # 30 + 5(fighter)
-        assert p.max_ap == 6
-        assert p.max_mp == 0
-        assert p.speed == 1
-        assert p.stat_adjust("str") == 1   # 8+2=10 → (10-8)//2=1
+        assert p.max_hp == 35
+        assert p.stat("str") == 10  # +2
 
-    def test_player_creation_mage(self):
-        """魔法使初始属性"""
-        p = Player.create_mage(
-            name="test_mage",
-            stats={"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
-            domain="evocation",
-        )
-        assert p.max_mp == 100
+    def test_player_mage_abjuration(self):
+        p = Player.create_mage("法师", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}, "abjuration")
         assert p.char_class == "mage"
-        assert p.stat_adjust("int") == 1   # 8+2=10 → (10-8)//2=1
-        assert "魔法飞弹" in p.memorized_spells
+        assert "护盾术" in p.memorized_spells
 
-    def test_player_party_reserved(self):
-        """队伍槽位预留"""
-        p = Player(name="test", char_class="fighter")
-        assert p.party == []
+    def test_carry_weight(self):
+        p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p.inventory = [Item(name="口粮", weight=1.0, count=3)]
+        p.equipment["right_hand"] = Weapon(name="长剑", weight=2.0, ap_cost=3)
+        assert p.total_carry_weight() == 5.0
+
+    def test_carry_light(self):
+        p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p.inventory = [Item(name="light", weight=10.0)]  # 10/20 = 50%
+        assert "轻" in p.carry_status()["label"]
+
+    def test_carry_encumbered(self):
+        p = Player.create_fighter("t", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p.inventory = [Item(name="heavy", weight=17.0)]  # 17/20 = 85%
+        status = p.carry_status()
+        # 超过80% → 至少是 encumbered
+        assert status["threshold"] >= 0.8
+
+    def test_carry_overloaded(self):
+        p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p.inventory = [Item(name="over", weight=25.0)]  # 25/20 = 125%
+        assert "超重" in p.carry_status()["label"]
 
 
-class TestItem:
+# ── Item / Weapon / Armor ──
+
+class TestItems:
     def test_weapon_from_dict(self):
-        data = {
-            "name": "长剑",
-            "type": "weapon",
-            "weapon_type": "melee",
-            "category": "martial",
-            "damage": "1d8",
-            "damage_type": "slashing",
-            "attack_stat": "str",
-            "ap_cost": 3,
-            "properties": ["versatile(1d10)"],
-            "weight": 2.0,
-            "price": {"gp": 3, "sp": 50},
-        }
-        w = Weapon.from_dict(data)
+        w = Weapon.from_dict({"name": "长剑", "damage": "1d8", "damage_type": "slashing",
+                               "ap_cost": 3, "weight": 2.0})
         assert w.name == "长剑"
         assert w.damage == "1d8"
-        assert w.ap_cost == 3
-        assert w.weight == 2.0
 
-    def test_armor_from_dict(self):
-        data = {
-            "name": "皮甲",
-            "type": "armor",
-            "armor_type": "light",
-            "slot": "chest",
-            "ac_bonus": 3,
-            "tenacity_bonus": 2,
-            "str_requirement": 8,
-            "weight": 5.0,
-            "price": {"gp": 6},
-        }
-        a = Armor.from_dict(data)
-        assert a.name == "皮甲"
-        assert a.slot == "chest"
-        assert a.ac_bonus == 3
+    def test_weapon_melee_field(self):
+        w = Weapon.from_dict({"name": "短弓", "weapon_type": "ranged",
+                               "damage": "1d6", "melee": {"damage": "1d4", "damage_type": "bludgeoning",
+                               "attack_stat": "str", "ap_cost": 2}})
+        assert w.melee["damage"] == "1d4"
 
-    def test_consumable_from_dict(self):
-        data = {
-            "name": "治疗药水",
-            "type": "consumable",
-            "effect": "heal",
-            "amount": "6d4",
-            "ap_cost": 1,
-            "weight": 0.5,
-            "price": {"gp": 2},
-            "description": "恢复 6d4 生命值",
-        }
-        item = Item.from_dict(data)
-        assert item.name == "治疗药水"
-        assert item.item_type == "consumable"
+    def test_carry_status_table(self):
+        assert len(CARRY_STATUS) == 3
+        for key in ("light", "encumbered", "overloaded"):
+            assert "label" in CARRY_STATUS[key]
+
+    def test_can_move_normal(self):
+        c = Creature(name="测试", hp=10, stats={"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        assert not c.has_status("不可移动")

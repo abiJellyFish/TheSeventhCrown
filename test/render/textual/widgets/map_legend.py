@@ -4,6 +4,7 @@ from textual.widgets import Static
 
 from core.game_state import GameState
 from core.movement import Terrain
+from core.item_actions import GROUND_ITEM_RENDER, _ITEM_TYPE_LABELS
 
 
 class MapLegend(Static):
@@ -40,6 +41,12 @@ class MapLegend(Static):
             if self.state.dungeon_entrance and pos == self.state.dungeon_entrance:
                 legend_seen[">"] = "入口"
 
+        for item, (ec, er) in self.state.ground_items:
+            if (ec, er) in fov:
+                render_info = GROUND_ITEM_RENDER.get(item.item_type)
+                if render_info:
+                    legend_seen[render_info["char"]] = _ITEM_TYPE_LABELS.get(item.item_type, "物品")
+
         entries = [f"@玩家"] + [f"{ch}{name}" for ch, name in legend_seen.items() if ch != "@"]
 
         # 排版：每行填满，最多 3 行，超出合并
@@ -71,4 +78,5 @@ class MapLegend(Static):
 
         while len(lines) < 3:
             lines.append("")
-        return "\n".join(lines[:3])
+        result = "\n".join(lines[:3])
+        return result

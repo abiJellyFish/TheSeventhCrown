@@ -45,8 +45,9 @@
     "loot": {
       "always": [
         {
-          "name": "银币",
-          "amount": 20
+          "name": "货币",
+          "price": {"sp": 20},
+          "amount": 1
         }
       ],
       "dc_6": [
@@ -236,8 +237,9 @@
     "loot": {
       "always": [
         {
-          "name": "银币",
-          "amount": 50
+          "name": "货币",
+          "price": {"sp": 50},
+          "amount": 1
         }
       ],
       "dc_4": [
@@ -434,8 +436,9 @@
     "loot": {
       "always": [
         {
-          "name": "金币",
-          "amount": 2
+          "name": "货币",
+          "price": {"gp": 2},
+          "amount": 1
         }
       ],
       "dc_8": [
@@ -500,14 +503,16 @@
     "loot": {
       "always": [
         {
-          "name": "金币",
-          "amount": 15
+          "name": "货币",
+          "price": {"gp": 15},
+          "amount": 1
         }
       ],
       "dc_8": [
         {
-          "name": "金币",
-          "amount": 10
+          "name": "货币",
+          "price": {"gp": 10},
+          "amount": 1
         }
       ],
       "dc_10": [
@@ -563,7 +568,8 @@
     "loot": {
       "always": [
         {
-          "name": "金币",
+          "name": "货币",
+          "price": {"gp": 1},
           "amount": 1
         },
         {
@@ -597,7 +603,7 @@
       "wis": 0,
       "cha": 0
     },
-    "vision_range": 0,
+    "vision_range": 3,
     "food_value": 0,
     "food_locked": true,
     "darkvision_range": 0,

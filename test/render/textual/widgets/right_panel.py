@@ -13,6 +13,9 @@ class RightPanel(Static):
     def render(self) -> str:
         if self.state is None:
             return ""
+        # 物品交互菜单栈优先
+        if self.state.item_menu_stack:
+            return self._render_item_menu()
         if self.state.observe_mode:
             return self._render_observe()
         if self.view_mode == "inventory":
@@ -29,7 +32,7 @@ class RightPanel(Static):
             f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  饮食 {food_pct}%",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight():.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
             "",
             "[[X]]观察 [[Q]]退出",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
@@ -39,6 +42,58 @@ class RightPanel(Static):
         if p.statuses:
             lines.append(f"[red]{' '.join(s.name for s in p.statuses)}[/]")
         return "\n".join(lines)
+
+    def _render_item_menu(self) -> str:
+        """渲染物品交互菜单。栈顶决定当前菜单层级。"""
+        max_h = self.size.height
+        stack = self.state.item_menu_stack
+        if not stack:
+            return ""
+
+        top = stack[-1]
+        menu_type = top.get("type", "")
+        item = top.get("item")
+        item_name = item.name if item else "???"
+        item_count = getattr(item, 'count', 1) if item else 1
+
+        if menu_type == "item_actions":
+            options = top.get("options", [])
+            lines = [
+                f"[bold]物品: {item_name}[/]",
+                f"数量: x{item_count}  {getattr(item, 'description', '')}",
+                "",
+            ]
+            for i, opt in enumerate(options):
+                label = opt.get("label", str(i))
+                lines.append(f"  [[U{i + 1}]]{label}")
+            lines.append("  [[U0]]返回上一级")
+            return "\n".join(lines[:max_h])
+
+        elif menu_type == "quantity_select":
+            lines = [
+                f"[bold]物品: {item_name}[/]",
+                f"可选数量: 1 - {item_count}",
+                "",
+                f"[dim]输入 :U数量  如 :U3 丢弃3个[/]",
+                "",
+                "[[U0]]返回上一级",
+            ]
+            return "\n".join(lines[:max_h])
+
+        elif menu_type == "pickup_quantity":
+            lines = [
+                f"[bold]捡起: {item_name}[/]",
+                f"地上数量: x{item_count}",
+                "",
+                f"[dim]输入 :U数量  如 :U2 捡起2个[/]",
+                f"[dim]输入 :U{item_count} 全部捡起[/]",
+                "",
+                "[[U0]]返回",
+            ]
+            return "\n".join(lines[:max_h])
+
+        else:
+            return f"[bold]物品: {item_name}[/]\n\n(未知菜单类型: {menu_type})"
 
     def _render_inventory(self) -> str:
         p = self.state.player
@@ -68,6 +123,7 @@ class RightPanel(Static):
             lines.append("  (空)")
         lines.append("")
         lines.append("[dim]:I序号 装备/使用  :U1-U6 卸除  :W 互换左右手[/]")
+        lines.append("[dim][[I]]关闭 [[C]]角色面板 [[X]]观察[/]")
         return "\n".join(lines)
 
     def _render_character(self) -> str:
@@ -77,7 +133,8 @@ class RightPanel(Static):
             f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP  饮食: {p.food_value * 100 // 15000}%",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
+            f"载重 {p.total_carry_weight():.1f}/{p.carry_capacity():.0f}kg  [{p.carry_status()['label']}]  饮食: {p.food_value * 100 // 15000}%",
             "",
         ]
         for key, label in [("str", "力量"), ("dex", "敏捷"), ("con", "体质"), ("int", "智力"), ("wis", "感知"), ("cha", "魅力")]:
@@ -90,6 +147,7 @@ class RightPanel(Static):
         lines.extend(self._render_equipment_lines(p))
         if p.statuses:
             lines.append(f"[red]状态: {' '.join(s.name for s in p.statuses)}[/]")
+        lines.append("[dim][[C]]关闭 [[I]]物品栏 [[X]]观察[/]")
         return "\n".join(lines[:max_h])
 
     def _render_observe(self) -> str:
@@ -145,6 +203,23 @@ class RightPanel(Static):
             parts = []
             for slot, label in group:
                 item = player.equipment.get(slot)
-                parts.append(f"{label}:{item.name if item else '-'}")
+                if item:
+                    name = item.name
+                    props = getattr(item, 'properties', []) or []
+                    if 'two_handed' in props:
+                        name += "(双手)"
+                    parts.append(f"{label}:{name}")
+                elif slot in ("left_hand", "right_hand"):
+                    # 空手但另一只手有双手武器 → 标注(双手)
+                    other_slot = "right_hand" if slot == "left_hand" else "left_hand"
+                    other = player.equipment.get(other_slot)
+                    if other:
+                        other_props = getattr(other, 'properties', []) or []
+                        if 'two_handed' in other_props:
+                            parts.append(f"{label}:(双手)")
+                            continue
+                    parts.append(f"{label}:-")
+                else:
+                    parts.append(f"{label}:-")
             lines.append("  " + " ".join(parts))
         return lines

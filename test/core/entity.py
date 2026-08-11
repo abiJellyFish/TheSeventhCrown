@@ -202,6 +202,17 @@ class Creature:
 
 
 # ═══════════════════════════════════════════════════
+# 负重状态表（哈希表驱动）
+# ═══════════════════════════════════════════════════
+
+CARRY_STATUS = {
+    "light":      {"threshold": 0.8,  "label": "轻便",   "effects": []},
+    "encumbered": {"threshold": 1.0,  "label": "负重",   "effects": ["speed_halved", "dex_disadvantage", "ap_penalty_1"]},
+    "overloaded": {"threshold": float("inf"), "label": "超重", "effects": ["immobilized", "dex_auto_fail", "ap_penalty_2"]},
+}
+
+
+# ═══════════════════════════════════════════════════
 # Player
 # ═══════════════════════════════════════════════════
 
@@ -225,6 +236,33 @@ class Player(Creature):
 
     # ---- 预留 ----
     party: list["Creature"] = field(default_factory=list)     # 队伍成员
+
+    # ---- 载重 ----
+
+    def total_carry_weight(self) -> float:
+        """计算装备栏 + 物品栏的总重量 (kg)。"""
+        total = 0.0
+        for item in self.equipment.values():
+            if item is not None:
+                total += getattr(item, 'weight', 0.0)
+        for item in self.inventory:
+            w = getattr(item, 'weight', 0.0)
+            count = getattr(item, 'count', 1)
+            total += w * count
+        return total
+
+    def carry_status(self) -> dict:
+        """返回当前负重状态 {threshold, label, effects}。"""
+        cap = self.carry_capacity()
+        if cap <= 0:
+            return CARRY_STATUS["overloaded"]
+        ratio = self.total_carry_weight() / cap
+        if ratio < CARRY_STATUS["light"]["threshold"]:
+            return CARRY_STATUS["light"]
+        elif ratio < CARRY_STATUS["encumbered"]["threshold"]:
+            return CARRY_STATUS["encumbered"]
+        else:
+            return CARRY_STATUS["overloaded"]
 
     @classmethod
     def create_fighter(cls, name: str, stats: dict) -> "Player":
@@ -267,6 +305,19 @@ class Player(Creature):
 
 
 # ═══════════════════════════════════════════════════
+# 物品空间默认值（按 item_type 查表）
+# ═══════════════════════════════════════════════════
+
+ITEM_SPACE_DEFAULT = {
+    "weapon":     3,
+    "armor":      4,
+    "consumable": 1,
+    "material":   1,
+    "misc":       2,
+}
+
+
+# ═══════════════════════════════════════════════════
 # Item / Weapon / Armor
 # ═══════════════════════════════════════════════════
 
@@ -282,6 +333,17 @@ class Item:
     amount: str = ""                       # 效果量 (如 "6d4", "15000")
     ap_cost: int = 0                       # 使用 AP 消耗
     count: int = 1                         # 物品数量
+    space: int = 0                         # 占据空间，0=按 item_type 查表自动赋值
+    # 投掷相关字段
+    throw_range: int = 3                  # 投掷基础射程（Chebyshev 距离），0 表示不可投掷
+    throw_str_req: int = 0                # 投掷力量要求（0=无要求）
+    throw_damage: str = ""                # 投掷伤害骰（空=用 weight 推算或近战伤害）
+    throw_damage_type: str = "bludgeoning"
+    throw_effect: str = ""                # 投掷特效: "heal"|""
+
+    def __post_init__(self):
+        if self.space <= 0:
+            self.space = ITEM_SPACE_DEFAULT.get(self.item_type, 1)
 
     @classmethod
     def from_dict(cls, data: dict) -> "Item":
@@ -295,6 +357,12 @@ class Item:
             effect=data.get("effect", ""),
             amount=data.get("amount", ""),
             ap_cost=data.get("ap_cost", 0),
+            space=data.get("space", 0),
+            throw_range=data.get("throw_range", 3),
+            throw_str_req=data.get("throw_str_req", 0),
+            throw_damage=data.get("throw_damage", ""),
+            throw_damage_type=data.get("throw_damage_type", "bludgeoning"),
+            throw_effect=data.get("throw_effect", ""),
         )
 
 
@@ -310,9 +378,12 @@ class Weapon(Item):
     range_normal: int = 0
     range_max: int = 0
     properties: list[str] = field(default_factory=list)
+    loaded: bool = True                    # 弹药武器已装填？战斗开始时重置
+    melee: dict | None = None              # 远程武器近战属性 {"damage":"1d4","damage_type":"bludgeoning","attack_stat":"str","ap_cost":2}
 
     def __post_init__(self):
         self.item_type = "weapon"
+        super().__post_init__()
 
     @classmethod
     def from_dict(cls, data: dict) -> "Weapon":
@@ -327,6 +398,8 @@ class Weapon(Item):
             range_normal=data.get("range_normal", 0),
             range_max=data.get("range_max", 0),
             properties=data.get("properties", []),
+            loaded=data.get("loaded", True),
+            melee=data.get("melee"),
             weight=data.get("weight", 0.0),
             price=data.get("price", {}),
             description=data.get("description", ""),
@@ -344,6 +417,7 @@ class Armor(Item):
 
     def __post_init__(self):
         self.item_type = "armor"
+        super().__post_init__()
 
     @classmethod
     def from_dict(cls, data: dict) -> "Armor":

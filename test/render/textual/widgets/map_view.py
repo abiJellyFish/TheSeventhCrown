@@ -5,6 +5,7 @@ from textual.widgets import Static
 
 from core.game_state import GameState
 from core.movement import Terrain
+from core.item_actions import GROUND_ITEM_RENDER, get_ground_items_at
 
 TERRAIN_COLORS = {
     Terrain.PASSABLE: "rgb(80,80,80)",
@@ -76,8 +77,22 @@ class MapView(Static):
                         ch = "_" if is_open else "]"
                         text.append(ch, style=f"bold yellow{cur}")
                     else:
-                        ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
-                        text.append(ch, style=f"{TERRAIN_COLORS.get(t, '')}{cur}")
+                        # 检查地上物品
+                        ground_at = get_ground_items_at(self.state.ground_items, col, row)
+                        if ground_at:
+                            ginfo = ground_at[0]
+                            color = ginfo["color"]
+                            total = sum(g["count"] for g in ground_at)
+                            if total > 1:
+                                # 堆叠显示数字（9+ 显示 +）
+                                ch = str(total) if total <= 9 else "+"
+                            else:
+                                ch = ginfo["char"]
+                            text.append(ch, style=f"{color}{cur}")
+                        else:
+                            ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
+                            color = TERRAIN_COLORS.get(t, '')
+                            text.append(ch, style=f"{color}{cur}")
             if row < min(oy + vh, gmap.height) - 1:
                 text.append("\n")
         return text
