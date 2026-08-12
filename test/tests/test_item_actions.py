@@ -3,6 +3,8 @@ import pytest
 from core.entity import Player, Item, Weapon, Armor, Creature
 from core.game_state import GameState
 from core.entity import ITEM_SPACE_DEFAULT
+from core.grid import Grid
+from core.movement import Terrain
 from core.item_actions import (
     get_item_actions, find_placeable_tile, tile_space_used,
     place_on_ground, remove_from_inventory, copy_item_with_count,
@@ -208,6 +210,47 @@ class TestGroundItemManagement:
         dist = max(abs(tc - 5), abs(tr - 5))
         assert dist >= 2
 
+    def test_find_placeable_tile_excludes_walls(self):
+        """BFS 不把物品放到墙格上。"""
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        # 把起点周围的格子都设成墙，只留 (7,5)
+        g[4, 5] = Terrain.WALL
+        g[5, 4] = Terrain.WALL
+        g[5, 6] = Terrain.WALL
+        g[6, 5] = Terrain.WALL  # 这个也封了
+        g[7, 5] = Terrain.PASSABLE  # 只有这个可达
+        items = []
+        # 填满起点
+        fill = Item(name="石头", item_type="misc", space=5, count=2)
+        items.append((fill, (5, 5)))
+        small = Item(name="羽毛", item_type="misc", space=1, count=1)
+        pos = find_placeable_tile(items, 5, 5, small, 10, 10, map=g, entities=[])
+        # 只有 (7,5) 可达（BFS 用 8 方向，对角格 4,4 等先被访问）
+        # 测试重点是：BFS 不会返回墙格 (4,5)(5,4)(5,6)(6,5)
+        assert pos is not None
+        assert pos not in [(4, 5), (5, 4), (5, 6), (6, 5)]
+
+    def test_find_placeable_tile_excludes_living_entities(self):
+        """BFS 不把物品放到活物所在的格子上。"""
+        items = []
+        # 填满起点
+        fill = Item(name="石头", item_type="misc", space=5, count=2)
+        items.append((fill, (5, 5)))
+        goblin = Creature(name="goblin", hp=10, char="g")
+        dead = Creature(name="corpse", hp=0, char="%")
+        small = Item(name="羽毛", item_type="misc", space=1, count=1)
+        entities = [(goblin, (6, 5)), (dead, (5, 6))]
+        pos = find_placeable_tile(items, 5, 5, small, 10, 10, map=None, entities=entities)
+        # (6,5) 有活地精 → 跳过；(5,6) 有尸体 → 可放
+        # BFS 用 8 方向，对角格可能先被访问，测试重点是排除活物格
+        assert pos is not None
+        assert pos != (6, 5)  # 活物格被排除
+        # (5,6) 有尸体(hp=0)，BFS 不应排除，但可能非第一个访问到
+        # 核心断言：不会放到活物所在的格子上
+        goblin_positions = [(ec, er) for _, (ec, er) in entities if goblin.hp > 0 and (ec, er) == pos]
+        # 简化：返回的位置不是活地精的位置
+        assert pos not in [(6, 5)]  # 活地精格被排除
+
 
 # ═══════════════════════════════════════════════════
 # remove_from_inventory
@@ -320,6 +363,31 @@ class TestGetGroundItemsAt:
         items = [(item, (5, 5))]
         result = get_ground_items_at(items, 6, 6)
         assert result == []
+
+    def test_result_has_type_and_space_fields(self):
+        """返回字典包含 type/space 字段用于渲染。"""
+        from core.entity import Item
+        item = Item(name="长剑", item_type="weapon", space=3, count=1)
+        items = [(item, (5, 5))]
+        result = get_ground_items_at(items, 5, 5)
+        assert result[0]["item_type"] == "weapon"
+        assert result[0]["space"] == 3
+
+    def test_result_has_required_fields(self):
+        """get_ground_items_at 返回的字典包含 type/space/name 等字段。"""
+        item = Item(name="浆果", item_type="consumable", space=1, count=3)
+        items = [(item, (5, 5))]
+        result = get_ground_items_at(items, 5, 5)
+        assert len(result) == 1
+        r = result[0]
+        assert "item_type" in r
+        assert "space" in r
+        assert "name" in r
+        assert "char" in r
+        assert "color" in r
+        assert r["name"] == "浆果"
+        assert r["space"] == 1
+        assert r["item_type"] == "consumable"
 
 
 # ═══════════════════════════════════════════════════

@@ -21,6 +21,21 @@ class TestSmoke:
         assert p.total_carry_weight() == 0.0
         assert p.carry_status()["label"] in ("轻便", "负重", "超重")
 
+    def test_create_game_loads_player(self):
+        from render.textual.app import MVPApp
+        app = MVPApp()
+        app._create_game()
+        p = app._state.player
+        assert p.name
+        assert p.inventory is not None
+
+    @pytest.mark.skip(reason="Textual compose 需要运行中的应用上下文，无法在单元测试中执行")
+    def test_app_compose_yields_widgets(self):
+        from render.textual.app import MVPApp
+        app = MVPApp()
+        widgets = list(app.compose())
+        assert len(widgets) >= 8
+
 
 class TestInventory:
     def test_add_new_item(self):
@@ -47,3 +62,29 @@ class TestInventory:
                                    "damage": "1d8", "damage_type": "slashing", "weight": 2.0})
         p.equipment["left_hand"] = sword
         assert p.equipment["left_hand"].name == "长剑"
+
+
+class TestUseItem:
+    def _setup_app(self):
+        from render.textual.app import MVPApp
+        app = MVPApp()
+        app._create_game()
+        # compose 前的 widget 均为 None，mock 避免 _use_item 内部调用空引用
+        app._act_log = type("MockLog", (), {"add": lambda self, msg: None})()
+        app._right_panel = type("MockPanel", (), {"refresh": lambda self: None})()
+        app._wake_input = lambda: None
+        return app
+
+    def test_use_item_pushes_to_menu_stack(self):
+        from core.entity import Item
+        app = self._setup_app()
+        p = app._state.player
+        p.inventory = [Item(name="短剑", item_type="weapon", weight=1.0, count=1)]
+        app._use_item("I1")
+        assert len(app._state.item_menu_stack) == 1
+        assert app._state.item_menu_stack[0]["item"].name == "短剑"
+
+    def test_use_item_invalid_index_no_crash(self):
+        app = self._setup_app()
+        app._state.player.inventory = []
+        app._use_item("I1")  # 空背包，不应崩溃

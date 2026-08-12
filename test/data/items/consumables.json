@@ -63,7 +63,7 @@
     "type": "consumable",
     "effect": "restore_food",
     "amount": "500",
-    "ap_cost": 0,
+    "ap_cost": 1,
     "weight": 0.1,
     "price": {"cp": 2},
     "description": "多汁的浆果，可以在灌木丛中找到"
@@ -151,5 +151,15 @@
     "weight": 0.1,
     "price": {"cp": 10},
     "description": "风干的骨头，可以投掷"
+  },
+  {
+    "name": "烤熟的浆果",
+    "type": "consumable",
+    "effect": "restore_food",
+    "amount": "800",
+    "ap_cost": 1,
+    "weight": 0.1,
+    "price": {"cp": 5},
+    "description": "烤熟的浆果，甜味更浓了"
   }
 ]

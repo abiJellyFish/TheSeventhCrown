@@ -31,22 +31,26 @@ class PendulumClock:
         """推进 1 个钟摆（内部）。"""
         self.pendulum_acc_ticks -= self.scale
         self.pendulum_count += 1
-        # NPC 结算
-        if self._on_advance_npcs:
-            self._on_advance_npcs(1.0)
-        # 触发定时事件
+        # 注意：NPC 结算已移至 tick_move/tick_action 中
+        # 这里只触发定时事件
         self._fire_events()
 
     def tick_move(self, maxS: int) -> int:
         """移动路径推进：acc += ceil(SCALE / maxS)。返回本次触发的钟摆数。"""
         if maxS <= 0:
             maxS = 1
-        self.pendulum_acc_ticks += math.ceil(self.scale / maxS)
+        delta_ticks = math.ceil(self.scale / maxS)
+        self.pendulum_acc_ticks += delta_ticks
+        # 按 tick 比例通知 NPC
+        if self._on_advance_npcs:
+            self._on_advance_npcs(delta_ticks / self.scale)  # 转为钟摆单位
         return self._drain()
 
     def tick_action(self, cost: float) -> int:
         """行动路径推进：acc += cost * SCALE。返回本次触发的钟摆数。"""
         self.pendulum_acc_ticks += int(cost * self.scale)
+        if self._on_advance_npcs:
+            self._on_advance_npcs(cost)
         return self._drain()
 
     def tick_combat_round(self) -> int:

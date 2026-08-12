@@ -139,7 +139,7 @@ def build_world(state: GameState, loader) -> None:
         return False
 
     # 实体数量上限（不含玩家），防止地图生物过多
-    MAX_ENTITIES = 20
+    MAX_ENTITIES = 30
     for _ in range(creature_count):
         if len(state.entities) >= MAX_ENTITIES:
             break

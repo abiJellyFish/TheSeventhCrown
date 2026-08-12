@@ -19,14 +19,15 @@ from core.combat.initiative import roll_initiative
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack, miss_message, cover_message
 from core.combat.flow import CombatFlow
 from core.map.generation import build_world, build_dungeon
-from core.dice import roll_d20
+from core.dice import roll_d20, check_dc
 from core.ai.engine import BehaviorEngine
+
 from core.rest import short_rest, long_rest
 from core.loader import DataLoader
 from core.save.database import SaveManager
 from core.interact import InteractType, scan_interact_targets
 from core.trade import load_shop, trade_buy, trade_sell, price_to_text, copper_to_currency, shop_gold_text, player_receive, _build_item_cache
-from core.item_actions import get_item_actions, find_placeable_tile, place_on_ground, remove_from_inventory as item_remove_from_inventory, copy_item_with_count, get_throw_range, get_throw_max_range
+from core.item_actions import get_item_actions, find_placeable_tile, place_on_ground, remove_from_inventory as item_remove_from_inventory, copy_item_with_count, get_throw_range, get_throw_max_range, tile_space_used, MAX_TILE_SPACE
 from render.textual.widgets import (
     TopBar, LeftPanel, MapView, MapLegend, RightPanel, ActionLog, SceneLog,
 )
@@ -96,6 +97,14 @@ _INTERACT_DISPATCH = {
     InteractType.OPEN: "_interact_door",
     InteractType.ENTER: "_interact_entrance",
     InteractType.PICKUP: "_interact_pickup",
+}
+
+
+# ── 烹饪食谱（原材料名 → 成品名）──
+
+RECIPES = {
+    "一磅野猪肉": {"result": "烤兽肉", "time": 1},
+    "浆果": {"result": "烤熟的浆果", "time": 1},
 }
 
 
@@ -487,6 +496,19 @@ class MVPApp(App):
             self._sync_input()
             return
 
+        # 烹饪系统输入处理（interact_phase 为 cooking_tools/cooking）
+        if self._state and self._state.interact_phase in ("cooking_tools", "cooking"):
+            prefix = cmd[0].upper() if cmd else ""
+            if prefix == "A":
+                self._act_log.add(f"> :{cmd}")
+                self._interact_cook(cmd)
+                self._sync_input()
+                return
+            self._act_log.add(f"> :{cmd}")
+            self._act_log.add("用法: :A序号  如 :A1 选择第1项")
+            self._sync_input()
+            return
+
         # 合并所有活跃视图的命令表
         all_commands = {}
         for view_name in self._get_active_views():
@@ -848,6 +870,19 @@ class MVPApp(App):
                 stack.pop()
             return
 
+        if action_label == "食用":
+            if item.count > 1:
+                stack.append({
+                    "type": "quantity_select",
+                    "mode": "eat",
+                    "item": item,
+                    "inv_index": inv_index,
+                })
+            else:
+                self._action_use_consumable(item, inv_index)
+                stack.pop()
+            return
+
         if action_label == "投掷":
             # 检查力量要求
             throw_str_req = getattr(item, 'throw_str_req', 0)
@@ -888,11 +923,35 @@ class MVPApp(App):
         stack = self._state.item_menu_stack
         item = top.get("item")
         inv_index = top.get("inv_index", -1)
+        mode = top.get("mode", "")
 
         if num == 0:
             stack.pop()
             return
 
+        # 食用模式
+        if mode == "eat":
+            player = self._state.player
+            max_qty = item.count if item else 0
+            if self._state.in_combat:
+                # 每份 1AP，AP 不足时限制可选数量
+                max_qty = min(max_qty, player.ap)
+            if num > max_qty:
+                self._act_log.add(f"数量无效，最多可选 {max_qty} 份")
+                return
+            for _ in range(num):
+                if item.count <= 0:
+                    break
+                self._action_use_consumable(item, inv_index)
+                if not self._state.in_combat:
+                    self._state.clock.tick_action(1.0)
+            # 回退到物品栏
+            stack.pop()
+            if stack:
+                stack.pop()
+            return
+
+        # 原有丢弃逻辑
         max_qty = item.count if item else 0
         if 1 <= num <= max_qty:
             self._exec_drop(item, inv_index, num)
@@ -936,6 +995,7 @@ class MVPApp(App):
         target_pos = find_placeable_tile(
             self._state.ground_items, pc, pr, dropped,
             self._state.map.width, self._state.map.height,
+            map=self._state.map, entities=self._state.entities,
         )
         if target_pos is None:
             # 找不到空位，退回物品
@@ -1057,6 +1117,30 @@ class MVPApp(App):
         if self._state.in_combat:
             player.ap -= cost
         self._act_log.add(f"{self._pn} 使用了 {item.name}")
+
+        # dc_check 检定：直接食用带毒物品需过体质检定
+        raw_data = _build_item_cache().get(item.name, {})
+        dc_check = raw_data.get("dc_check")
+        if dc_check:
+            stat = dc_check.get("stat", "con")
+            dc_val = dc_check.get("dc", 15)
+            on_fail = dc_check.get("on_fail", "")
+            adjust = player.stat_adjust(stat)
+            success, roll = check_dc(adjust, dc_val)
+            if not success:
+                self._act_log.add(f"体质检定失败 (d20+{adjust}={roll+adjust} vs DC{dc_val})")
+                if on_fail:
+                    import re
+                    match = re.match(r"(.+)\((\d+)钟摆\)", on_fail)
+                    if match:
+                        status_name = match.group(1)
+                        duration = int(match.group(2))
+                        player.add_status(status_name, duration)
+                        self._act_log.add(f"{player.name} {status_name}了！")
+                return  # 检定失败，不恢复饮食值
+            else:
+                self._act_log.add(f"体质检定成功 (d20+{adjust}={roll+adjust} vs DC{dc_val})")
+
         self._apply_item_effect(item)
 
     # 物品操作 → 方法映射表
@@ -1609,7 +1693,10 @@ class MVPApp(App):
             self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
         else:
             self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
-            self._npc_turn(turn)
+            self._state._advance_npcs(1.0)
+            self._next_turn()
+            self.refresh_all()
+            return
         self.refresh_all()
 
     def _player_attack(self) -> None:
@@ -1637,6 +1724,7 @@ class MVPApp(App):
             attacker_pos=(pc, pr),
             target_pos=self._find_entity_pos(target),
             grid=self._state.map,
+            ground_items=self._state.ground_items,
         )
         if result["hit"]:
             self._check_faction_reaction(target)
@@ -1693,6 +1781,46 @@ class MVPApp(App):
         self._combat_flow.confirm_ranged_target()
         self.refresh_all()
 
+    def _bresenham_line(self, x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
+        """Bresenham 直线算法，返回从 (x0,y0) 到 (x1,y1) 的所有格子坐标（含两端）。"""
+        points = []
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        cx, cy = x0, y0
+        while True:
+            points.append((cx, cy))
+            if (cx, cy) == (x1, y1):
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                cx += sx
+            if e2 < dx:
+                err += dx
+                cy += sy
+        return points
+
+    def _find_throw_landing(self, cursor: tuple[int, int], item) -> tuple[int, int]:
+        """沿投掷轨迹回溯合法落点，保底返回玩家格。
+
+        合法条件：terrain != WALL 且 tile space + item.space * count <= MAX_TILE_SPACE。
+        """
+        pc, pr = self._state.player_pos
+        tc, tr = cursor
+
+        line = self._bresenham_line(pc, pr, tc, tr)
+        for c, r in reversed(line):
+            if self._state.map[c, r] == Terrain.WALL:
+                continue
+            needed = getattr(item, 'space', 1) * getattr(item, 'count', 1)
+            if tile_space_used(self._state.ground_items, c, r) + needed > MAX_TILE_SPACE:
+                continue
+            return (c, r)
+        return (pc, pr)
+
     def _resolve_throw(self) -> None:
         """结算投掷。"""
         pa = self._state.pending_attack
@@ -1738,9 +1866,10 @@ class MVPApp(App):
 
         # 武器投掷：命中检定
         if getattr(single, 'weapon_type', '') or getattr(single, 'damage', ''):
-            # 空地：武器直接落地
+            # 空地：武器落地（沿轨迹回溯合法格）
             if target is None:
-                place_on_ground(self._state.ground_items, single, cursor[0], cursor[1])
+                landing = self._find_throw_landing(cursor, single)
+                place_on_ground(self._state.ground_items, single, landing[0], landing[1])
                 self._act_log.add(f"{self._pn} 投掷了{single.name}")
                 self._state.combat_phase = "idle"
                 self._state.pending_attack = {}
@@ -1756,15 +1885,10 @@ class MVPApp(App):
             mod = player.stat_adjust("str")
             target_ac = target.total_ac("chest")
             if roll == 1 or (roll + mod < target_ac and roll != 20):
-                # 未命中：物品落在相邻随机格
+                # 未命中：沿轨迹回溯合法落点
                 self._act_log.add(f"{self._pn} 投掷{single.name}未命中目标")
-                dx = random.choice([-1, 0, 1])
-                dy = random.choice([-1, 0, 1])
-                fall_x = cursor[0] + dx
-                fall_y = cursor[1] + dy
-                if not (0 <= fall_x < self._state.map.width and 0 <= fall_y < self._state.map.height):
-                    fall_x, fall_y = pc, pr
-                place_on_ground(self._state.ground_items, single, fall_x, fall_y)
+                landing = self._find_throw_landing(cursor, single)
+                place_on_ground(self._state.ground_items, single, landing[0], landing[1])
             else:
                 # 命中
                 # 命中后：检查视野 → 变敌对 + 进战斗（与近战/远程攻击逻辑一致）
@@ -1780,9 +1904,21 @@ class MVPApp(App):
                 dmg = apply_damage_type_modifiers(dmg, getattr(single, 'damage_type', 'bludgeoning'), target)
                 target.hp = max(0, target.hp - dmg)
                 self._act_log.add(f"{self._pn} 投掷{single.name}击中了{target.name}，造成{dmg}点伤害")
+                # 武器落在目标所在格（若不合法则回溯）
+                target_pos = self._find_entity_pos(target)
+                if target_pos:
+                    landing = self._find_throw_landing(target_pos, single)
+                else:
+                    landing = self._find_throw_landing(cursor, single)
+                place_on_ground(self._state.ground_items, single, landing[0], landing[1])
+                self._state.combat_phase = "idle"
+                self._state.pending_attack = {}
+                self.refresh_all()
+                return
         else:
-            # 普通物品：落在目标格
-            place_on_ground(self._state.ground_items, single, cursor[0], cursor[1])
+            # 普通物品：沿轨迹回溯合法落点
+            landing = self._find_throw_landing(cursor, single)
+            place_on_ground(self._state.ground_items, single, landing[0], landing[1])
             self._act_log.add(f"{self._pn} 投掷了{single.name}")
 
         self._state.combat_phase = "idle"
@@ -1801,7 +1937,8 @@ class MVPApp(App):
         """NPC 向目标坐标移动一格（A* 寻路 + 简单 fallback）。"""
         # 尝试 A* 寻路
         path = find_path(self._state.map, self._state.entities,
-                         (nc, nr), (tc, tr))
+                         (nc, nr), (tc, tr),
+                         ground_items=self._state.ground_items)
         if path and len(path) >= 2:
             # path[0] = 起点, path[1] = 下一步
             nx, ny = path[1]
@@ -1838,6 +1975,7 @@ class MVPApp(App):
             npc, target, weapon,
             attacker_pos=npc_pos, target_pos=target_pos,
             grid=self._state.map,
+            ground_items=self._state.ground_items,
         )
         if result["hit"]:
             self._act_log.add(
@@ -1976,51 +2114,6 @@ class MVPApp(App):
                     best = (tx, ty)
         return best or (pc, pr)
 
-    def _npc_turn(self, npc: Creature) -> None:
-        """NPC 回合：包围玩家 + 重复执行动作直到 AP 不足。"""
-        pc, pr = self._state.player_pos
-        pos = self._find_entity_pos(npc)
-        if pos is None:
-            self._next_turn(); return
-
-        actions_taken = 0
-        while npc.ap > 0:
-            pos = self._find_entity_pos(npc)
-            if pos is None: break
-            nc, nr = pos
-
-            # 收集可执行的动作（总 AP 足够 + 条件满足）
-            available = []
-            for action in npc.actions:
-                total = self._npc_action_total_ap(npc, action, nc, nr, pc, pr)
-                if total is not None and npc.ap >= total:
-                    available.append(action)
-
-            if not available:
-                # 无法发动任何动作，包围移动：向玩家周围空格靠近
-                if max(abs(nc - pc), abs(nr - pr)) <= 1:
-                    if actions_taken == 0:
-                        self._act_log.add(f"{npc.name} 没有可用的动作")
-                    break
-                # 找包围位置并移动
-                target = self._find_surround_target(nc, nr, pc, pr)
-                moved = self._move_npc_toward(npc, nc, nr, target[0], target[1])
-                npc.ap -= 1  # 尝试移动即消耗 AP
-                if moved:
-                    actions_taken += 1
-                else:
-                    break
-                continue
-
-            action = random.choice(available)
-            ap_before = npc.ap
-            self._execute_npc_action(npc, action, nc, nr, pc, pr)
-            actions_taken += 1
-            if npc.ap >= ap_before:
-                break
-
-        self._next_turn(); self.refresh_all()
-
     # ── Long Rest ──
 
     def action_long_rest(self) -> None:
@@ -2124,7 +2217,115 @@ class MVPApp(App):
             self._sync_input()
     def action_spellbook(self): self._act_log.add("[法术书] 功能待定")
     def action_crafting(self): self._act_log.add("[制作] 功能待定")
-    def action_cooking(self): self._act_log.add("[烹饪] 功能待定")
+    def action_cooking(self):
+        """按 K 键进入烹饪：检测厨具 → 选择厨具 → 选择原材料。"""
+        tools = self._detect_cooking_tools()
+        has_campfire = any(t['type'] == 'campfire' for t in tools)
+        if not has_campfire and len(tools) == 1:
+            self._act_log.add("附近没有厨具，但你可以徒手处理食材")
+        self._cooking_tools = tools
+        self._state.interact_phase = "cooking_tools"
+        self._left_panel.refresh()
+        self._wake_input()
+
+    def _detect_cooking_tools(self) -> list[dict]:
+        """扫描玩家 3x3 范围内厨具，徒手始终可用。"""
+        pc, pr = self._state.player_pos
+        tools = [{"name": "徒手", "type": "bare_hands", "pos": (pc, pr)}]
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                pos = (pc + dc, pr + dr)
+                if pos in self._state.campfire_positions:
+                    tools.append({"name": "篝火", "type": "campfire", "pos": pos})
+        return tools
+
+    def _interact_cook(self, cmd: str) -> None:
+        """处理烹饪面板的 :A序号 输入。"""
+        try:
+            num = int(cmd[1:])
+        except (ValueError, TypeError):
+            self._act_log.add("用法: :A序号  如 :A1 选择第1项")
+            return
+
+        ip = self._state.interact_phase
+
+        if ip == "cooking_tools":
+            tools = getattr(self, '_cooking_tools', [])
+            if num == 0:
+                self._cancel_interact()
+                return
+            if 1 <= num <= len(tools):
+                self._selected_cooking_tool = tools[num - 1]
+                self._state.interact_phase = "cooking"
+                self._left_panel.refresh()
+            else:
+                self._act_log.add("厨具序号无效")
+
+        elif ip == "cooking":
+            if num == 0:
+                self._state.interact_phase = "cooking_tools"
+                self._left_panel.refresh()
+                return
+
+            player = self._state.player
+            cook_map = getattr(self._left_panel, '_cook_map', {})
+            item = cook_map.get(num)
+            if item is None:
+                self._act_log.add("食材序号无效")
+                return
+
+            tool_name = getattr(self, '_selected_cooking_tool', {}).get('type', '')
+
+            # 徒手烹饪 → 占位
+            if tool_name == "bare_hands":
+                self._act_log.add("[烹饪] 待定开发")
+                self._state.interact_phase = ""
+                self.refresh_all()
+                return
+
+            # AP/钟摆消耗
+            if self._state.in_combat:
+                if player.ap < 1:
+                    self._act_log.add("AP 不足，无法烹饪")
+                    return
+                player.ap -= 1
+            else:
+                self._state.clock.tick_action(1.0)
+
+            # 消耗原材料（堆叠处理）
+            inv = player.inventory
+            if item.count > 1:
+                item.count -= 1
+                unit_weight = item.weight / (item.count + 1)
+                item.weight -= unit_weight
+            else:
+                for i, inv_item in enumerate(inv):
+                    if inv_item is item:
+                        inv.pop(i)
+                        break
+
+            # 查找食谱
+            result_data = RECIPES.get(item.name)
+            if result_data is None:
+                self._act_log.add("没有匹配的食谱")
+                return
+
+            # 从 consumables.json 加载成品
+            result_item = self._load_item_by_name(result_data["result"])
+            if result_item is None:
+                self._act_log.add(f"无法加载成品物品: {result_data['result']}")
+                return
+
+            _add_to_inventory(player, result_item)
+
+            tool_name = getattr(self, '_selected_cooking_tool', {}).get('name', '?')
+            if tool_name == "篝火":
+                self._act_log.add(f"篝火上飘起香气，{result_data['result']}做好了")
+            else:
+                self._act_log.add(f"你徒手处理了{item.name}，得到了{result_data['result']}")
+
+            self._state.interact_phase = ""
+            self.refresh_all()
     def action_alchemy(self): self._act_log.add("[炼药] 功能待定")
     def action_height_view(self): self._act_log.add("[高度] 功能待定")
     def action_map_overview(self): self._act_log.add("[地图] 功能待定")
@@ -2150,14 +2351,9 @@ class MVPApp(App):
         ec, er = pos
         dist = max(abs(ec - pc), abs(er - pr))
         enemy_count = 1 if dist <= c.vision_range else 0
-        ally_count = sum(1 for o, _ in self._state.entities
-                         if o.faction == c.faction and o.hp > 0 and o is not c)
+        ally_count = getattr(c, '_ally_count', 0)
         ratio = c.hp / max(c.max_hp, 1) * (ally_count + 1) / max(enemy_count, 1)
-        try: action, _ = _ai_engine.decide(c)
-        except Exception:
-            import traceback
-            traceback.print_exc()
-            action = "idle"
+        action = getattr(c, '_current_action', 'idle')
 
         r = c.hp / max(c.max_hp, 1)
         if r <= 0: hp = "瘫倒在地，"

@@ -364,6 +364,7 @@ class CombatFlow:
             blocked, cover_pos = resolve_cover_line(
                 roll, attacker_pos, (tc, tr),
                 self._state.map, weapon.weapon_type,
+                ground_items=self._state.ground_items,
             )
             if blocked:
                 hit = False
@@ -669,6 +670,7 @@ class CombatFlow:
             attacker, target, weapon,
             attacker_pos=attacker_pos, target_pos=target_pos,
             grid=self._state.map,
+            ground_items=self._state.ground_items,
         )
         if result["hit"]:
             result["damage"] += damage_bonus

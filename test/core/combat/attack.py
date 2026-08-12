@@ -214,6 +214,7 @@ def resolve_attack(
     attacker_pos: tuple[int, int] | None = None,
     target_pos: tuple[int, int] | None = None,
     grid: Grid[Terrain] | None = None,
+    ground_items: list | None = None,
 ) -> dict:
     """完整一次攻击结算（含掩体检查）。
 
@@ -224,6 +225,7 @@ def resolve_attack(
         attacker_pos: 攻击者坐标（掩体检查用，可选）
         target_pos: 目标坐标（掩体检查用，可选）
         grid: 地形网格（掩体检查用，可选）
+        ground_items: 地上物品列表（掩体检查用，可选）
 
     Returns:
         {
@@ -250,7 +252,8 @@ def resolve_attack(
     # 掩体检查（仅远程武器，需要坐标和地形网格）
     if weapon.weapon_type == "ranged" and attacker_pos and target_pos and grid:
         blocked, cover_pos = resolve_cover_line(
-            roll, attacker_pos, target_pos, grid, weapon.weapon_type
+            roll, attacker_pos, target_pos, grid, weapon.weapon_type,
+            ground_items=ground_items,
         )
         if blocked:
             reduce_tenacity(defender, roll)  # 掩体阻挡，等效未命中

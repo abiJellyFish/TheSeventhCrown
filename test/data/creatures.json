@@ -61,6 +61,10 @@
         }
       ]
     },
+    "behavior": {
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "eat_inventory", "open_door", "close_door", "attack_enemy", "approach_enemy", "flee", "rest", "idle"],
+      "overrides": {"hunt": 0.8, "attack_prey": 0.9}
+    },
     "char": "g"
   },
   {
@@ -124,6 +128,10 @@
         }
       ]
     },
+    "behavior": {
+      "components": ["wander", "forage", "eat_food", "eat_inventory", "attack_enemy", "approach_enemy", "flee", "rest", "idle"],
+      "overrides": {"forage": 0.6}
+    },
     "char": "d"
   },
   {
@@ -174,7 +182,8 @@
       "always": [
         {
           "name": "一磅野猪肉",
-          "amount": 3
+          "amount": 3,
+          "effect": "restore_food"
         }
       ],
       "dc_6": [
@@ -187,6 +196,10 @@
           "name": "猪皮"
         }
       ]
+    },
+    "behavior": {
+      "components": ["wander", "forage", "eat_food", "eat_inventory", "flee", "rest", "idle"],
+      "overrides": {"forage": 0.9, "eat_food": 0.95}
     },
     "char": "w"
   },
@@ -253,6 +266,10 @@
         }
       ]
     },
+    "behavior": {
+      "components": ["wander", "attack_enemy", "approach_enemy", "flee", "rest", "idle"],
+      "overrides": {"wander": 0.3}
+    },
     "char": "S"
   },
   {
@@ -299,6 +316,10 @@
       "flying(speed=2)"
     ],
     "loot": {},
+    "behavior": {
+      "components": ["wander", "forage", "eat_food", "eat_inventory", "flee", "rest", "idle"],
+      "overrides": {"forage": 0.7}
+    },
     "char": "b"
   },
   {
@@ -345,6 +366,10 @@
       "climbing(speed=2)"
     ],
     "loot": {},
+    "behavior": {
+      "components": ["wander", "forage", "eat_food", "eat_inventory", "flee", "rest", "idle"],
+      "overrides": {"forage": 0.7}
+    },
     "char": "s"
   },
   {
@@ -391,6 +416,10 @@
       "keen_smell"
     ],
     "loot": {},
+    "behavior": {
+      "components": ["wander", "eat_food", "eat_inventory", "flee", "rest", "idle"],
+      "overrides": {"wander": 0.4}
+    },
     "char": "c"
   },
   {
@@ -451,6 +480,10 @@
           "name": "布制长袍"
         }
       ]
+    },
+    "behavior": {
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "approach_enemy", "flee", "rest", "idle"],
+      "overrides": {"hunt": 0.6, "collect": 0.5}
     },
     "char": "E"
   },
@@ -524,6 +557,10 @@
         }
       ]
     },
+    "behavior": {
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "approach_enemy", "flee", "rest", "idle"],
+      "overrides": {"hunt": 0.7, "collect": 0.5}
+    },
     "char": "M"
   },
   {
@@ -578,6 +615,10 @@
         }
       ]
     },
+    "behavior": {
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "approach_enemy", "flee", "rest", "idle"],
+      "overrides": {"hunt": 0.7, "collect": 0.5}
+    },
     "char": "v"
   },
   {
@@ -619,6 +660,10 @@
       {"name": "不可移动", "duration": null}
     ],
     "loot": {},
+    "behavior": {
+      "components": ["pickup", "open_door", "close_door", "rest", "idle"],
+      "overrides": {}
+    },
     "char": "D"
   }
 ]

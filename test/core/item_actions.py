@@ -71,20 +71,27 @@ def tile_space_used(ground_items: list, col: int, row: int) -> int:
 
 
 def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
-                        item, map_width: int, map_height: int) -> tuple[int, int] | None:
+                        item, map_width: int, map_height: int,
+                        map=None, entities=None) -> tuple[int, int] | None:
     """从起点 BFS 查找第一个能放入物品的格子。
 
     起点通常为玩家位置，从相邻格开始由近到远搜索。
+    BFS 跳过墙壁和活物所在的格子。
 
     Args:
         ground_items: 当前地上物品列表
         start_col, start_row: BFS 起点坐标
         item: 待放置的物品（需要 space 和 count 属性）
         map_width, map_height: 地图边界
+        map: 地形网格（Grid[Terrain]），用于排除墙壁
+        entities: 生物列表 [(Creature, (col, row))]，用于排除活物格
 
     Returns:
         (col, row) 或 None（无可用格子）
     """
+    from core.movement import Terrain
+    from core.combat.cover import is_full_cover
+
     needed = item.space * item.count
     visited: set[tuple[int, int]] = {(start_col, start_row)}
     queue: deque[tuple[int, int]] = deque()
@@ -103,8 +110,18 @@ def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
     # BFS
     while queue:
         c, r = queue.popleft()
-        if tile_space_used(ground_items, c, r) + needed <= MAX_TILE_SPACE:
+
+        # 跳过全身障碍
+        if map and is_full_cover(map[c, r]):
+            pass
+        # 跳过活物格
+        elif entities and any((ec, er) == (c, r) and c2.hp > 0 for c2, (ec, er) in entities):
+            pass
+        elif tile_space_used(ground_items, c, r) + needed <= MAX_TILE_SPACE:
             return (c, r)
+        else:
+            pass  # 空间不足，继续 BFS
+
         for dc, dr in DIRS_8:
             nc, nr = c + dc, r + dr
             if 0 <= nc < map_width and 0 <= nr < map_height and (nc, nr) not in visited:
@@ -247,6 +264,9 @@ def get_ground_items_at(ground_items: list, col: int, row: int) -> list:
                 "count": item.count,
                 "item": item,
                 "item_type": item.item_type,
+                "type": item.item_type,
+                "space": getattr(item, 'space', 1),
+                "name": item.name,
             })
     return result
 

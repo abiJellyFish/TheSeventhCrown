@@ -3,6 +3,7 @@
 from core.entity import Player
 from core.grid import Grid
 from core.movement import Terrain
+from core.combat.cover import is_full_cover
 from core.pendulum import PendulumClock
 
 SHORT_REST_PENDULUMS = 300
@@ -35,7 +36,7 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
             nc, nr = col + dc, row + dr
             if nc < 0 or nr < 0 or nc >= terrain_map.width or nr >= terrain_map.height:
                 continue
-            if terrain_map[nc, nr] == Terrain.WALL:
+            if is_full_cover(terrain_map[nc, nr]):
                 wall_count += 1
     return wall_count >= 2
 
@@ -57,8 +58,12 @@ def _rest(player: Player, clock: PendulumClock, pendulums: int,
     player.hp = min(player.max_hp, player.hp + hp_restore)
     player.mp = min(player.max_mp, player.mp + mp_restore)
 
+    # 休息期间锁定饮食值，防止饥饿致死
+    was_locked = player.food_locked
+    player.food_locked = True
     for _ in range(pendulums):
         clock.tick_action(cost=1.0)
+    player.food_locked = was_locked
 
     return {"hp_restored": hp_restore, "mp_restored": mp_restore, "comfort": comfort}
 

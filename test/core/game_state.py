@@ -8,6 +8,7 @@ from core.entity import Creature, Item, Player
 from core.grid import Grid
 from core.dice import roll_2d6
 from core.movement import Terrain, can_enter, find_path
+from core.combat.cover import is_full_cover
 from core.ai.components import COMPONENTS
 from core.pendulum import PendulumClock
 
@@ -91,9 +92,14 @@ class GameState:
             "wander": self._npc_wander,
             "forage": self._npc_move_to_food,
             "eat_food": self._npc_eat_food,
+            "pickup": self._npc_pickup,
             "hunt": self._npc_move_to_prey,  # 相邻攻击 + 不邻移动
             "collect": self._npc_collect,
             "eat_inventory": self._npc_eat_from_inventory,
+            "open_door": self._npc_open_door,
+            "close_door": self._npc_close_door,
+            "attack_enemy": self._npc_attack_enemy,
+            "approach_enemy": self._npc_approach_enemy,
             "flee": self._npc_flee,
             "rest": self._npc_rest,
             "idle": None,
@@ -123,9 +129,6 @@ class GameState:
             self.player_pos = (col, row)
             self._check_campfire_burn(self.player)
             if not self.in_combat:
-                # 推进钟摆前刷新 FOV（确保 NPC 检测用新位置）
-                if self._pre_tick_fov_cb:
-                    self._pre_tick_fov_cb()
                 self.clock.tick_move(self.player.speed)
             return True
         return False
@@ -153,7 +156,22 @@ class GameState:
         vr = getattr(creature, 'vision_range', 8)
         ctx = {"food_adjacent": False, "food_visible": False,
                "prey_nearby": False, "threat_nearby": False,
-               "food_tiles": [], "prey_targets": []}
+               "food_tiles": [], "prey_targets": [],
+               "nearby_items": [],
+               "enemy_adjacent": False, "enemy_visible": False}
+
+        # 预建物品和实体位置索引（O(N) 一次性 → O(1) 查表）
+        food_item_positions: set[tuple[int, int]] = set()
+        all_item_positions: set[tuple[int, int]] = set()
+        for item, (gi, gj) in self.ground_items:
+            all_item_positions.add((gi, gj))
+            if getattr(item, 'effect', '') == 'restore_food':
+                food_item_positions.add((gi, gj))
+        # 实体位置索引（替代 get_entity_at 的 O(N) 遍历）
+        entity_at: dict[tuple[int, int], Creature] = {}
+        for c, (ec2, er2) in self.entities:
+            if c.hp > 0:
+                entity_at[(ec2, er2)] = c
 
         for dc in range(-vr, vr + 1):
             for dr in range(-vr, vr + 1):
@@ -172,16 +190,16 @@ class GameState:
                         else:
                             ctx["food_visible"] = True
                         ctx["food_tiles"].append((dist, nc, nr, 'bush'))
-                for item, (gi, gj) in self.ground_items:
-                    if (gi, gj) == (nc, nr) and getattr(item, 'effect', '') == 'restore_food':
-                        if dist <= 1:
-                            ctx["food_adjacent"] = True
-                        else:
-                            ctx["food_visible"] = True
-                        ctx["food_tiles"].append((dist, nc, nr, 'item'))
-                # 猎物（智慧生物扫描）
+                # 地上食物（O(1) 查表）
+                if (nc, nr) in food_item_positions:
+                    if dist <= 1:
+                        ctx["food_adjacent"] = True
+                    else:
+                        ctx["food_visible"] = True
+                    ctx["food_tiles"].append((dist, nc, nr, 'item'))
+                # 猎物（智慧生物扫描，O(1) 查表）
                 if body_type == 'humanoid':
-                    ent = self.get_entity_at(nc, nr)
+                    ent = entity_at.get((nc, nr))
                     if ent and ent.hp > 0 and getattr(ent, 'body_type', '') == 'beast':
                         beast_loot = getattr(ent, 'loot', {}) or {}
                         has_food = False
@@ -197,6 +215,77 @@ class GameState:
 
         ctx["food_tiles"].sort(key=lambda x: x[0])
         ctx["prey_targets"].sort(key=lambda x: x[0])
+
+        # 相邻格（含自身格）是否有可捡取物品（O(1) 查表）
+        items_nearby = False
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if (ec + dc, er + dr) in all_item_positions:
+                    items_nearby = True
+                    break
+        ctx["items_nearby"] = items_nearby
+
+        # 相邻格门状态
+        door_nearby = False
+        open_door_nearby = False
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                pos = (ec + dc, er + dr)
+                if pos not in self.door_states:
+                    continue
+                if not self.door_states[pos]:
+                    door_nearby = True
+                else:
+                    # 开启的门：检查是否无生物占据
+                    if pos == self.player_pos:
+                        continue
+                    occupied = any((e2c, e2r) == pos and c2.hp > 0 for c2, (e2c, e2r) in self.entities)
+                    if not occupied:
+                        open_door_nearby = True
+        ctx["door_nearby"] = door_nearby
+        ctx["open_door_nearby"] = open_door_nearby
+
+        # 相邻格（含自身格）物品对象缓存（供 _npc_pickup 复用，避免重复遍历）
+        nearby_items = []
+        for item, (ic, ir) in self.ground_items:
+            if max(abs(ic - ec), abs(ir - er)) <= 1:
+                nearby_items.append((item, (ic, ir)))
+        ctx["nearby_items"] = nearby_items
+
+        # 敌人检测（同阵营不视为敌人）
+        enemy_adjacent = False
+        enemy_visible = False
+        for c2, (e2c, e2r) in self.entities:
+            if c2.hp <= 0 or c2 is creature:
+                continue
+            if c2.faction == creature.faction:
+                continue
+            dist = max(abs(e2c - ec), abs(e2r - er))
+            if dist <= vr:
+                enemy_visible = True
+                if dist <= 1:
+                    enemy_adjacent = True
+                    break
+        ctx["enemy_adjacent"] = enemy_adjacent
+        ctx["enemy_visible"] = enemy_visible
+
+        # player 也视为敌人
+        if creature.faction != self.player.faction and self.player.hp > 0:
+            p_dist = max(abs(self.player_pos[0] - ec), abs(self.player_pos[1] - er))
+            if p_dist <= vr:
+                enemy_visible = True
+                ctx["enemy_visible"] = True
+                if p_dist <= 1:
+                    enemy_adjacent = True
+                    ctx["enemy_adjacent"] = True
+
+        # 缓存盟友数（供渲染使用，避免 O(N²)）
+        ally_count = 0
+        for c2, _ in self.entities:
+            if c2.faction == creature.faction and c2.hp > 0 and c2 is not creature:
+                ally_count += 1
+        creature._ally_count = ally_count
+
         return ctx
 
     def _npc_move_along_path(self, creature, ec, er, path) -> tuple[bool, int]:
@@ -452,7 +541,62 @@ class GameState:
                     self._npc_log_cb(f"{creature.name} 吃掉了背包里的{item.name}")
                 return
 
+    def _npc_open_door(self, creature, ec, er, ctx) -> None:
+        """打开相邻的关闭的门。"""
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                pos = (ec + dc, er + dr)
+                if pos in self.door_states and not self.door_states[pos]:
+                    self.door_states[pos] = True
+                    if self._npc_log_cb:
+                        self._npc_log_cb(f"{creature.name} 打开了门")
+                    return
+
+    def _npc_close_door(self, creature, ec, er, ctx) -> None:
+        """关闭相邻的开启的门（门格无生物时）。"""
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                pos = (ec + dc, er + dr)
+                if pos not in self.door_states:
+                    continue
+                if not self.door_states[pos]:
+                    continue
+                if pos == self.player_pos:
+                    continue
+                occupied = any((e2c, e2r) == pos and c2.hp > 0 for c2, (e2c, e2r) in self.entities)
+                if occupied:
+                    continue
+                self.door_states[pos] = False
+                if self._npc_log_cb:
+                    self._npc_log_cb(f"{creature.name} 关上了门")
+                return
+
     def _npc_flee(self, creature, ec, er, ctx) -> None:
+        path = getattr(creature, '_cached_path', None)
+        if path:
+            arrived, _ = self._npc_move_along_path(creature, ec, er, path)
+            if arrived:
+                creature._cached_path = None
+                creature._path_target = None
+
+    def _npc_attack_enemy(self, creature, ec, er, ctx) -> None:
+        """攻击相邻敌人。"""
+        target = None
+        best_dist = 999
+        for c2, (e2c, e2r) in self.entities:
+            if c2.hp <= 0 or c2 is creature:
+                continue
+            if c2.faction == creature.faction:
+                continue
+            dist = max(abs(e2c - ec), abs(e2r - er))
+            if dist <= 1 and dist < best_dist:
+                best_dist, target = dist, c2
+        if target is None:
+            return
+        self._npc_attack_prey_impl(creature, target)
+
+    def _npc_approach_enemy(self, creature, ec, er, ctx) -> None:
+        """向最近敌人移动。"""
         path = getattr(creature, '_cached_path', None)
         if path:
             arrived, _ = self._npc_move_along_path(creature, ec, er, path)
@@ -465,6 +609,51 @@ class GameState:
 
     def _npc_rest(self, creature, ec, er, ctx) -> None:
         pass  # 原地不动，cost 由 _action_remaining_cost 消耗
+
+    def _npc_pickup(self, creature, ec, er, ctx):
+        """捡取相邻及自身格的所有物品（复用 _scan_context 缓存的 nearby_items）。"""
+        for item, pos in ctx.get("nearby_items", []):
+            if (item, pos) not in self.ground_items:
+                continue  # 已被其他生物捡走
+            if creature.body_type == "beast":
+                if getattr(item, 'effect', '') == 'restore_food':
+                    food_val = getattr(item, 'amount', '500')
+                    try:
+                        val = int(food_val)
+                    except (ValueError, TypeError):
+                        val = 500
+                    creature.food_value = min(15000, creature.food_value + val)
+                    self.ground_items.remove((item, pos))
+                    if self._npc_log_cb and (ec, er) in self.fov_cache:
+                        self._npc_log_cb(f"{creature.name} 吃掉了地上的{item.name}")
+            else:
+                creature.inventory.append(item)
+                self.ground_items.remove((item, pos))
+                if self._npc_log_cb and (ec, er) in self.fov_cache:
+                    self._npc_log_cb(f"{creature.name} 捡起了{item.name}")
+                self._auto_equip_npc(creature, item)
+
+    def _auto_equip_npc(self, creature, item):
+        """NPC 拾取武器/护甲后自动装备到空闲槽位。"""
+        from core.entity import Weapon, Armor
+        if isinstance(item, Weapon):
+            if creature.equipment.get("right_hand") is None:
+                creature.equipment["right_hand"] = item
+                creature.inventory.remove(item)
+                if self._npc_log_cb:
+                    self._npc_log_cb(f"{creature.name} 装备了{item.name}(右手)")
+            elif creature.equipment.get("left_hand") is None:
+                creature.equipment["left_hand"] = item
+                creature.inventory.remove(item)
+                if self._npc_log_cb:
+                    self._npc_log_cb(f"{creature.name} 装备了{item.name}(左手)")
+        elif isinstance(item, Armor):
+            slot = getattr(item, 'slot', '')
+            if slot and creature.equipment.get(slot) is None:
+                creature.equipment[slot] = item
+                creature.inventory.remove(item)
+                if self._npc_log_cb:
+                    self._npc_log_cb(f"{creature.name} 装备了{item.name}")
 
     def _check_campfire_burn(self, creature: Creature) -> None:
         """若生物站在篝火上，施加灼烧状态（5 钟摆，自动刷新）。"""
@@ -510,10 +699,16 @@ class GameState:
                             self._npc_log_cb(f"{creature.name} 吃掉了背包里的{item.name}")
                         break
             creature.food_value = max(0, creature.food_value - 250)
+            # 玩家饥饿/濒死提示
+            if creature is self.player and self._npc_log_cb:
+                if creature.food_value == 3000:
+                    self._npc_log_cb("你感到饥饿，需要进食了")
+                elif creature.food_value == 0 and creature.hp > 0:
+                    self._npc_log_cb("你快要饿死了！")
             if creature.food_value == 0:
                 creature.hp = max(0, creature.hp - 1)
-                # 死亡时 inventory 物品加入掉落
-                if creature.hp <= 0 and creature.inventory:
+                # 死亡时 inventory 物品加入掉落（玩家除外，玩家死亡走独立流程）
+                if creature is not self.player and creature.hp <= 0 and creature.inventory:
                     loot = getattr(creature, 'loot', {}) or {}
                     always = loot.get('always', [])
                     for item in creature.inventory:
@@ -526,13 +721,16 @@ class GameState:
                         })
                     loot['always'] = always
                     creature.loot = loot
-                    creature.inventory.clear()
+
+        if self.player.hp <= 0:
+            self.player.hp = 1
 
 
     def _npc_evaluate_and_dispatch(self, creature, ec, er) -> None:
         """评估并分发一个动作。不可达目标会移除重试（最多3轮）。"""
         ctx = self._scan_context(creature, ec, er)
         creature._last_move_distance = 0
+        move_candidates = None
 
         for retry in range(3):
             extra_keys = set()
@@ -544,10 +742,20 @@ class GameState:
                 extra_keys.add("env:prey_nearby")
             if ctx["threat_nearby"]:
                 extra_keys.add("env:threat_nearby")
+            if ctx.get("items_nearby"):
+                extra_keys.add("env:items_nearby")
             for item in creature.inventory:
                 if getattr(item, 'effect', '') == 'restore_food':
                     extra_keys.add("env:has_food")
                     break
+            if ctx.get("door_nearby"):
+                extra_keys.add("env:door_nearby")
+            if ctx.get("open_door_nearby"):
+                extra_keys.add("env:open_door_nearby")
+            if ctx.get("enemy_adjacent"):
+                extra_keys.add("env:enemy_adjacent")
+            if ctx.get("enemy_visible"):
+                extra_keys.add("env:enemy_visible")
 
             if self._ai_decide_cb:
                 candidates = self._ai_decide_cb(creature, extra_keys)
@@ -558,37 +766,55 @@ class GameState:
                 return
 
             action, _ = candidates[0]
+            creature._current_action = action   # 缓存供渲染使用
             comp = COMPONENTS.get(action)
             if comp is None:
                 return
 
-            creature._action_remaining_cost = comp.cost
+            # 统一扣费：参战生物扣 AP，非参战扣钟摆
+            in_combat_action = self.in_combat
+            if in_combat_action and creature.ap < comp.cost:
+                # AP 不足 → 尝试下一个候选动作
+                candidates.pop(0)
+                if not candidates:
+                    break
+                continue
+            if in_combat_action:
+                creature.ap -= comp.cost
+            else:
+                creature._action_remaining_cost = comp.cost
 
-            # 移动类：验证路径
-            if action in ("forage", "hunt", "wander", "flee"):
-                target = self._npc_get_move_target(action, creature, ec, er, ctx)
-                if target is None:
-                    return
-                path = find_path(self.map, self.entities, (ec, er), target, self.player_pos)
+            # 移动类：验证路径（候选格 → 目标源 大小条件嵌套）
+            if action in ("forage", "hunt", "wander", "flee", "approach_enemy"):
+                # 首次或候选格耗尽时重新获取
+                if move_candidates is None:
+                    move_candidates = self._npc_get_move_target(action, creature, ec, er, ctx)
+                if not move_candidates:
+                    move_candidates = None
+                    continue
+                target = move_candidates[0]
+                path = find_path(self.map, self.entities, (ec, er), target, self.player_pos, ground_items=self.ground_items)
                 if path:
                     creature._cached_path = path
+                    creature._path_target = target
                     handler = self._NPC_ACTIONS.get(action)
                     if handler:
                         handler(creature, ec, er, ctx)
+                    move_candidates = None
                     return
                 else:
-                    # 不可达 → 移除目标 → 重试
-                    if action == "forage" and ctx["food_tiles"]:
-                        ctx["food_tiles"].pop(0)
-                        if not ctx["food_tiles"]:
-                            ctx["food_visible"] = False
-                    elif action == "hunt" and ctx["prey_targets"]:
-                        ctx["prey_targets"].pop(0)
-                        if not ctx["prey_targets"]:
-                            ctx["prey_nearby"] = False
-                    elif action in ("wander", "flee"):
-                        return  # 不重试
-                    continue
+                    # 不可达 → 移除该候选格
+                    move_candidates.pop(0)
+                    if not move_candidates:
+                        # 该目标所有候选格都不可达 → 移除整个目标源
+                        if action == "forage" and ctx["food_tiles"]:
+                            ctx["food_tiles"].pop(0)
+                            if not ctx["food_tiles"]:
+                                ctx["food_visible"] = False
+                        elif action == "hunt" and ctx["prey_targets"]:
+                            ctx["prey_targets"].pop(0)
+                        move_candidates = None
+                    # 继续 retry 循环（candidates 有余 → 用下一个；耗尽 → 重获取）
 
             # 非移动类：直接执行
             handler = self._NPC_ACTIONS.get(action)
@@ -597,66 +823,108 @@ class GameState:
             return
 
     def _npc_get_move_target(self, action, creature, ec, er, ctx):
-        """计算移动目标格。"""
+        """计算移动候选格列表。forage/hunt 返回所有合法相邻格按距离排序，wander/flee 返回单元素列表。"""
         if action == "forage":
             tiles = ctx["food_tiles"]
             if not tiles:
                 return None
             _, tx, ty, _ = tiles[0]
-            best_adj, best_d = None, 999
+            candidates = []
             for adc in (-1, 0, 1):
                 for adr in (-1, 0, 1):
                     anc, anr = tx + adc, ty + adr
-                    if not self.map.within_bounds(anc, anr): continue
+                    if not self.map.within_bounds(anc, anr):
+                        continue
+                    if is_full_cover(self.map[anc, anr]):
+                        continue
                     d = max(abs(anc - ec), abs(anr - er))
-                    if d < best_d:
-                        best_d, best_adj = d, (anc, anr)
-            return best_adj or (tx, ty)
+                    candidates.append((d, (anc, anr)))
+            candidates.sort(key=lambda x: x[0])
+            return [p for _, p in candidates]
+
         elif action == "hunt":
             targets = ctx["prey_targets"]
             if not targets:
                 return None
             _, prey, px, py = targets[0]
-            best_adj, best_d = None, 999
+            candidates = []
             for adc in (-1, 0, 1):
                 for adr in (-1, 0, 1):
                     anc, anr = px + adc, py + adr
-                    if not self.map.within_bounds(anc, anr): continue
+                    if not self.map.within_bounds(anc, anr):
+                        continue
+                    if is_full_cover(self.map[anc, anr]):
+                        continue
                     d = max(abs(anc - ec), abs(anr - er))
-                    if d < best_d:
-                        best_d, best_adj = d, (anc, anr)
-            return best_adj or (px, py)
+                    candidates.append((d, (anc, anr)))
+            candidates.sort(key=lambda x: x[0])
+            return [p for _, p in candidates]
+
         elif action == "wander":
             vr = getattr(creature, 'vision_range', 8)
             for _ in range(5):
                 tx = ec + random.randint(-vr, vr)
                 ty = er + random.randint(-vr, vr)
-                if self.map.within_bounds(tx, ty) and (tx, ty) != self.player_pos and self.map[tx, ty] != Terrain.WALL:
-                    return (tx, ty)
+                if self.map.within_bounds(tx, ty) and (tx, ty) != self.player_pos and not is_full_cover(self.map[tx, ty]):
+                    return [(tx, ty)]
             return None
+
         elif action == "flee":
             pc, pr = self.player_pos
             dx = -1 if pc > ec else (1 if pc < ec else random.choice([-1, 1]))
             dy = -1 if pr > er else (1 if pr < er else random.choice([-1, 1]))
             target = (ec + dx * 5, er + dy * 5)
-            return (max(0, min(target[0], self.map_width-1)), max(0, min(target[1], self.map_height-1)))
+            return [(max(0, min(target[0], self.map_width-1)), max(0, min(target[1], self.map_height-1)))]
+
+        elif action == "approach_enemy":
+            best_dist = 999
+            best_enemy_pos = None
+            for c2, (e2c, e2r) in self.entities:
+                if c2.hp <= 0 or c2 is creature:
+                    continue
+                if c2.faction == creature.faction:
+                    continue
+                dist = max(abs(e2c - ec), abs(e2r - er))
+                if dist < best_dist:
+                    best_dist, best_enemy_pos = dist, (e2c, e2r)
+            if best_enemy_pos is None:
+                return None
+            px, py = best_enemy_pos
+            candidates = []
+            for adc in (-1, 0, 1):
+                for adr in (-1, 0, 1):
+                    anc, anr = px + adc, py + adr
+                    if not self.map.within_bounds(anc, anr):
+                        continue
+                    if is_full_cover(self.map[anc, anr]):
+                        continue
+                    d = max(abs(anc - ec), abs(anr - er))
+                    candidates.append((d, (anc, anr)))
+            candidates.sort(key=lambda x: x[0])
+            return [p for _, p in candidates]
+
         return None
 
     def _advance_npcs(self, delta: float) -> None:
         """delta 钟摆的 NPC 结算。"""
         self._tick_all_statuses()
         self._tick_food()
-        if self.in_combat:
-            return
         if self.player_pos in self.campfire_positions:
             self._check_campfire_burn(self.player)
 
 
-        # 按 maxS 降序排序，同速按 ID
-        sorted_entities = sorted(
-            [(c, p) for c, p in self.entities if c is not self.player and c.hp > 0 and not c.has_status("不可移动")],
-            key=lambda x: (-x[0].speed, id(x[0]))
-        )
+        # 按 maxS 降序排序，同速按 ID；战斗中只处理 hostile
+        if self.in_combat:
+            sorted_entities = sorted(
+                [(c, p) for c, p in self.entities if c is not self.player and c.hp > 0
+                 and not c.has_status("不可移动") and c.faction == "hostile"],
+                key=lambda x: (-x[0].speed, id(x[0]))
+            )
+        else:
+            sorted_entities = sorted(
+                [(c, p) for c, p in self.entities if c is not self.player and c.hp > 0 and not c.has_status("不可移动")],
+                key=lambda x: (-x[0].speed, id(x[0]))
+            )
 
         for creature, (ec, er) in sorted_entities:
             # 刷新位置

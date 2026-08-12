@@ -67,8 +67,14 @@ def discretize_state(
         keys.add("status:poisoned")
     # 用 food_locked 判断
     if not getattr(npc, "food_locked", True):
-        if npc.food_value < 7500:  # below 50% of 15000
+        ratio = npc.food_value / 15000
+        if ratio < 0.2:
+            keys.add("need:starving")
+            keys.add("need:hungry")  # starving 也是 hungry，确保 forage/eat_food 可匹配
+        elif ratio < 0.5:
             keys.add("need:hungry")
+        else:
+            keys.add("need:full")
 
     # 日程和性格
     keys.add(f"sched:{npc.schedule}")

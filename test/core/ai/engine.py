@@ -1,74 +1,37 @@
-"""AI 行为引擎 —— 纯查表 + Counter 累加，无 if-else 分支。"""
-
-from collections import Counter
-
+"""AI 行为引擎 —— 组件匹配打分。"""
 from core.ai.discretize import discretize_state
+from core.ai.components import COMPONENTS
 from core.entity import Creature
 
 
 class BehaviorEngine:
-    """AI 行为引擎。运行时单层循环，复杂度 O(匹配键数 × 平均动作数)。"""
+    def __init__(self):
+        pass
 
-    def __init__(self, raw_templates: dict):
-        """加载并预乘权重。
+    def decide(self, npc: Creature, extra_keys: set = None) -> list[tuple[str, float]]:
+        state_keys = set(discretize_state(npc))
+        if extra_keys:
+            state_keys |= extra_keys
 
-        Args:
-            raw_templates: {模板名: {_weights: {...}, 维度: {键: {动作: 分数}}}}
-        """
-        self._tables: dict[str, dict[str, dict[str, float]]] = {}
-        self._filters: dict[str, dict[str, str]] = {}
+        comp_names = npc.behavior_table
+        overrides = npc.behavior_overrides
 
-        for name, raw in raw_templates.items():
-            weights = raw["_weights"]
-            flat: dict[str, Counter[str]] = {}
+        candidates = []
+        for name in comp_names:
+            comp = COMPONENTS.get(name)
+            if comp is None:
+                continue
+            match = True
+            for cond_val in comp.conditions.values():
+                if cond_val not in state_keys:
+                    match = False
+                    break
+            if not match:
+                continue
+            weight = overrides.get(name, comp.weight)
+            candidates.append((name, weight))
 
-            for dim, weight in weights.items():
-                dim_data = raw.get(dim, {})
-                for key, actions in dim_data.items():
-                    if key not in flat:
-                        flat[key] = Counter()
-                    for action, score in actions.items():
-                        flat[key][action] += score * weight
-
-            # Counter → dict
-            self._tables[name] = {k: dict(v) for k, v in flat.items()}
-            self._filters[name] = raw.get("_hard_filters", {})
-
-    def decide(
-        self, npc: Creature,
-        enemy_count: int = 0,
-        ally_count: int = 0,
-        power_ratio: float = 1.0,
-    ) -> tuple[str, float]:
-        """NPC 决策。
-
-        Returns:
-            (动作名, 得分)
-        """
-        keys = discretize_state(npc, enemy_count, ally_count, power_ratio)
-        table = self._tables.get(npc.template_name, {})
-        filters = self._filters.get(npc.template_name, {})
-
-        # 单层循环
-        scores: Counter[str] = Counter()
-        for key in keys:
-            entry = table.get(key)
-            if entry:
-                scores.update(entry)
-
-        # _default 兜底
-        default = table.get("_default")
-        if default:
-            scores.update(default)
-
-        # 硬过滤
-        for action in tuple(scores):
-            cond = filters.get(action)
-            if cond and not npc.meets_condition(cond):
-                del scores[action]
-
-        if not scores:
-            return ("idle", 0.0)
-
-        best = scores.most_common(1)[0]
-        return best
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        if not candidates:
+            candidates.append(("idle", 0.0))
+        return candidates

@@ -4,9 +4,22 @@
 索引越界时 get 返回 None，set 静默忽略。
 """
 
+from enum import Enum, auto
 from typing import Generic, TypeVar
 
 T = TypeVar("T")
+
+
+class Terrain(Enum):
+    """地形类型。"""
+    PASSABLE = auto()
+    DIFFICULT = auto()
+    WALL = auto()
+
+# 4 方向偏移：(dc, dr)
+DIRS_4 = [          (0, -1),
+          (-1,  0),          (1,  0),
+                    (0,  1)          ]
 
 # 8 方向偏移：(dc, dr)
 DIRS_8 = [(-1, -1), (0, -1), (1, -1),

@@ -6,6 +6,8 @@
 from dataclasses import dataclass, field
 from typing import Any
 
+from core.ai.components import DEFAULT_BEHAVIOR
+
 
 # ═══════════════════════════════════════════════════
 # 属性
@@ -74,6 +76,23 @@ class Creature:
     actions: list[dict] = field(default_factory=list)
     traits: list[str] = field(default_factory=list)
     loot: dict = field(default_factory=dict)
+
+    # 智慧生物物品栏
+    inventory: list = field(default_factory=list)
+    equipment: dict[str, "Item | None"] = field(default_factory=lambda: {
+        "head": None, "chest": None, "arms": None, "legs": None,
+        "left_hand": None, "right_hand": None, "accessory1": None,
+        "accessory2": None, "accessory3": None,
+    })
+    _hunt_target: Any = field(default=None, repr=False)  # 临时捕猎目标 (creature, pos)
+    curS_ticks: int = 0                    # 里程累积 [0, maxS*SCALE)，SCALE=10
+    _action_remaining_cost: float = 0.0    # 当前动作剩余耗时（钟摆），0=无活跃动作
+    _cached_path: Any = field(default=None, repr=False)   # 寻路缓存
+    _path_target: Any = field(default=None, repr=False)   # 路径目标缓存
+    _current_action: str = "idle"   # 当前选中的行为（渲染场景描述用）
+    _ally_count: int = 0            # 盟友数（渲染用，扫描时顺带算好）
+    behavior_table: list = field(default_factory=list)  # 可用组件名列表
+    behavior_overrides: dict = field(default_factory=dict)  # 权重覆盖
 
     # 状态效果
     statuses: list[StatusEffect] = field(default_factory=list)
@@ -168,12 +187,17 @@ class Creature:
         """负重上限 (kg) = 20 + 力量调整值 * 2"""
         return 20.0 + self.stat_adjust("str") * 2
 
+    @property
+    def total_carry_weight(self) -> float:
+        """总负重 = 物品栏物品重量之和。"""
+        return sum(getattr(i, 'weight', 0) * getattr(i, 'count', 1) for i in self.inventory)
+
     # ---- 构造 ----
 
     @classmethod
     def from_dict(cls, data: dict) -> "Creature":
         stats = {**DEFAULT_STATS, **data.get("stats", {})}
-        return cls(
+        creature = cls(
             name=data["name"],
             faction=data.get("faction", "neutral"),
             body_type=data.get("body_type", "humanoid"),
@@ -197,8 +221,17 @@ class Creature:
             actions=data.get("actions", []),
             traits=data.get("traits", []),
             loot=data.get("loot", {}),
+            inventory=data.get("inventory", []),
             statuses=[StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in data.get("statuses", [])],
         )
+        behavior = data.get("behavior", None)
+        if behavior:
+            creature.behavior_table = behavior.get("components", DEFAULT_BEHAVIOR["components"])
+            creature.behavior_overrides = behavior.get("overrides", {})
+        else:
+            creature.behavior_table = list(DEFAULT_BEHAVIOR["components"])
+            creature.behavior_overrides = dict(DEFAULT_BEHAVIOR["overrides"])
+        return creature
 
 
 # ═══════════════════════════════════════════════════

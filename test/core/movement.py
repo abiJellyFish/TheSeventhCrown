@@ -1,28 +1,13 @@
-"""移动与碰撞 —— 通行判断、对角阻挡、实体碰撞、A* 寻路。
+"""移动与碰撞 —— 通行判断、实体碰撞、A* 寻路。
 
 坐标统一为 (col, row)。
 """
 
 import heapq
-from enum import Enum, auto
 
-from core.grid import Grid, DIRS_8
-
-
-class Terrain(Enum):
-    """地形类型。"""
-    PASSABLE = auto()
-    DIFFICULT = auto()
-    WALL = auto()
-
-
-# 对角线方向的邻边
-_DIAG_CORNERS = {
-    (-1, -1): [(-1, 0), (0, -1)],
-    (1, -1):  [(1, 0),  (0, -1)],
-    (-1, 1):  [(-1, 0), (0, 1)],
-    (1, 1):   [(1, 0),  (0, 1)],
-}
+from core.grid import Grid, DIRS_4, Terrain
+from core.item_actions import tile_space_used
+from core.combat.cover import is_full_cover
 
 
 # ═══════════════════════════════════════════════════
@@ -50,25 +35,14 @@ def can_enter(
         return False
 
     terrain = grid[col, row]
-    if terrain == Terrain.WALL:
+    if is_full_cover(terrain):
         return False
 
-    # 对角移动：检查两侧是否有墙
-    if from_col is not None and from_row is not None:
-        dc = col - from_col
-        dr = row - from_row
-        if abs(dc) == 1 and abs(dr) == 1:  # 对角
-            corners = _DIAG_CORNERS[(dc, dr)]
-            blocked = all(
-                grid[from_col + cc, from_row + cr] == Terrain.WALL
-                for cc, cr in corners
-            )
-            if blocked:
-                return False
-
-    # 实体阻挡
+    # 实体阻挡（尸体不阻挡）
     for creature, (ec, er) in entities:
         if (ec, er) == (col, row):
+            if creature.hp <= 0:
+                continue
             if creature.faction == "hostile" or not allow_pass_through:
                 return False
 
@@ -82,6 +56,34 @@ def _terrain_cost(terrain: Terrain) -> int:
     return 10
 
 
+def _step_cost(
+    grid: Grid[Terrain],
+    entities: list[tuple["Creature", tuple[int, int]]],
+    pos: tuple[int, int],
+    player_pos: tuple[int, int] | None = None,
+    ground_items: list | None = None,
+) -> int | None:
+    """返回经过该格的代价，None 表示不可达。"""
+
+    t = grid[pos[0], pos[1]]
+    if is_full_cover(t):
+        return None
+    if player_pos and pos == player_pos:
+        return None  # 不能走到玩家格
+    for c, (ec, er) in entities:
+        if (ec, er) == pos:
+            if c.hp <= 0:
+                return 3  # 尸体：可通过，代价 3
+            else:
+                return None  # 活物：不可达
+    if t == Terrain.DIFFICULT:
+        return 3
+    # 物品堆积格（space >= 10）-> 困难地形代价
+    if ground_items and tile_space_used(ground_items, pos[0], pos[1]) >= 10:
+        return 3
+    return 1
+
+
 # ═══════════════════════════════════════════════════
 # A* 寻路
 # ═══════════════════════════════════════════════════
@@ -91,20 +93,31 @@ def find_path(
     entities: list[tuple["Creature", tuple[int, int]]],
     start: tuple[int, int],
     goal: tuple[int, int],
+    player_pos: tuple[int, int] | None = None,
+    dirs: list[tuple[int, int]] = None,
+    ground_items: list | None = None,
 ) -> list[tuple[int, int]] | None:
-    """A* 8 方向寻路。
+    """A* 寻路。
+
+    Args:
+        player_pos: 玩家位置，NPC 寻路时避免走入该格。
+        dirs: 移动方向列表，默认 4 方向。
+        ground_items: 地上物品列表，用于判断拥挤格代价。
 
     Returns:
         路径坐标列表（含起点和终点），不可达返回 None。
     """
+    if dirs is None:
+        dirs = DIRS_4
+
     if start == goal:
         return [start]
 
-    if not can_enter(*goal, grid, entities):
+    if _step_cost(grid, entities, goal, player_pos, ground_items) is None:
         return None
 
     def h(pos):
-        """启发函数：切比雪夫距离（允许 8 方向移动）。"""
+        """启发函数：切比雪夫距离（允许 8 方向移动时最优）。"""
         return max(abs(pos[0] - goal[0]), abs(pos[1] - goal[1]))
 
     open_set = []
@@ -125,22 +138,18 @@ def find_path(
             path.reverse()
             return path
 
-        for dc, dr in DIRS_8:
+        for dc, dr in dirs:
             nc, nr = current[0] + dc, current[1] + dr
-            if not can_enter(nc, nr, grid, entities, current[0], current[1],
-                             allow_pass_through=True):
+            if not grid.within_bounds(nc, nr):
                 continue
-
-            cost = _terrain_cost(grid[nc, nr])
-            # 对角线代价 ×1.4
-            if dc != 0 and dr != 0:
-                cost = int(cost * 1.4)
-
+            cost = _step_cost(grid, entities, (nc, nr), player_pos, ground_items)
+            if cost is None:
+                continue
             tentative_g = g_score[current] + cost
             if tentative_g < g_score.get((nc, nr), float("inf")):
                 came_from[(nc, nr)] = current
                 g_score[(nc, nr)] = tentative_g
-                f_score[(nc, nr)] = tentative_g + h((nc, nr)) * 10
+                f_score[(nc, nr)] = tentative_g + h((nc, nr))
                 heapq.heappush(open_set, (f_score[(nc, nr)], (nc, nr)))
 
     return None  # 不可达

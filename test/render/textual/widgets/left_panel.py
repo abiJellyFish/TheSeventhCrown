@@ -19,6 +19,7 @@ class LeftPanel(Static):
         self._action_map: dict[int, tuple] = {}
         self._maneuver_map: dict[int, dict] = {}
         self._special_map: dict[int, str] = {}
+        self._cook_map: dict = {}
 
     def render(self) -> str:
         if self.state is None:
@@ -31,6 +32,10 @@ class LeftPanel(Static):
             return self._render_talk_panel()
         if iphase == "trading":
             return self._render_trade_panel()
+        if iphase == "cooking_tools":
+            return self._render_cooking_tools()
+        if iphase == "cooking":
+            return self._render_cooking_panel()
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
         if phase == "select_action":
@@ -424,6 +429,41 @@ class LeftPanel(Static):
         lines.append("")
         lines.append(":B序号 购买  :S序号 出售  [[0]]离开")
         return "\n".join(lines[:max_h])
+
+
+    # ── 烹饪面板 ──
+
+    def _render_cooking_tools(self) -> str:
+        """厨具选择面板。"""
+        tools = getattr(self.app, '_cooking_tools', [])
+        lines = ["[bold]── 选择厨具 ──[/]", ""]
+        if not tools:
+            lines.append("附近没有可用的厨具")
+        else:
+            for i, tool in enumerate(tools):
+                lines.append(f"[[A{i+1}]]{tool['name']}")
+        lines.append("")
+        lines.append("[[A0]]返回")
+        return "\n".join(lines)
+
+    def _render_cooking_panel(self) -> str:
+        """烹饪原材料选择面板。"""
+        from render.textual.app import RECIPES
+        player = self.state.player
+        tool_name = getattr(self.app, '_selected_cooking_tool', {}).get('name', '?')
+        lines = [f"[bold]── 烹饪（{tool_name}）──[/]", ""]
+        idx = 1
+        self._cook_map = {}
+        for item in player.inventory:
+            if item.name in RECIPES:
+                self._cook_map[idx] = item
+                lines.append(f"[[A{idx}]]{item.name} x{item.count}")
+                idx += 1
+        if idx == 1:
+            lines.append("没有可烹饪的食材")
+        lines.append("")
+        lines.append("[[A0]]返回")
+        return "\n".join(lines)
 
 
 def sell_price_local(price: dict) -> dict:

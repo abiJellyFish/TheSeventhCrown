@@ -7,8 +7,7 @@
 新增掩体类型只需修改 COVER_TABLE，无需改动其他文件。
 """
 
-from core.grid import Grid
-from core.movement import Terrain
+from core.grid import Grid, Terrain
 
 # 掩体唯一数据源：(AC, 中文标签)。None = 不提供掩体。
 COVER_TABLE: dict[Terrain, tuple[int, str] | None] = {
@@ -35,6 +34,7 @@ def resolve_cover_line(
     target: tuple[int, int],
     grid: Grid[Terrain],
     weapon_type: str = "ranged",
+    ground_items: list | None = None,
 ) -> tuple[bool, tuple[int, int] | None]:
     """沿弹道逐个结算掩体。
 
@@ -44,6 +44,7 @@ def resolve_cover_line(
         target: 目标坐标
         grid: 地形网格
         weapon_type: "ranged" | "thrown" | "melee"
+        ground_items: 地上物品列表，space >= 10 格提供半身掩体
 
     Returns:
         (是否被掩体阻挡, 阻挡掩体的坐标或 None)
@@ -84,6 +85,13 @@ def resolve_cover_line(
         if (cx, cy) == (x1, y1):
             return False, None
 
+        # 物品堆积格（space >= 10）-> 半身障碍，与灌木丛统一
+        if ground_items:
+            from core.item_actions import tile_space_used
+            if tile_space_used(ground_items, cx, cy) >= 10:
+                if attack_roll < 5:  # 半身 AC 5，同 Terrain.DIFFICULT
+                    return True, (cx, cy)
+
         # 检查当前格掩体
         cover_ac = _terrain_cover_ac(grid[cx, cy])
         if cover_ac is not None:
@@ -91,3 +99,9 @@ def resolve_cover_line(
                 return True, (cx, cy)  # 掩体阻挡（命中骰低于掩体AC）
 
     return False, None
+
+
+def is_full_cover(terrain: Terrain) -> bool:
+    """全身障碍（AC >= 30）-> 不可通行/不可透视。"""
+    info = COVER_TABLE.get(terrain)
+    return info is not None and info[0] >= 30

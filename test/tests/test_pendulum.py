@@ -39,3 +39,19 @@ class TestPendulum:
         clock.set_npc_advance_callback(lambda d: called.append(d))
         clock.tick_move(1)
         assert called == [1.0]
+
+
+class TestNPCMoveAlongPath:
+    def test_crossed_calculation(self):
+        from core.game_state import GameState
+        from core.entity import Player, Creature
+        p = Player.create_fighter("t", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        s = GameState(player=p, map_width=20, map_height=20)
+        s.player_pos = (10, 10)
+        c = Creature(name="t", hp=10, char="t", speed=1)
+        c.behavior_table = ["idle"]
+        path = [(5, 5), (6, 5), (7, 5)]
+        s.add_entity(c, (5, 5))
+        arrived, steps = s._npc_move_along_path(c, 5, 5, path)
+        assert steps == 1
+        assert not arrived

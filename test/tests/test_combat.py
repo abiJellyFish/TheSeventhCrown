@@ -1,6 +1,6 @@
 """战斗系统 —— 先攻/命中/伤害/重击/死亡豁免/掩体/双持/挥空。"""
 import pytest
-from core.entity import Creature, Weapon
+from core.entity import Creature, Weapon, Item
 from core.grid import Grid
 from core.movement import Terrain
 from core.combat.initiative import roll_initiative
@@ -8,6 +8,7 @@ from core.combat.attack import (hit_check, roll_damage, parse_dice,
     apply_damage_type_modifiers, resolve_attack, miss_message, cover_message, reduce_tenacity)
 from core.combat.death import DeathSaves
 from core.combat.dual_wield import is_light, dual_wield_mode
+from core.combat.cover import resolve_cover_line
 from core.dice import roll_d20
 
 
@@ -154,3 +155,88 @@ class TestCombatBoundary:
         a = _c(name="A", stats={"dex": 12})
         b = _c(name="B", stats={"dex": 10})
         assert len(roll_initiative([a, b])) == 2
+
+
+# ═══════════════════════════════════════════════════
+# 地面物品掩体 — space >= 10 提供半身掩体
+# ═══════════════════════════════════════════════════
+
+class TestCoverWithGroundItems:
+    """space >= 10 -> 半身掩体 AC 5，与灌木丛统一。"""
+
+    def _make_item(self, space, count):
+        return Item(name="test", item_type="misc", space=space, count=count)
+
+    def test_space_ge_10_half_cover(self):
+        """物品 space>=10 提供半身掩体（AC 5），命中骰 < 5 被阻挡。"""
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        item = self._make_item(space=2, count=5)  # 10
+        ground_items = [(item, (3, 3))]
+        blocked, pos = resolve_cover_line(
+            3, (0, 3), (5, 3), g, "ranged", ground_items=ground_items
+        )
+        # 攻击骰 3 < 半身AC 5 -> 被阻挡
+        assert blocked
+        assert pos == (3, 3)
+
+    def test_space_ge_10_not_blocked_by_high_roll(self):
+        """攻击骰 >= 掩体 AC 时穿透掩体。"""
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        item = self._make_item(space=2, count=5)  # 10
+        ground_items = [(item, (3, 3))]
+        blocked, pos = resolve_cover_line(
+            5, (0, 3), (5, 3), g, "ranged", ground_items=ground_items
+        )
+        # 攻击骰 5 >= 半身AC 5 -> 不被阻挡
+        assert not blocked
+
+    def test_space_lt_10_no_cover(self):
+        """物品 space<10 不提供掩体。"""
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        item = self._make_item(space=1, count=9)  # 9 < 10
+        ground_items = [(item, (3, 3))]
+        blocked, pos = resolve_cover_line(
+            1, (0, 3), (5, 3), g, "ranged", ground_items=ground_items
+        )
+        assert not blocked
+
+    def test_thrown_ignores_item_cover(self):
+        """投掷武器无视地面物品掩体。"""
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        item = self._make_item(space=2, count=5)  # 10
+        ground_items = [(item, (3, 3))]
+        blocked, pos = resolve_cover_line(
+            1, (0, 3), (5, 3), g, "thrown", ground_items=ground_items
+        )
+        assert not blocked
+
+    def test_no_ground_items_no_impact(self):
+        """不传 ground_items 时行为不变。"""
+        g = Grid[Terrain](10, 10, Terrain.PASSABLE)
+        blocked, pos = resolve_cover_line(
+            1, (0, 3), (5, 3), g, "ranged"
+        )
+        assert not blocked
+
+
+# ═══════════════════════════════════════════════════
+# is_full_cover — 全身障碍统一判断
+# ═══════════════════════════════════════════════════
+
+class TestFullCover:
+    """is_full_cover 统一判断。"""
+
+    def test_wall_is_full_cover(self):
+        from core.combat.cover import is_full_cover
+        from core.movement import Terrain
+        assert is_full_cover(Terrain.WALL)
+
+    def test_difficult_is_not_full_cover(self):
+        from core.combat.cover import is_full_cover
+        from core.movement import Terrain
+        assert not is_full_cover(Terrain.DIFFICULT)
+
+    def test_passable_is_not_full_cover(self):
+        from core.combat.cover import is_full_cover
+        from core.movement import Terrain
+        assert not is_full_cover(Terrain.PASSABLE)

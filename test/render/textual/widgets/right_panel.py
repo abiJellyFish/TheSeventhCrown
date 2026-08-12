@@ -70,11 +70,23 @@ class RightPanel(Static):
             return "\n".join(lines[:max_h])
 
         elif menu_type == "quantity_select":
+            mode = top.get("mode", "")
+            hint = f"[dim]输入 :U数量  如 :U3 丢弃3个[/]"
+            max_label = f"可选数量: 1 - {item_count}"
+            if mode == "eat":
+                if self.state.in_combat:
+                    player = self.state.player
+                    max_qty = min(item_count, player.ap)
+                    max_label = f"可选数量: 1 - {max_qty}（剩余AP: {player.ap}）"
+                    hint = f"[dim]输入 :U数量  1AP/份  最多 {max_qty} 份[/]"
+                else:
+                    max_label = f"可选数量: 1 - {item_count}"
+                    hint = "[dim]输入 :U数量  1钟摆/份[/]"
             lines = [
                 f"[bold]物品: {item_name}[/]",
-                f"可选数量: 1 - {item_count}",
+                max_label,
                 "",
-                f"[dim]输入 :U数量  如 :U3 丢弃3个[/]",
+                hint,
                 "",
                 "[[U0]]返回上一级",
             ]
@@ -187,6 +199,14 @@ class RightPanel(Static):
             lines.append("亮度: 可见")
         else:
             lines.append("亮度: 不可见")
+
+        # 物品清单
+        from core.item_actions import get_ground_items_at
+        ground_at = get_ground_items_at(self.state.ground_items, cx, cy)
+        if ground_at:
+            lines.append("── 地上物品 ──")
+            for g in ground_at:
+                lines.append(f"  {g['name']} x{g['count']}")
 
         return "\n".join(lines[:max_h])
 

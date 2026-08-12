@@ -80,14 +80,20 @@ class MapView(Static):
                         # 检查地上物品
                         ground_at = get_ground_items_at(self.state.ground_items, col, row)
                         if ground_at:
-                            ginfo = ground_at[0]
-                            color = ginfo["color"]
-                            total = sum(g["count"] for g in ground_at)
-                            if total > 1:
-                                # 堆叠显示数字（9+ 显示 +）
-                                ch = str(total) if total <= 9 else "+"
-                            else:
+                            # 统计不重复的 item_type
+                            types_seen = set()
+                            for g in ground_at:
+                                types_seen.add(g["item_type"])
+                            if len(types_seen) == 1:
+                                # 同类物品 -> 显示该类型字符
+                                ginfo = ground_at[0]
                                 ch = ginfo["char"]
+                                color = ginfo["color"]
+                            else:
+                                # 不同类 -> 显示类型数量
+                                ch = str(len(types_seen))
+                                color = "white"
+
                             text.append(ch, style=f"{color}{cur}")
                         else:
                             ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
