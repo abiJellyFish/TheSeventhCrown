@@ -3,6 +3,6 @@
   "plains": {
     "creatures": ["bird", "bird", "squirrel", "squirrel", "cat", "cat", "long_ear_dog", "wild_boar", "wild_boar", "wild_boar"],
     "creature_count": 15,
-    "bush_count": 30
+    "bush_count": 50
   }
 }

@@ -359,7 +359,7 @@ class CombatFlow:
 
         # 远程武器掩体检查（命中后、进入战技面板前）
         if hit and weapon.weapon_type == "ranged":
-            attacker_pos = self._find_entity_pos(p) or self._state.player_pos
+            attacker_pos = self._state.get_entity_pos(p) or self._state.player_pos
             tc, tr = target_pos if target_pos else (0, 0)
             blocked, cover_pos = resolve_cover_line(
                 roll, attacker_pos, (tc, tr),
@@ -654,18 +654,11 @@ class CombatFlow:
 
     # ── 通用 ──
 
-    def _find_entity_pos(self, target: Creature) -> tuple[int, int] | None:
-        """查找生物在地图上的坐标。"""
-        for c, (ec, er) in self._state.entities:
-            if c is target:
-                return (ec, er)
-        return None
-
     def resolve_melee_attack(self, attacker, target, weapon,
                              hit_bonus=0, damage_bonus=0) -> dict:
         """执行一次攻击检定，返回结果 dict。不修改 AP，不切换回合。"""
-        attacker_pos = self._find_entity_pos(attacker)
-        target_pos = self._find_entity_pos(target)
+        attacker_pos = self._state.get_entity_pos(attacker)
+        target_pos = self._state.get_entity_pos(target)
         result = resolve_attack(
             attacker, target, weapon,
             attacker_pos=attacker_pos, target_pos=target_pos,

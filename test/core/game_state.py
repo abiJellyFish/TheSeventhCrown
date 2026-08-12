@@ -121,6 +121,13 @@ class GameState:
                 return c
         return None
 
+    def get_entity_pos(self, target: Creature) -> tuple[int, int] | None:
+        """查找生物在地图上的坐标。"""
+        for c, (ec, er) in self.entities:
+            if c is target:
+                return (ec, er)
+        return None
+
     # ---- 移动 ----
 
     def move_player(self, col: int, row: int) -> bool:
@@ -358,8 +365,11 @@ class GameState:
         for _, tx, ty, ftype in ctx["food_tiles"]:
             if max(abs(tx - ec), abs(ty - er)) <= 1:
                 if ftype == 'bush':
+                    from core.trade import _build_item_cache
+                    berry_data = _build_item_cache().get("浆果", {})
+                    berry_amount = int(berry_data.get("amount", 750))
                     b = random.randint(2, 5)
-                    creature.food_value = min(max_food, creature.food_value + b * 2000 // 5)
+                    creature.food_value = min(max_food, creature.food_value + b * berry_amount)
                     self.harvested_bushes[(tx, ty)] = self.clock.pendulum_count + 6
                     if self._npc_log_cb and (ec, er) in self.fov_cache:
                         self._npc_log_cb(f"{creature.name} 吃掉了灌木丛的浆果")
@@ -487,9 +497,17 @@ class GameState:
                         remaining.setdefault(key, []).append(e)
         hunt_target.loot = remaining if remaining else {}
         hunt_target.inventory.clear()
-        if self._npc_log_cb:
-            items_str = "、".join(taken) if taken else "未获得物品"
-            self._npc_log_cb(f"{hunter.name} 击杀了{hunt_target.name}(2d6={roll})，{items_str}")
+        if taken and self._npc_log_cb:
+            # 猎人或目标在 FOV 内才记录
+            in_fov = False
+            for c, (ec2, er2) in self.entities:
+                if c is hunter or c is hunt_target:
+                    if (ec2, er2) in self.fov_cache:
+                        in_fov = True
+                        break
+            if in_fov:
+                items_str = "、".join(taken)
+                self._npc_log_cb(f"{hunter.name} 击杀了{hunt_target.name}(2d6={roll})，{items_str}")
 
     def _npc_collect(self, creature, ec, er, ctx) -> None:
         """采摘相邻格灌木丛或捡地上食物，放入背包。"""
@@ -548,7 +566,7 @@ class GameState:
                 pos = (ec + dc, er + dr)
                 if pos in self.door_states and not self.door_states[pos]:
                     self.door_states[pos] = True
-                    if self._npc_log_cb:
+                    if self._npc_log_cb and (ec, er) in self.fov_cache:
                         self._npc_log_cb(f"{creature.name} 打开了门")
                     return
 
@@ -567,7 +585,7 @@ class GameState:
                 if occupied:
                     continue
                 self.door_states[pos] = False
-                if self._npc_log_cb:
+                if self._npc_log_cb and (ec, er) in self.fov_cache:
                     self._npc_log_cb(f"{creature.name} 关上了门")
                 return
 

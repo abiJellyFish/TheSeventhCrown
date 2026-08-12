@@ -62,7 +62,7 @@
     "name": "浆果",
     "type": "consumable",
     "effect": "restore_food",
-    "amount": "500",
+    "amount": "750",
     "ap_cost": 1,
     "weight": 0.1,
     "price": {"cp": 2},

@@ -1,6 +1,7 @@
 """Textual MVP App — 完整游戏原型。"""
 
 import json
+import re
 import random
 from textual.app import App, ComposeResult
 from textual.widgets import Input
@@ -19,7 +20,7 @@ from core.combat.initiative import roll_initiative
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack, miss_message, cover_message
 from core.combat.flow import CombatFlow
 from core.map.generation import build_world, build_dungeon
-from core.dice import roll_d20, check_dc
+from core.dice import roll_d20, check_dc, roll_2d6
 from core.ai.engine import BehaviorEngine
 
 from core.rest import short_rest, long_rest
@@ -200,8 +201,6 @@ class MVPApp(App):
         return self._state.player.name
 
     def _create_game(self) -> None:
-        import json
-
         # 加载玩家初始数据
         with open(os.path.join(DATA_DIR, "player_start.json"), "r", encoding="utf-8") as f:
             ps_data = json.load(f)
@@ -267,7 +266,7 @@ class MVPApp(App):
                 self._map_view = MapView(); yield self._map_view
                 self._map_legend = MapLegend(id="map-legend"); yield self._map_legend
             self._right_panel = RightPanel(id="right"); yield self._right_panel
-        self._input_bar = GameInput(placeholder=": 输入命令 (按 Esc 退出输入)", id="input-bar", disabled=True)
+        self._input_bar = GameInput(placeholder=": 输入命令(Esc退出) LU/LD左日志 RU/RD右日志", id="input-bar", disabled=True)
         yield self._input_bar
         with Horizontal(id="log-area"):
             self._act_log = ActionLog(id="action-log"); yield self._act_log
@@ -508,6 +507,17 @@ class MVPApp(App):
             self._act_log.add("用法: :A序号  如 :A1 选择第1项")
             self._sync_input()
             return
+
+        # 日志翻页（全局命令，任意视图可用）
+        upper = cmd.upper()
+        if upper == "LU":
+            self._act_log.scroll_up(); self._sync_input(); return
+        if upper == "LD":
+            self._act_log.scroll_down(); self._sync_input(); return
+        if upper == "RU":
+            self._scene_log.scroll_up(); self._sync_input(); return
+        if upper == "RD":
+            self._scene_log.scroll_down(); self._sync_input(); return
 
         # 合并所有活跃视图的命令表
         all_commands = {}
@@ -1130,7 +1140,6 @@ class MVPApp(App):
             if not success:
                 self._act_log.add(f"体质检定失败 (d20+{adjust}={roll+adjust} vs DC{dc_val})")
                 if on_fail:
-                    import re
                     match = re.match(r"(.+)\((\d+)钟摆\)", on_fail)
                     if match:
                         status_name = match.group(1)
@@ -1380,7 +1389,6 @@ class MVPApp(App):
             return
         c._looted = True
 
-        from core.dice import roll_2d6
         roll = roll_2d6()
         self._act_log.add(f"[搜刮] {c.name}: 搜刮检定 2d6={roll}")
 
@@ -1413,7 +1421,6 @@ class MVPApp(App):
 
     def _create_loot_item(self, entry: dict):
         """根据 loot 条目创建物品实例。货币物品直接入账，返回 None。"""
-        from core.entity import Item, Weapon, Armor
         name = entry.get("name", "")
         amount = entry.get("amount", 1)
         price = entry.get("price", None)
@@ -1428,23 +1435,22 @@ class MVPApp(App):
         item = self._load_item_by_name(name)
         if item is None:
             # fallback: 创建简单 Item
-            item = Item(name=name, item_type="misc", count=amount, weight=0.1)
+            item = ent.Item(name=name, item_type="misc", count=amount, weight=0.1)
         else:
             item.count = amount
         return item
 
     def _load_item_by_name(self, name: str):
         """从 data/items/*.json 按名称加载物品实例。"""
-        from core.entity import Weapon, Armor, Item
         cache = _build_item_cache()
         data = cache.get(name)
         if data is None:
             return None
         if "weapon_type" in data:
-            return Weapon.from_dict(data)
+            return ent.Weapon.from_dict(data)
         if "armor_type" in data or "slot" in data:
-            return Armor.from_dict(data)
-        return Item.from_dict(data)
+            return ent.Armor.from_dict(data)
+        return ent.Item.from_dict(data)
 
     def _interact_pick(self, target) -> None:
         """采摘灌木丛。"""
@@ -1702,45 +1708,6 @@ class MVPApp(App):
             return
         self.refresh_all()
 
-    def _player_attack(self) -> None:
-        pc, pr = self._state.player_pos
-        weapon = self._state.player.equipment.get("right_hand")
-        if weapon is None:
-            self._act_log.add(f"{self._pn} 赤手空拳!"); return
-        if self._state.player.ap < weapon.ap_cost: self._act_log.add("AP 不足"); return
-
-        # 确定有效攻击范围
-        if weapon.weapon_type == "ranged":
-            reach = max(weapon.range_max, 1)
-        else:
-            reach = 1
-
-        target = None
-        for creature, (ec, er) in self._state.entities:
-            if (creature is not self._state.player and creature.hp > 0
-                    and abs(ec - pc) <= reach and abs(er - pr) <= reach):
-                target = creature; break
-        if target is None: self._act_log.add(f"{self._pn} 环顾四周，没有目标"); return
-        self._state.player.ap -= weapon.ap_cost
-        result = resolve_attack(
-            self._state.player, target, weapon,
-            attacker_pos=(pc, pr),
-            target_pos=self._find_entity_pos(target),
-            grid=self._state.map,
-            ground_items=self._state.ground_items,
-        )
-        if result["hit"]:
-            self._check_faction_reaction(target)
-            self._act_log.add(f"{self._pn} 击中了 {target.name}，{target.name} 发出一声惨叫")
-            if target.hp <= 0: self._act_log.add(f"{target.name} 倒在地上，不再动弹")
-        else:
-            dmg_type = result.get("damage_type", "bludgeoning")
-            if result.get("blocked_by_cover"):
-                self._act_log.add(f"{self._pn} 的{cover_message(dmg_type)}")
-            else:
-                self._act_log.add(miss_message(self._pn, target.name, dmg_type))
-        self.refresh_all()
-
     # ── 攻击流程状态机 ──
 
     def _resolve_melee_attack(self, attacker, target, weapon,
@@ -1908,7 +1875,7 @@ class MVPApp(App):
                 target.hp = max(0, target.hp - dmg)
                 self._act_log.add(f"{self._pn} 投掷{single.name}击中了{target.name}，造成{dmg}点伤害")
                 # 武器落在目标所在格（若不合法则回溯）
-                target_pos = self._find_entity_pos(target)
+                target_pos = self._state.get_entity_pos(target)
                 if target_pos:
                     landing = self._find_throw_landing(target_pos, single)
                 else:
@@ -1927,13 +1894,6 @@ class MVPApp(App):
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
         self.refresh_all()
-
-    def _find_entity_pos(self, target: Creature) -> tuple[int, int] | None:
-        """查找生物在地图上的坐标。"""
-        for c, (ec, er) in self._state.entities:
-            if c is target:
-                return (ec, er)
-        return None
 
     def _move_npc_toward(self, npc: Creature, nc: int, nr: int,
                          tc: int, tr: int) -> bool:
@@ -1972,8 +1932,8 @@ class MVPApp(App):
             damage_type=damage_type, attack_stat=attack_stat_name,
             ap_cost=ap_cost)
 
-        npc_pos = self._find_entity_pos(npc)
-        target_pos = self._find_entity_pos(target)
+        npc_pos = self._state.get_entity_pos(npc)
+        target_pos = self._state.get_entity_pos(target)
         result = resolve_attack(
             npc, target, weapon,
             attacker_pos=npc_pos, target_pos=target_pos,
@@ -2024,7 +1984,7 @@ class MVPApp(App):
                 for _ in range(dist - 1):
                     self._move_npc_toward(npc, nc, nr, tc, tr)
                     npc.ap -= 1
-                    pos = self._find_entity_pos(npc)
+                    pos = self._state.get_entity_pos(npc)
                     if pos: nc, nr = pos
                 # 近战攻击（单手短棒），部位概率改变
                 weapon_action = {"name": "短棒", "weapon": "短棒", "type": "melee_attack",
@@ -2075,7 +2035,7 @@ class MVPApp(App):
             npc.ap -= 1  # 尝试移动即消耗 AP
             if not moved:
                 break
-            pos = self._find_entity_pos(npc)
+            pos = self._state.get_entity_pos(npc)
             if pos:
                 nc, nr = pos
                 dist = max(abs(nc - pc), abs(nr - pr))
@@ -2402,7 +2362,6 @@ class MVPApp(App):
             return
 
         # 检查存档是否存在
-        import json
         path = os.path.join(self._save_manager._dir, "quicksave.json")
         if not os.path.exists(path):
             self._act_log.add("没有快速存档")
