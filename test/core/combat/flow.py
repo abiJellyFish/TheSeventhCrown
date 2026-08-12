@@ -559,6 +559,8 @@ class CombatFlow:
         dmg += pa.get("damage_bonus", 0)
         dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
         target.hp = max(0, target.hp - dmg)
+        if getattr(target, 'controlled', False) and target.hp < 1:
+            target.hp = 1  # 仅测试：被控生物 HP 保底，后续接入死亡系统后移除
         self.check_faction_reaction(target, pa.get("target_pos"))
 
         hand_prefix = f"{hand_label}" if hand_label else ""

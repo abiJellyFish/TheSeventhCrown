@@ -109,6 +109,11 @@ class RightPanel(Static):
 
     def _render_inventory(self) -> str:
         p = self.state.player
+        # DEBUG 仅测试：背包为空时打印诊断，定位后移除
+        if p is not None and not p.inventory:
+            import traceback
+            with open("D:/桌面/ttt/debug_empty_inv.log", "a", encoding="utf-8") as f:
+                f.write(f"empty inv: name={p.name} hp={p.hp} food={p.food_value} ctrl={p.controlled} eq={p.equipment['right_hand'].name if p.equipment.get('right_hand') else 'None'}\n")
         max_h = self.size.height
         lines = [
             f"[bold]物品栏[/] [dim]I/Esc返回[/]",

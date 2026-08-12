@@ -461,6 +461,8 @@ class GameState:
             atk_roll = random.randint(1, 20) + hunt_target.stat_adjust(atk_stat)
             if atk_roll >= hunt_target.total_ac('chest'):
                 hunt_target.hp = max(0, hunt_target.hp - dmg)
+                if getattr(hunt_target, 'controlled', False) and hunt_target.hp < 1:
+                    hunt_target.hp = 1  # 仅测试：被控生物 HP 保底，后续接入死亡系统后移除
                 if self._npc_log_cb and in_fov:
                     self._npc_log_cb(f"{creature.name} 攻击了{hunt_target.name}，造成 {dmg} 点伤害")
                 if hunt_target.hp <= 0:
@@ -717,6 +719,9 @@ class GameState:
         if p is not None and not any(c is p for c, _ in all_creatures):
             all_creatures.append((p, None))  # pos 占位
         for creature, _ in all_creatures:
+            # 被控生物 HP 保底 1（测试用，后续接入死亡系统后移除）
+            if creature.controlled and creature.hp < 1:
+                creature.hp = 1
             if creature.food_locked:
                 continue
             # NPC 饥饿时优先吃背包食物（玩家手动吃，不自动）

@@ -280,6 +280,8 @@ def resolve_attack(
 
     # 应用伤害
     defender.hp = max(0, defender.hp - damage)
+    if getattr(defender, 'controlled', False) and defender.hp < 1:
+        defender.hp = 1  # 仅测试：被控生物 HP 保底，后续接入死亡系统后移除
 
     return {"hit": True, "critical": critical, "roll": roll,
             "location": location, "damage": damage, "halved": halved,
