@@ -1,10 +1,10 @@
 """装备/卸除/互换/双手武器 —— 核心装备逻辑。"""
 import pytest
-from core.entity import Player, Weapon, Armor
+from core.entity import Creature, Weapon, Armor
 
 
 def _player():
-    return Player(name="测试", char_class="fighter")
+    return Creature(name="测试", char_class="fighter")
 
 
 def _sword():

@@ -1,5 +1,6 @@
-"""实体数据类 —— Entity 基类、Creature、Player、Item、Weapon、Armor。
+"""实体数据类 —— Creature、Item、Weapon、Armor。
 
+Phase 3: Player 类已删除，统一使用 Creature + controlled 标记。
 字段对齐 test/docs/MVP2.md。
 """
 
@@ -304,98 +305,6 @@ CARRY_STATUS = {
 
 
 # ═══════════════════════════════════════════════════
-# Player
-# ═══════════════════════════════════════════════════
-
-@dataclass
-class Player(Creature):
-    """玩家角色。"""
-
-    char_class: str = ""                   # "fighter" | "mage"
-    background: str = ""
-    personality: str = ""
-    gp: int = 3                            # 金币
-    sp: int = 0                            # 银币
-    cp: int = 0                            # 铜币
-    inventory: list["Item"] = field(default_factory=list)
-    equipment: dict[str, "Item | None"] = field(default_factory=lambda: {
-        "head": None, "chest": None, "arms": None, "legs": None,
-        "left_hand": None, "right_hand": None, "accessory1": None,
-        "accessory2": None, "accessory3": None,
-    })
-    memorized_spells: list[str] = field(default_factory=list)  # 法术位中的法术名
-
-    # ---- 预留 ----
-    party: list["Creature"] = field(default_factory=list)     # 队伍成员
-
-    # ---- 载重 ----
-
-    def total_carry_weight(self) -> float:
-        """计算装备栏 + 物品栏的总重量 (kg)。"""
-        total = 0.0
-        for item in self.equipment.values():
-            if item is not None:
-                total += getattr(item, 'weight', 0.0)
-        for item in self.inventory:
-            w = getattr(item, 'weight', 0.0)
-            count = getattr(item, 'count', 1)
-            total += w * count
-        return total
-
-    def carry_status(self) -> dict:
-        """返回当前负重状态 {threshold, label, effects}。"""
-        cap = self.carry_capacity()
-        if cap <= 0:
-            return CARRY_STATUS["overloaded"]
-        ratio = self.total_carry_weight() / cap
-        if ratio < CARRY_STATUS["light"]["threshold"]:
-            return CARRY_STATUS["light"]
-        elif ratio < CARRY_STATUS["encumbered"]["threshold"]:
-            return CARRY_STATUS["encumbered"]
-        else:
-            return CARRY_STATUS["overloaded"]
-
-    @classmethod
-    def create_fighter(cls, name: str, stats: dict) -> "Player":
-        """创建战士。"""
-        s = {**DEFAULT_STATS, **stats}
-        s["str"] += 2
-        s["con"] += 2
-        return cls(
-            name=name,
-            char_class="fighter",
-            faction="守序",
-            hp=35, max_hp=35,         # 30 + 5
-            max_ap=6,
-            stats=s,
-            gp=3,
-            inventory=[],
-        )
-
-    @classmethod
-    def create_mage(cls, name: str, stats: dict, domain: str = "evocation") -> "Player":
-        """创建魔法使。domain: "evocation" | "abjuration" """
-        s = {**DEFAULT_STATS, **stats}
-        s["int"] += 2
-        spells = {
-            "evocation": ["魔法飞弹"],
-            "abjuration": ["护盾术", "疗伤术"],
-        }
-        return cls(
-            name=name,
-            char_class="mage",
-            faction="守序",
-            hp=30, max_hp=30,
-            mp=100, max_mp=100,
-            max_ap=6,
-            stats=s,
-            gp=3,
-            inventory=[],
-            memorized_spells=spells.get(domain, []),
-        )
-
-
-# ═══════════════════════════════════════════════════
 # 物品空间默认值（按 item_type 查表）
 # ═══════════════════════════════════════════════════
 
@@ -526,7 +435,7 @@ class Armor(Item):
 
 
 # ═══════════════════════════════════════════════════
-# 工厂函数（替代 Player.create_fighter / create_mage）
+# 工厂函数（Phase 3: 替代已删除的 Player.create_fighter / create_mage）
 # ═══════════════════════════════════════════════════
 
 def create_fighter(name: str, stats: dict) -> Creature:

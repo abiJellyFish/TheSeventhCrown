@@ -3,11 +3,11 @@ import pytest
 from core.trade import (load_shop, trade_buy, trade_sell, copper_to_currency,
                          price_to_copper, price_to_text, player_can_afford,
                          sell_price)
-from core.entity import Player, Item
+from core.entity import Creature, Item
 
 
 def _player(gp=10):
-    p = Player(name="测试", char_class="fighter", gp=gp)
+    p = Creature(name="测试", char_class="fighter", gp=gp)
     p.inventory = []
     return p
 

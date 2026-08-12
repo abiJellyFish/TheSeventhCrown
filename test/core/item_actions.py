@@ -153,7 +153,7 @@ def remove_from_inventory(player, item_index: int, quantity: int = 1):
     """从玩家背包扣除指定数量的物品。
 
     Args:
-        player: Player 对象
+        player: Creature 对象
         item_index: 物品在 inventory 中的索引
         quantity: 要扣除的数量
 

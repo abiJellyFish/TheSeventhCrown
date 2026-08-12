@@ -1,6 +1,6 @@
 """投掷功能测试 —— get_throw_range、力量检定、药水/武器/普通物品投掷结算。"""
 import pytest
-from core.entity import Player, Item, Weapon, Creature
+from core.entity import Creature, Item, Weapon
 from core.item_actions import get_throw_range, place_on_ground
 
 
@@ -76,14 +76,14 @@ class TestThrowFields:
 class TestThrowStrRequirement:
     def test_low_str_cannot_throw_heavy(self):
         """力量不足时无法投掷有力量要求的物品。"""
-        player = Player(name="弱鸡", char_class="fighter")
+        player = Creature(name="弱鸡", char_class="fighter")
         player.stats["str"] = 6
         item = Item(name="铁砧", weight=3.0, throw_str_req=12)
         assert player.stat("str") < item.throw_str_req
 
     def test_high_str_can_throw_heavy(self):
         """力量足够时可以投掷有力量要求的物品。"""
-        player = Player(name="壮汉", char_class="fighter")
+        player = Creature(name="壮汉", char_class="fighter")
         player.stats["str"] = 14
         item = Item(name="铁砧", weight=3.0, throw_str_req=12)
         assert player.stat("str") >= item.throw_str_req

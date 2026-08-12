@@ -32,7 +32,7 @@ class RightPanel(Static):
             f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight():.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight:.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
             "",
             "[[X]]观察 [[Q]]退出",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
@@ -146,7 +146,7 @@ class RightPanel(Static):
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
-            f"载重 {p.total_carry_weight():.1f}/{p.carry_capacity():.0f}kg  [{p.carry_status()['label']}]  饮食: {p.food_value * 100 // 15000}%",
+            f"载重 {p.total_carry_weight:.1f}/{p.carry_capacity():.0f}kg  [{p.carry_status()['label']}]  饮食: {p.food_value * 100 // 15000}%",
             "",
         ]
         for key, label in [("str", "力量"), ("dex", "敏捷"), ("con", "体质"), ("int", "智力"), ("wis", "感知"), ("cha", "魅力")]:

@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from core.entity import Creature, Item, Player, are_hostile, is_ally
+from core.entity import Creature, Item, are_hostile, is_ally
 from core.grid import Grid
 from core.dice import roll_2d6
 from core.movement import Terrain, can_enter, find_path
@@ -17,10 +17,10 @@ from core.pendulum import PendulumClock
 class GameState:
     """全局游戏状态。"""
 
-    player: Creature | None = None     # Phase 3 删除，改为 property
+    player: Creature | None = None     # Phase 3: property 兼容层（Deprecated: 由 controlled_id 管理）
     map_width: int = 80
     map_height: int = 60
-    player_pos: tuple[int, int] = field(default=(0, 0), repr=False)  # Phase 3 删除，改为 property
+    player_pos: tuple[int, int] = field(default=(0, 0), repr=False)  # Phase 3: property 兼容层（Deprecated）
 
     # 地图
     map: Grid[Terrain] = field(init=False)
@@ -92,7 +92,7 @@ class GameState:
     def __post_init__(self):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.PASSABLE)
         self.clock.set_npc_advance_callback(self._advance_npcs)
-        # 兼容旧 player 参数：从 instance __dict__ 读取（property 可能已拦截）
+        # Deprecated Phase 3: 兼容旧 player 参数，从 instance __dict__ 读取（property 可能已拦截）
         _p = self.__dict__.get('_player_backup')
         _pp = self.__dict__.get('_player_pos_backup', (0, 0))
         if _p is not None:

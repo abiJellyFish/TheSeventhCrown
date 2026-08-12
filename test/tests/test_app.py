@@ -1,10 +1,10 @@
 """app.py 集成测试 —— 导入冒烟 + 物品栏/装备核心流程。"""
 import pytest
-from core.entity import Player, Item, Weapon
+from core.entity import Creature, Item, Weapon
 
 
 def _player():
-    return Player(name="测试", char_class="fighter")
+    return Creature(name="测试", char_class="fighter")
 
 
 class TestSmoke:
@@ -18,7 +18,7 @@ class TestSmoke:
 
     def test_new_entity_features(self):
         p = _player()
-        assert p.total_carry_weight() == 0.0
+        assert p.total_carry_weight == 0.0
         assert p.carry_status()["label"] in ("轻便", "负重", "超重")
 
     def test_create_game_loads_player(self):

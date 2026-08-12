@@ -1,6 +1,6 @@
 """休息系统 —— 短休/长休 + 舒适加成。"""
 
-from core.entity import Player
+from core.entity import Creature
 from core.grid import Grid
 from core.movement import Terrain
 from core.combat.cover import is_full_cover
@@ -41,7 +41,7 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
     return wall_count >= 2
 
 
-def _rest(player: Player, clock: PendulumClock, pendulums: int,
+def _rest(player: Creature, clock: PendulumClock, pendulums: int,
           hp_fraction: float, mp_fraction: float,
           terrain_map: Grid[Terrain] | None = None,
           pos: tuple[int, int] | None = None,
@@ -68,7 +68,7 @@ def _rest(player: Player, clock: PendulumClock, pendulums: int,
     return {"hp_restored": hp_restore, "mp_restored": mp_restore, "comfort": comfort}
 
 
-def short_rest(player: Player, clock: PendulumClock,
+def short_rest(player: Creature, clock: PendulumClock,
                terrain_map: Grid[Terrain] | None = None,
                pos: tuple[int, int] | None = None,
                bed_positions: set[tuple[int, int]] | None = None) -> dict:
@@ -77,7 +77,7 @@ def short_rest(player: Player, clock: PendulumClock,
                  terrain_map=terrain_map, pos=pos, bed_positions=bed_positions)
 
 
-def long_rest(player: Player, clock: PendulumClock,
+def long_rest(player: Creature, clock: PendulumClock,
               terrain_map: Grid[Terrain] | None = None,
               pos: tuple[int, int] | None = None,
               bed_positions: set[tuple[int, int]] | None = None) -> dict:

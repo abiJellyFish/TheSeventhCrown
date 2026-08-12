@@ -2,13 +2,13 @@
 import pytest
 from core.interact import scan_interact_targets, InteractType
 from core.game_state import GameState
-from core.entity import Player, Creature
+from core.entity import Creature, create_fighter
 from core.movement import Terrain
 
 
 @pytest.fixture
 def state():
-    p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+    p = create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
     s = GameState(player=p, map_width=20, map_height=20)
     s.player_pos = (10, 10)
     return s

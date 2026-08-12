@@ -10,7 +10,7 @@ from textual.binding import Binding
 from textual.events import Key
 
 from core.game_state import GameState
-from core.entity import Player, Creature, Weapon, are_hostile, create_fighter, create_mage
+from core.entity import Creature, Weapon, are_hostile, create_fighter, create_mage
 import core.entity as ent
 from core.movement import Terrain
 from core.grid import Grid
@@ -197,7 +197,7 @@ class MVPApp(App):
 
     @property
     def _pn(self) -> str:
-        """玩家名称快捷访问。后续自定义名称只需改 Player 构造处。"""
+        """玩家名称快捷访问。后续自定义名称只需改 Creature 构造处。（Phase 3）"""
         return self._state.player.name
 
     def _create_game(self) -> None:

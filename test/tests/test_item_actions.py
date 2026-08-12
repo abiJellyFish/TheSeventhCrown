@@ -1,6 +1,6 @@
 """物品交互逻辑测试 —— get_item_actions、ground_items 管理、丢弃/捡起流程。"""
 import pytest
-from core.entity import Player, Item, Weapon, Armor, Creature
+from core.entity import Creature, Item, Weapon, Armor, create_fighter
 from core.game_state import GameState
 from core.entity import ITEM_SPACE_DEFAULT
 from core.grid import Grid
@@ -259,7 +259,7 @@ class TestGroundItemManagement:
 class TestRemoveFromInventory:
     @pytest.fixture
     def player(self):
-        return Player.create_fighter("测试",
+        return create_fighter("测试",
             {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10})
 
     def test_remove_partial_stack(self, player):
@@ -397,7 +397,7 @@ class TestGetGroundItemsAt:
 class TestGameStateItemFields:
     @pytest.fixture
     def state(self):
-        p = Player.create_fighter("测试",
+        p = create_fighter("测试",
             {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10})
         return GameState(player=p, map_width=30, map_height=30)
 
@@ -427,7 +427,7 @@ class TestGameStateItemFields:
 class TestDetectGroundItems:
     @pytest.fixture
     def state(self):
-        p = Player.create_fighter("测试",
+        p = create_fighter("测试",
             {"str": 10, "dex": 10, "con": 10, "int": 10, "wis": 10, "cha": 10})
         s = GameState(player=p, map_width=30, map_height=30)
         s.player_pos = (10, 10)

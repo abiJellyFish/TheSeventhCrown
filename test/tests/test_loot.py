@@ -5,7 +5,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.entity import Player, Creature, Item, Weapon, Armor
+from core.entity import Creature, Item, Weapon, Armor
 from core.trade import player_receive, _build_item_cache, price_to_copper, price_to_text
 
 
@@ -102,7 +102,7 @@ class _FakeLog:
 
 def _make_player(gp=0, sp=0, cp=0):
     """创建测试用玩家。"""
-    p = Player(name="测试玩家", char_class="fighter")
+    p = Creature(name="测试玩家", char_class="fighter")
     p.gp, p.sp, p.cp = gp, sp, cp
     return p
 

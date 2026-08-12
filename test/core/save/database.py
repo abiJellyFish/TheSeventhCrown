@@ -99,8 +99,8 @@ class SaveManager:
     # ── 序列化辅助 ──
 
     @staticmethod
-    def _serialize_player(player: "Player") -> dict:
-        """将 Player 序列化为可 JSON 存储的 dict。"""
+    def _serialize_player(player: "Creature") -> dict:
+        """将生物序列化为可 JSON 存储的 dict。（Phase 3: Player → Creature）"""
         return {
             "name": player.name,
             "char_class": player.char_class,
@@ -164,7 +164,7 @@ class SaveManager:
     # ── 恢复辅助 ──
 
     @staticmethod
-    def _restore_player(player: "Player", data: dict,
+    def _restore_player(player: "Creature", data: dict,
                         loader: "DataLoader | None") -> None:
         """从存档数据恢复玩家状态。"""
         player.hp = data["hp"]

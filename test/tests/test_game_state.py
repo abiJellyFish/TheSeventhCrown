@@ -3,7 +3,7 @@ import pytest
 import os
 import tempfile
 from core.game_state import GameState
-from core.entity import Player, Creature
+from core.entity import Creature, create_fighter
 from core.movement import Terrain
 from core.rest import short_rest, long_rest
 from core.save.database import SaveManager
@@ -11,7 +11,7 @@ from core.save.database import SaveManager
 
 @pytest.fixture
 def state():
-    p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+    p = create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
     s = GameState(player=p, map_width=20, map_height=20)
     s.player_pos = (10, 10)
     return s
@@ -81,7 +81,7 @@ class TestSave:
     def test_save_and_load(self, state, tmp_dir):
         sm = SaveManager(tmp_dir)
         sm.save(state, "test")  # returns None, raises on error
-        state2 = GameState(player=Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}), map_width=20, map_height=20)
+        state2 = GameState(player=create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}), map_width=20, map_height=20)
         success = sm.load(state2, slot="test")
         assert success is True
 
@@ -96,8 +96,8 @@ class TestScanContextEnemy:
     @pytest.fixture
     def state(self):
         from core.game_state import GameState
-        from core.entity import Player
-        p = Player.create_fighter("Test", {"str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10})
+        from core.entity import create_fighter
+        p = create_fighter("Test", {"str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10})
         s = GameState(player=p, map_width=30, map_height=30)
         s.player_pos = (5, 5)
         return s
@@ -126,8 +126,7 @@ class TestPlayerHPFloor:
 
     def test_player_hp_floor_at_one(self):
         from core.game_state import GameState
-        from core.entity import Player
-        p = Player.create_fighter("Test", {"str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10})
+        p = create_fighter("Test", {"str":10,"dex":10,"con":10,"int":10,"wis":10,"cha":10})
         p.hp = 0
         p.food_value = 0
         s = GameState(player=p, map_width=30, map_height=30)

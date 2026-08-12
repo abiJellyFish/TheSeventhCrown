@@ -1,6 +1,6 @@
-"""实体数据类 —— Creature, Player, Item, Weapon, Armor, 载重系统。"""
+"""实体数据类 —— Creature, Item, Weapon, Armor, 载重系统。（Phase 3: Player 已删除）"""
 import pytest
-from core.entity import Creature, Player, Weapon, Armor, Item, stat_adjust, CARRY_STATUS
+from core.entity import Creature, Weapon, Armor, Item, stat_adjust, CARRY_STATUS, create_fighter, create_mage
 
 
 # ── Creature ──
@@ -26,40 +26,40 @@ class TestCreature:
         assert c.total_ac("chest") >= 12
 
 
-# ── Player ──
+# ── 工厂函数与载重（Phase 3: Player → Creature）──
 
-class TestPlayer:
-    def test_player_creation_fighter(self):
-        p = Player.create_fighter("凯恩", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+class TestFactory:
+    def test_fighter_creation(self):
+        p = create_fighter("凯恩", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         assert p.char_class == "fighter"
         assert p.max_hp == 35
         assert p.stat("str") == 10  # +2
 
-    def test_player_mage_abjuration(self):
-        p = Player.create_mage("法师", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}, "abjuration")
+    def test_mage_abjuration(self):
+        p = create_mage("法师", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8}, "abjuration")
         assert p.char_class == "mage"
         assert "护盾术" in p.memorized_spells
 
     def test_carry_weight(self):
-        p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p = create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         p.inventory = [Item(name="口粮", weight=1.0, count=3)]
         p.equipment["right_hand"] = Weapon(name="长剑", weight=2.0, ap_cost=3)
-        assert p.total_carry_weight() == 5.0
+        assert p.total_carry_weight == 5.0
 
     def test_carry_light(self):
-        p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p = create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         p.inventory = [Item(name="light", weight=10.0)]  # 10/20 = 50%
         assert "轻" in p.carry_status()["label"]
 
     def test_carry_encumbered(self):
-        p = Player.create_fighter("t", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p = create_fighter("t", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         p.inventory = [Item(name="heavy", weight=17.0)]  # 17/20 = 85%
         status = p.carry_status()
         # 超过80% → 至少是 encumbered
         assert status["threshold"] >= 0.8
 
     def test_carry_overloaded(self):
-        p = Player.create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
+        p = create_fighter("测试", {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8})
         p.inventory = [Item(name="over", weight=25.0)]  # 25/20 = 125%
         assert "超重" in p.carry_status()["label"]
 
