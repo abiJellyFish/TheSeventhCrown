@@ -1,14 +1,35 @@
 {
   "shop_id": "merchant",
   "name": "旅行商人",
-  "shop_gold": 5000,
+  "shop_gold": 4625,
   "stock": [
-    {"item_key": "长剑"},
-    {"item_key": "短弓"},
-    {"item_key": "皮甲"},
-    {"item_key": "圆盾"},
-    {"item_key": "治疗药水"},
-    {"item_key": "一包口粮"},
-    {"item_key": "一包草药"}
+    {
+      "item_key": "长剑",
+      "stock_qty": 2
+    },
+    {
+      "item_key": "短弓",
+      "stock_qty": 3
+    },
+    {
+      "item_key": "皮甲",
+      "stock_qty": 2
+    },
+    {
+      "item_key": "治疗药水",
+      "stock_qty": 5
+    },
+    {
+      "item_key": "一包口粮",
+      "stock_qty": 10
+    },
+    {
+      "item_key": "一包草药",
+      "stock_qty": 10
+    },
+    {
+      "item_key": "匕首",
+      "stock_qty": 3
+    }
   ]
 }

@@ -202,6 +202,17 @@ class Creature:
 
 
 # ═══════════════════════════════════════════════════
+# 负重状态表（哈希表驱动）
+# ═══════════════════════════════════════════════════
+
+CARRY_STATUS = {
+    "light":      {"threshold": 0.8,  "label": "轻便",   "effects": []},
+    "encumbered": {"threshold": 1.0,  "label": "负重",   "effects": ["speed_halved", "dex_disadvantage", "ap_penalty_1"]},
+    "overloaded": {"threshold": float("inf"), "label": "超重", "effects": ["immobilized", "dex_auto_fail", "ap_penalty_2"]},
+}
+
+
+# ═══════════════════════════════════════════════════
 # Player
 # ═══════════════════════════════════════════════════
 
@@ -225,6 +236,33 @@ class Player(Creature):
 
     # ---- 预留 ----
     party: list["Creature"] = field(default_factory=list)     # 队伍成员
+
+    # ---- 载重 ----
+
+    def total_carry_weight(self) -> float:
+        """计算装备栏 + 物品栏的总重量 (kg)。"""
+        total = 0.0
+        for item in self.equipment.values():
+            if item is not None:
+                total += getattr(item, 'weight', 0.0)
+        for item in self.inventory:
+            w = getattr(item, 'weight', 0.0)
+            count = getattr(item, 'count', 1)
+            total += w * count
+        return total
+
+    def carry_status(self) -> dict:
+        """返回当前负重状态 {threshold, label, effects}。"""
+        cap = self.carry_capacity()
+        if cap <= 0:
+            return CARRY_STATUS["overloaded"]
+        ratio = self.total_carry_weight() / cap
+        if ratio < CARRY_STATUS["light"]["threshold"]:
+            return CARRY_STATUS["light"]
+        elif ratio < CARRY_STATUS["encumbered"]["threshold"]:
+            return CARRY_STATUS["encumbered"]
+        else:
+            return CARRY_STATUS["overloaded"]
 
     @classmethod
     def create_fighter(cls, name: str, stats: dict) -> "Player":
@@ -310,6 +348,8 @@ class Weapon(Item):
     range_normal: int = 0
     range_max: int = 0
     properties: list[str] = field(default_factory=list)
+    loaded: bool = True                    # 弹药武器已装填？战斗开始时重置
+    melee: dict | None = None              # 远程武器近战属性 {"damage":"1d4","damage_type":"bludgeoning","attack_stat":"str","ap_cost":2}
 
     def __post_init__(self):
         self.item_type = "weapon"
@@ -327,6 +367,8 @@ class Weapon(Item):
             range_normal=data.get("range_normal", 0),
             range_max=data.get("range_max", 0),
             properties=data.get("properties", []),
+            loaded=data.get("loaded", True),
+            melee=data.get("melee"),
             weight=data.get("weight", 0.0),
             price=data.get("price", {}),
             description=data.get("description", ""),

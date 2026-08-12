@@ -597,7 +597,7 @@
       "wis": 0,
       "cha": 0
     },
-    "vision_range": 0,
+    "vision_range": 3,
     "food_value": 0,
     "food_locked": true,
     "darkvision_range": 0,

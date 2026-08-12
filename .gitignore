@@ -44,3 +44,13 @@ MVP2.md
 *.swp
 *.swo
 MVP.md MVP2.md
+
+# 调试 & 临时
+*.log
+ai逻辑.txt
+
+# 测试
+test/tests/
+
+# 文档补充
+test/经验.md

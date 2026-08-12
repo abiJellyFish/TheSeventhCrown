@@ -50,11 +50,12 @@ class PendulumClock:
         return self._drain()
 
     def tick_combat_round(self) -> int:
-        """战斗一轮结束后推进 6 钟摆（不影响 curS）。返回触发的钟摆数。"""
+        """战斗一轮结束后推进 6 钟摆。不影响移动累积的 ticks。"""
         count = 0
         for _ in range(6):
             self._tick_raw()
             count += 1
+        self.pendulum_acc_ticks = 0  # 战斗钟摆不消耗探索移动累积
         return count
 
     def _drain(self) -> int:

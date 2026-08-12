@@ -2,7 +2,7 @@
 
 import random
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from core.entity import Creature, Player
 from core.grid import Grid
@@ -70,6 +70,8 @@ class GameState:
 
     # NPC 推进回调设置的待开战目标
     pending_combat_target: Creature | None = None
+    # 钟摆推进前刷新 FOV 的回调（由 app 注册）
+    _pre_tick_fov_cb: Callable[[], None] | None = field(default=None, repr=False)
 
     def __post_init__(self):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.PASSABLE)
@@ -99,6 +101,9 @@ class GameState:
             self.player_pos = (col, row)
             self._check_campfire_burn(self.player)
             if not self.in_combat:
+                # 推进钟摆前刷新 FOV（确保 NPC 检测用新位置）
+                if self._pre_tick_fov_cb:
+                    self._pre_tick_fov_cb()
                 self.clock.tick_move(self.player.speed)
             return True
         return False
@@ -162,9 +167,13 @@ class GameState:
                     continue  # 不能走到玩家所在格
                 if self.map.within_bounds(nx, ny):
                     self.move_entity(creature, ec, er, nx, ny)
-        # 敌对检测：NPC 游荡后可能进入玩家 FOV
+        # 敌对检测：双方互相在视野内才触发战斗（跳过尸体）
         pc, pr = self.player_pos
         for creature, (ec, er) in self.entities:
+            if creature.hp <= 0:
+                continue
             if creature.faction == "hostile" and (ec, er) in self.fov_cache:
-                self.pending_combat_target = creature
-                break
+                dist = max(abs(ec - pc), abs(er - pr))
+                if dist <= getattr(creature, 'vision_range', 0):
+                    self.pending_combat_target = creature
+                    break

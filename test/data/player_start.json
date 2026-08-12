@@ -13,6 +13,24 @@
   },
   "inventory": [
     {
+      "name": "匕首", "item_type": "weapon",
+      "weapon_type": "melee", "category": "simple",
+      "damage": "1d4", "damage_type": "piercing", "attack_stat": "str_or_dex",
+      "ap_cost": 2, "properties": ["light", "thrown"],
+      "range_normal": 4, "range_max": 6,
+      "weight": 0.5, "price": {"gp": 2},
+      "description": "匕首，轻巧灵活，可投掷"
+    },
+    {
+      "name": "匕首", "item_type": "weapon",
+      "weapon_type": "melee", "category": "simple",
+      "damage": "1d4", "damage_type": "piercing", "attack_stat": "str_or_dex",
+      "ap_cost": 2, "properties": ["light", "thrown"],
+      "range_normal": 4, "range_max": 6,
+      "weight": 0.5, "price": {"gp": 2},
+      "description": "匕首，轻巧灵活，可投掷"
+    },
+    {
       "name": "治疗药水", "item_type": "consumable",
       "effect": "heal", "amount": "6d4", "ap_cost": 1,
       "weight": 0.5, "price": {"gp": 2},
@@ -21,7 +39,7 @@
     {
       "name": "一包口粮", "item_type": "consumable",
       "effect": "restore_food", "amount": "15000", "ap_cost": 1,
-      "weight": 1.0, "price": {"cp": 50},
+      "weight": 1.0, "price": {"cp": 5},
       "description": "几块晒干的兽肉和浆果，食用恢复饮食值"
     },
     {
@@ -29,8 +47,9 @@
       "weapon_type": "ranged", "category": "martial",
       "damage": "1d6", "damage_type": "piercing", "attack_stat": "dex",
       "ap_cost": 2, "range_normal": 8, "range_max": 14,
-      "properties": ["ammo"],
-      "weight": 1.0, "price": {"gp": 1, "sp": 50},
+      "properties": ["ammo", "two_handed"],
+      "weight": 1.0, "price": {"gp": 1, "sp": 5},
+      "melee": {"damage": "1d4", "damage_type": "bludgeoning", "attack_stat": "str", "ap_cost": 2},
       "description": "短弓，可远程攻击。需要弹药，普通弹药无限免费。"
     }
   ]

@@ -16,7 +16,7 @@
     "amount": "50",
     "ap_cost": 1,
     "weight": 0.5,
-    "price": {"gp": 2, "sp": 50},
+    "price": {"gp": 2, "sp": 5},
     "description": "喝掉这瓶清澈蓝色液体的生物恢复 50 点精神值"
   },
   {
@@ -45,7 +45,7 @@
     "amount": "15000",
     "ap_cost": 1,
     "weight": 1.0,
-    "price": {"cp": 50},
+    "price": {"cp": 5},
     "description": "几块晒干的兽肉和浆果"
   },
   {
@@ -75,7 +75,7 @@
     "amount": "1200",
     "ap_cost": 1,
     "weight": 0.5,
-    "price": {"cp": 50},
+    "price": {"cp": 5},
     "description": "鲜红的兽肉，需要烤熟才能食用",
     "dc_check": {"stat": "con", "dc": 15, "on_fail": "中毒(2000钟摆)"}
   },

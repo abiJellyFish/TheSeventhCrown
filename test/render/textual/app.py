@@ -16,7 +16,7 @@ from core.grid import Grid
 from core.movement import find_path
 from core.fov import LightLevel, compute_fov
 from core.combat.initiative import roll_initiative
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack
+from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack, miss_message, cover_message
 from core.combat.flow import CombatFlow
 from core.map.generation import build_world, build_dungeon
 from core.dice import roll_d20
@@ -161,7 +161,7 @@ class MVPApp(App):
         "combat_idle":            {"keys": _EXPLORE_KEYS, "commands": {}},
         "inventory":              {"keys": _EXPLORE_KEYS, "commands": {"I": "_use_item", "U": "_handle_unequip", "W": "_swap_hands"}},
         "character":              {"keys": _EXPLORE_KEYS, "commands": {}},
-        "observe":                {"keys": _EXPLORE_KEYS, "commands": {}},
+        "observe":                {"keys": {"X", "escape"}, "commands": {}},
         "trading":                {"keys": _EXPLORE_KEYS, "commands": {"B": "_cmd_trade_buy", "S": "_cmd_trade_sell"}},
         "talking":                {"keys": _EXPLORE_KEYS, "commands": {}},
         "interact_menu":          {"keys": _EXPLORE_KEYS, "commands": {}},
@@ -169,7 +169,7 @@ class MVPApp(App):
         "combat_select_target":   {"keys": {"X", "C", "I", "enter"}, "commands": {"T": "_cmd_target_input"}},
         "combat_select_maneuver": {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_maneuver_input"}},
         "combat_select_special":  {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_special_input"}},
-        "combat_ranged_target":   {"keys": {}, "commands": {}},
+        "combat_ranged_target":   {"keys": set(), "commands": {}},
     }
 
     def __init__(self):
@@ -213,6 +213,8 @@ class MVPApp(App):
             mdata = json.load(f)
         self._state.maneuvers = mdata.get("maneuvers", mdata if isinstance(mdata, list) else [])
 
+        # 钟摆推进前刷新 FOV（确保 NPC 检测用最新位置）
+        self._state._pre_tick_fov_cb = lambda: _update_fov(self._state)
         build_world(self._state, _loader)
         self._state.player_pos = tuple(ps_data["start_pos"])
 
@@ -238,6 +240,7 @@ class MVPApp(App):
             self._state, self._act_log, self._left_panel,
             self._input_bar, self._map_view, self._pn,
             lambda t: self._start_combat(t, ambush=True), self.refresh_all,
+            on_two_hand_cb=self._on_two_hand_equip,
         )
 
     def compose(self) -> ComposeResult:
@@ -263,10 +266,35 @@ class MVPApp(App):
         self.refresh_all()
         self._map_view.focus()
 
+    # 需要输入框获得焦点的战斗阶段
+    _COMBAT_INPUT_PHASES = {
+        "select_action", "select_target", "select_maneuver", "select_special",
+    }
+
+    # 需要输入框获得焦点的交互阶段
+    _INTERACT_INPUT_PHASES = {"trading"}
+
+    def _sync_input_focus(self) -> None:
+        """根据当前视图状态同步输入框焦点。"""
+        phase = self._state.combat_phase
+        if phase in self._COMBAT_INPUT_PHASES:
+            self._input_bar.disabled = False
+            self._input_bar.focus()
+        elif phase == "ranged_target":
+            self._input_bar.disabled = True
+            self._map_view.focus()
+        elif self._state.interact_phase in self._INTERACT_INPUT_PHASES:
+            self._input_bar.disabled = False
+            self._input_bar.focus()
+        else:
+            self._input_bar.disabled = True
+
     def refresh_all(self) -> None:
         for w in [self._map_view, self._map_legend, self._left_panel,
                   self._right_panel, self._top_bar, self._act_log, self._scene_log]:
             if w: w.refresh()
+        self._sync_input_focus()
+        self._sync_carry_status()
 
     def on_key(self, event) -> None:
         """上下文感知的按键分发：只有当前面板显示的键才触发。"""
@@ -275,7 +303,12 @@ class MVPApp(App):
 
         # ── 0. Escape（全局：取消交互 / 取消远程瞄准 / 退出输入栏 / 退出右侧栏视图）──
         if key == "escape":
+            # 交互阶段：输入框活跃 → 只退出输入模式，保留交互状态
             if state and state.interact_phase:
+                if self._input_bar and not self._input_bar.disabled:
+                    self._input_bar.disabled = True
+                    event.stop()
+                    return
                 self._cancel_interact()
                 event.stop()
                 return
@@ -283,11 +316,18 @@ class MVPApp(App):
                 self._combat_flow.cancel_ranged_target()
                 event.stop()
                 return
-            if self._input_bar and self._input_bar.has_focus:
+            # 输入栏活跃 → 只退出输入模式（战斗子阶段需额外回退）
+            if self._input_bar and not self._input_bar.disabled:
+                cp = state.combat_phase
+                if cp in ("select_target", "select_maneuver", "select_special"):
+                    state.combat_phase = "select_action"
+                elif cp == "select_action":
+                    state.combat_phase = "idle"
+                    state.pending_attack = {}
                 self._input_bar.disabled = True
-                self._map_view.focus()
                 event.stop()
                 return
+            # 右侧栏视图退出
             view = self._right_panel.view_mode if self._right_panel else "default"
             if view != "default":
                 self._right_panel.view_mode = "default"
@@ -311,7 +351,10 @@ class MVPApp(App):
         allowed = set()
         for view_name in self._get_active_views():
             vdef = self.VIEW_DEFS.get(view_name, {})
-            allowed |= vdef.get("keys", set())
+            keys = vdef.get("keys", set())
+            if not isinstance(keys, set):
+                keys = set()
+            allowed |= keys
 
         if key not in allowed and key != "enter":
             return
@@ -380,13 +423,13 @@ class MVPApp(App):
         cp = state.combat_phase
         if cp != "idle":
             views.append("combat_" + cp)
-        # 右侧面板
-        rv = self._right_panel.view_mode if self._right_panel else "default"
-        if rv != "default":
-            views.append(rv)
-        # 观察模式
+        # 右侧面板（观察模式下仅展示，不参与按键分发）
         if state.observe_mode:
             views.append("observe")
+        else:
+            rv = self._right_panel.view_mode if self._right_panel else "default"
+            if rv != "default":
+                views.append(rv)
         # 基础视图
         if not views:
             views.append("combat_idle" if state.in_combat else "explore")
@@ -439,16 +482,17 @@ class MVPApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         cmd = event.value.strip()
         self._input_bar.value = ""
-        self._input_bar.disabled = True
         if not cmd:
-            self._map_view.focus()
+            self._sync_input_focus()
             return
 
         # 合并所有活跃视图的命令表
         all_commands = {}
         for view_name in self._get_active_views():
             vdef = self.VIEW_DEFS.get(view_name, {})
-            all_commands.update(vdef.get("commands", {}))
+            commands = vdef.get("commands", {})
+            if isinstance(commands, dict):
+                all_commands.update(commands)
 
         # 按命令前缀查表分发
         prefix = cmd[0].upper() if cmd else ""
@@ -458,12 +502,12 @@ class MVPApp(App):
             if handler:
                 self._act_log.add(f"> :{cmd}")
                 handler(cmd)
-                self._map_view.focus()
+                self._sync_input_focus()
                 return
 
         self._act_log.add(f"> :{cmd}")
         self._act_log.add("功能待定")
-        self._map_view.focus()
+        self._sync_input_focus()
 
     def _use_item(self, cmd: str) -> None:
         """使用物品：I + 序号，如 I1 使用第 1 个物品。"""
@@ -473,11 +517,15 @@ class MVPApp(App):
             if 0 <= idx < len(inv):
                 item = inv[idx]
                 if isinstance(item, ent.Weapon):
-                    self._equip_to_hand(item, idx)
+                    single = self._take_one_from_stack(item, inv, idx)
+                    if single:
+                        self._equip_to_hand(single)
                     self._right_panel.refresh()
                     return
                 if isinstance(item, ent.Armor):
-                    self._equip_armor_from_inventory(item, idx)
+                    single = self._take_one_from_stack(item, inv, idx)
+                    if single:
+                        self._equip_armor_from_inventory(single)
                     self._right_panel.refresh()
                     return
                 # 消耗品
@@ -500,40 +548,77 @@ class MVPApp(App):
             self._act_log.add("用法: :I序号  如 :I1 使用第1个物品")
         self._right_panel.refresh()
 
+    def _take_one_from_stack(self, item, inv, idx):
+        """从堆叠物品中取出一件。count>1 则减 count 退回单件；count==1 则 pop。
+        返回单件物品，失败返回 None。"""
+        if item.count > 1:
+            unit_weight = item.weight / item.count
+            item.count -= 1
+            item.weight -= unit_weight
+            # 创建单件副本
+            if isinstance(item, ent.Weapon):
+                return ent.Weapon(
+                    name=item.name, weapon_type=item.weapon_type,
+                    category=item.category, damage=item.damage,
+                    damage_type=item.damage_type, attack_stat=item.attack_stat,
+                    ap_cost=item.ap_cost, range_normal=item.range_normal,
+                    range_max=item.range_max,
+                    properties=list(item.properties) if item.properties else [],
+                    weight=unit_weight, price=dict(item.price),
+                    description=item.description, count=1,
+                    loaded=getattr(item, 'loaded', True),
+                )
+            elif isinstance(item, ent.Armor):
+                return ent.Armor(
+                    name=item.name, armor_type=item.armor_type,
+                    slot=item.slot, ac_bonus=item.ac_bonus,
+                    tenacity_bonus=item.tenacity_bonus,
+                    str_requirement=item.str_requirement,
+                    weight=unit_weight, price=dict(item.price),
+                    description=item.description, count=1,
+                )
+            else:
+                return None
+        else:
+            return inv.pop(idx)
+
     # ── 装备/卸除/互换 ──
 
-    def _equip_to_hand(self, item, inv_idx: int) -> None:
+    def _equip_to_hand(self, item) -> None:
         """装备单手武器/盾牌到手部。先试左手，被占试右手，都被占则与左手互换。"""
-        inv = self._state.player.inventory
         equip = self._state.player.equipment
-        inv.pop(inv_idx)
 
         # 双手武器：先装到空闲手，另一手自动卸除
         props = getattr(item, 'properties', []) or []
         is_two_handed = 'two_handed' in props
 
         if is_two_handed:
-            # 自动卸除另一只手
-            other = equip.get("left_hand") if equip.get("right_hand") is None else equip.get("right_hand")
-            if other is not None:
-                _add_to_inventory(self._state.player, other)
-            # 装备到空闲手
-            if equip.get("left_hand") is None:
-                equip["left_hand"] = item
-            else:
-                equip["right_hand"] = item
-            if equip.get("left_hand") and equip.get("right_hand"):
-                # 另一只手仍有装备，卸除
-                other_hand = "right_hand" if equip["left_hand"] is item else "left_hand"
-                if equip.get(other_hand) and equip[other_hand] is not item:
-                    _add_to_inventory(self._state.player, equip[other_hand])
-                    equip[other_hand] = None
+            # 两手全部卸除，武器放到右手；逐手日志
+            for hand in ("left_hand", "right_hand"):
+                old = equip.get(hand)
+                if old is not None:
+                    equip[hand] = None
+                    _add_to_inventory(self._state.player, old)
+                    hand_name = "左手" if hand == "left_hand" else "右手"
+                    self._act_log.add(f"{self._pn} 卸下了{hand_name}的{old.name}")
+            equip["right_hand"] = item
             self._act_log.add(f"{self._pn} 双手握持了 {item.name}")
             return
 
-        # 单手：左 → 右 顺序
+        # 单手：左 → 右 顺序。先检查另一只手是否有双手武器
         for hand in ("left_hand", "right_hand"):
             if equip.get(hand) is None:
+                other_hand = "right_hand" if hand == "left_hand" else "left_hand"
+                other = equip.get(other_hand)
+                if other is not None:
+                    other_props = getattr(other, 'properties', []) or []
+                    if 'two_handed' in other_props:
+                        # 另一只手是双手武器 → 卸除它
+                        equip[other_hand] = None
+                        _add_to_inventory(self._state.player, other)
+                        self._act_log.add(f"{self._pn} 收起了{other.name}（双手），装备了 {item.name}")
+                        equip[hand] = item
+                        return
                 equip[hand] = item
                 hand_name = "左手" if hand == "left_hand" else "右手"
                 self._act_log.add(f"{self._pn} 装备了 {item.name}（{hand_name}）")
@@ -545,23 +630,19 @@ class MVPApp(App):
         _add_to_inventory(self._state.player, old)
         self._act_log.add(f"{self._pn} 收起了{old.name}，装备了{item.name}（左手）")
 
-    def _equip_armor_from_inventory(self, armor: "ent.Armor", inv_idx: int) -> None:
+    def _equip_armor_from_inventory(self, armor: "ent.Armor") -> None:
         """从物品栏装备护甲到对应部位。"""
-        inv = self._state.player.inventory
         equip = self._state.player.equipment
         p = self._state.player
 
         slot = armor.slot
         # 盾牌视作单手装备
         if armor.armor_type == "shield":
-            inv.pop(inv_idx)
             self._equip_shield(armor)
             return
         # 全身服饰 → 胸甲位
         if slot == "full_body":
             slot = "chest"
-
-        inv.pop(inv_idx)
         old = equip.get(slot)
         if old is not None:
             _add_to_inventory(self._state.player, old)
@@ -597,10 +678,19 @@ class MVPApp(App):
         self._act_log.add(f"{self._pn} 收起了{old.name}，装备了 {shield.name}（左手）")
 
     def _unequip_slot(self, slot: str) -> None:
-        """卸除指定部位的装备，放入背包。"""
+        """卸除指定部位的装备，放入背包。双手武器从任一手卸除均可。"""
         p = self._state.player
         equip = p.equipment
         item = equip.get(slot)
+        if item is None and slot in ("left_hand", "right_hand"):
+            # 空手但另一只手有双手武器 → 卸除双手武器
+            other_slot = "right_hand" if slot == "left_hand" else "left_hand"
+            other = equip.get(other_slot)
+            if other is not None:
+                other_props = getattr(other, 'properties', []) or []
+                if 'two_handed' in other_props:
+                    item = other
+                    slot = other_slot
         if item is None:
             self._act_log.add(f"该部位没有装备")
             return
@@ -641,7 +731,7 @@ class MVPApp(App):
             self._act_log.add("用法: :U1 左手 :U2 右手 :U3 头部 :U4 躯干 :U5 双臂 :U6 双腿")
         self._right_panel.refresh()
 
-    def _swap_hands(self) -> None:
+    def _swap_hands(self, cmd: str = "") -> None:
         """交换左右手装备。"""
         equip = self._state.player.equipment
         left = equip.get("left_hand")
@@ -657,6 +747,27 @@ class MVPApp(App):
         equip["left_hand"], equip["right_hand"] = right, left
         self._act_log.add(f"{self._pn} 交换了左右手装备")
         self._right_panel.refresh()
+
+    def _on_two_hand_equip(self, weapon, hand: str = "right") -> None:
+        """双手并用时卸除另一只手的武器。hand 为武器所在手。"""
+        equip = self._state.player.equipment
+        other_hand = "right_hand" if hand == "left" else "left_hand"
+        other = equip.get(other_hand)
+        if other is not None:
+            equip[other_hand] = None
+            _add_to_inventory(self._state.player, other)
+        self._act_log.add(f"{self._pn} 双手握持了 {weapon.name}")
+        self._sync_carry_status()
+
+    def _sync_carry_status(self) -> None:
+        """同步负重状态到 creature.statuses。"""
+        p = self._state.player
+        status = p.carry_status()
+        # 移除旧负重状态
+        for old in ("轻便", "负重", "超重"):
+            p.remove_status(old)
+        # 始终显示负重状态
+        p.add_status(status["label"])
 
     def _apply_item_effect(self, item) -> None:
         """根据物品 effect 字段应用效果，支持数值和骰子字符串。"""
@@ -767,8 +878,8 @@ class MVPApp(App):
 
     def _post_action_update(self) -> None:
         """玩家行动后统一处理：检查待开战目标、刷新 UI。"""
-        # 检查是否有 NPC 触发的战斗（由 clock 回调 → _advance_npcs 设置）
-        if self._state.pending_combat_target:
+        # 处理 clock 回调设置的待开战目标
+        if self._state.pending_combat_target and not self._state.in_combat:
             target = self._state.pending_combat_target
             self._state.pending_combat_target = None
             self._act_log.add(f"{target.name} 发现了{self._pn}!")
@@ -1003,7 +1114,10 @@ class MVPApp(App):
 
     def _start_combat(self, target: Creature, ambush: bool = False) -> None:
         """进入战斗。ambush=True 时玩家必定先手（探索模式主动攻击）。"""
+        if target.hp <= 0:
+            return
         self._state.in_combat = True
+        self._state._combat_ticked = False
         self._state.player.ap = self._state.player.max_ap
         combatants = [self._state.player]
         pc, pr = self._state.player_pos
@@ -1012,26 +1126,43 @@ class MVPApp(App):
                and max(abs(ec - pc), abs(er - pr)) <= creature.vision_range:
                 combatants.append(creature)
                 creature.ap = creature.max_ap
+        # 弹药武器：战斗开始时重置为未装填
+        for item in self._state.player.equipment.values():
+            if item is not None:
+                props = getattr(item, 'properties', []) or []
+                if "ammo" in props:
+                    item.loaded = False
+        for item in self._state.player.inventory:
+            props = getattr(item, 'properties', []) or []
+            if "ammo" in props:
+                item.loaded = False
+
         self._state.combat_initiative = roll_initiative(combatants)
         self._state.combat_turn_index = 0
 
-        if ambush:
-            self._state.combat_turn_entity = self._state.player
-            self._act_log.add("=== 战斗开始 ===")
+        turn = self._state.player if ambush else combatants[0]
+        self._state.combat_turn_entity = turn
+        turn.ap = turn.max_ap
+        self._act_log.add("=== 战斗开始 ===")
+        if turn is self._state.player:
             self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
         else:
-            self._state.combat_turn_entity = combatants[0]
-            self._act_log.add("=== 战斗开始 ===")
-            self._next_turn()
+            self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
+            self._npc_turn(turn)
 
     def _end_combat(self) -> None:
+        # 当前轮未完成（敌人死在半轮等场景）→ 补推
+        if not getattr(self._state, '_combat_ticked', False):
+            self._state.clock.tick_combat_round()
         self._state.in_combat = False; self._state.combat_initiative = []
         self._state.combat_turn_entity = None
         self._state.player.ap = self._state.player.max_ap
+        self._state._combat_ticked = False
         self._act_log.add("=== 战斗结束 ===")
 
     def _next_turn(self) -> None:
         if not self._state.in_combat: return
+        self._state._combat_ticked = False  # 每次进入重置，不跨调用泄漏
 
         # 拉入范围内未参战的敌对生物（基于生物自身视野检测玩家）
         pc, pr = self._state.player_pos
@@ -1068,6 +1199,10 @@ class MVPApp(App):
 
         self._state.combat_initiative = alive
         idx = (self._state.combat_turn_index + 1) % len(alive)
+        # 满轮 → 推进钟摆 6
+        if idx == 0:
+            self._state.clock.tick_combat_round()
+            self._state._combat_ticked = True
         self._state.combat_turn_index = idx; turn = alive[idx]
         self._state.combat_turn_entity = turn; turn.ap = turn.max_ap
         if turn is self._state.player:
@@ -1108,10 +1243,11 @@ class MVPApp(App):
             self._act_log.add(f"{self._pn} 击中了 {target.name}，{target.name} 发出一声惨叫")
             if target.hp <= 0: self._act_log.add(f"{target.name} 倒在地上，不再动弹")
         else:
+            dmg_type = result.get("damage_type", "bludgeoning")
             if result.get("blocked_by_cover"):
-                self._act_log.add(f"{self._pn} 的攻击被掩体挡住了")
+                self._act_log.add(f"{self._pn} 的{cover_message(dmg_type)}")
             else:
-                self._act_log.add(f"{self._pn} 的攻击被 {target.name} 躲开了")
+                self._act_log.add(miss_message(self._pn, target.name, dmg_type))
         self.refresh_all()
 
     # ── 攻击流程状态机 ──
@@ -1210,14 +1346,15 @@ class MVPApp(App):
             if target is self._state.player and target.hp <= 0:
                 self._act_log.add(f"{self._pn} 被击倒了! [R]长休恢复")
         else:
+            dmg_type = result.get("damage_type", "bludgeoning")
             if result.get("blocked_by_cover"):
                 self._act_log.add(
                     f"{npc.name}使用{weapon_name}攻击{target.name}，"
-                    f"被掩体挡住了")
+                    f"{cover_message(dmg_type)} (roll={result['roll']})")
             else:
                 self._act_log.add(
-                    f"{npc.name}使用{weapon_name}攻击{target.name}，"
-                    f"被躲开了 (roll={result['roll']})")
+                    miss_message(npc.name, target.name, dmg_type)
+                    + f" (roll={result['roll']})")
 
     def _npc_special_action(self, npc: Creature, action: dict, target,
                              nc: int, nr: int, tc: int, tr: int) -> None:

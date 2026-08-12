@@ -29,7 +29,7 @@ class RightPanel(Static):
             f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  饮食 {food_pct}%",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight():.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
             "",
             "[[X]]观察 [[Q]]退出",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
@@ -77,7 +77,8 @@ class RightPanel(Static):
             f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
-            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP  饮食: {p.food_value * 100 // 15000}%",
+            f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
+            f"载重 {p.total_carry_weight():.1f}/{p.carry_capacity():.0f}kg  [{p.carry_status()['label']}]  饮食: {p.food_value * 100 // 15000}%",
             "",
         ]
         for key, label in [("str", "力量"), ("dex", "敏捷"), ("con", "体质"), ("int", "智力"), ("wis", "感知"), ("cha", "魅力")]:
@@ -145,6 +146,23 @@ class RightPanel(Static):
             parts = []
             for slot, label in group:
                 item = player.equipment.get(slot)
-                parts.append(f"{label}:{item.name if item else '-'}")
+                if item:
+                    name = item.name
+                    props = getattr(item, 'properties', []) or []
+                    if 'two_handed' in props:
+                        name += "(双手)"
+                    parts.append(f"{label}:{name}")
+                elif slot in ("left_hand", "right_hand"):
+                    # 空手但另一只手有双手武器 → 标注(双手)
+                    other_slot = "right_hand" if slot == "left_hand" else "left_hand"
+                    other = player.equipment.get(other_slot)
+                    if other:
+                        other_props = getattr(other, 'properties', []) or []
+                        if 'two_handed' in other_props:
+                            parts.append(f"{label}:(双手)")
+                            continue
+                    parts.append(f"{label}:-")
+                else:
+                    parts.append(f"{label}:-")
             lines.append("  " + " ".join(parts))
         return lines

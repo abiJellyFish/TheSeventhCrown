@@ -35,6 +35,46 @@ def _resolve_attack_stat(attacker: Creature, weapon: Weapon) -> int:
 
 
 # ═══════════════════════════════════════════════════
+# 挥空 / 掩体阻挡 描述表
+# ═══════════════════════════════════════════════════
+
+MISS_FLAVOR = {
+    "slashing":    "{attacker} 挥动武器，剑刃从{target}身侧掠过",
+    "bludgeoning": "{attacker} 的重击砸在了地面上，{target}闪身避开",
+    "piercing":    "{attacker} 的刺击被{target}侧身躲过",
+    "force":       "{attacker} 的魔力飞弹偏离了{target}",
+    "fire":        "{attacker} 的火焰从{target}身旁擦过",
+    "cold":        "{attacker} 的寒霜未能触及{target}",
+    "lightning":   "{attacker} 的电光被{target}闪开",
+    "acid":        "{attacker} 的酸液溅落在{target}脚边",
+    "necrotic":    "{attacker} 的暗蚀能量被{target}避开",
+    "radiant":     "{attacker} 的光辉未能命中{target}",
+    "thunder":     "{attacker} 的音波冲击从{target}身旁掠过",
+    "poison":      "{attacker} 的毒雾被{target}躲开",
+    "psychic":     "{attacker} 的心灵冲击未能锁定{target}",
+    "_default":    "{attacker} 的攻击被{target}躲开了",
+}
+
+COVER_FLAVOR = {
+    "slashing":    "剑刃砍在了掩体上，火花四溅",
+    "bludgeoning": "重击砸在掩体上，发出沉闷的响声",
+    "piercing":    "箭矢钉入了掩体",
+    "_default":    "攻击被掩体挡住了",
+}
+
+
+def miss_message(attacker_name: str, target_name: str, damage_type: str) -> str:
+    """根据伤害类型返回挥空描述。"""
+    template = MISS_FLAVOR.get(damage_type, MISS_FLAVOR["_default"])
+    return template.format(attacker=attacker_name, target=target_name)
+
+
+def cover_message(damage_type: str) -> str:
+    """根据伤害类型返回掩体阻挡描述。"""
+    return COVER_FLAVOR.get(damage_type, COVER_FLAVOR["_default"])
+
+
+# ═══════════════════════════════════════════════════
 # 命中检定
 # ═══════════════════════════════════════════════════
 
@@ -195,6 +235,7 @@ def resolve_attack(
             "halved": bool,
             "blocked_by_cover": bool,
             "cover_pos": tuple | None,
+            "damage_type": str,
         }
     """
     hit, roll = hit_check(attacker, defender, weapon)
@@ -203,7 +244,8 @@ def resolve_attack(
         reduce_tenacity(defender, roll)
         return {"hit": False, "critical": False, "roll": roll,
                 "location": None, "damage": 0, "halved": False,
-                "blocked_by_cover": False, "cover_pos": None}
+                "blocked_by_cover": False, "cover_pos": None,
+                "damage_type": weapon.damage_type}
 
     # 掩体检查（仅远程武器，需要坐标和地形网格）
     if weapon.weapon_type == "ranged" and attacker_pos and target_pos and grid:
@@ -214,7 +256,8 @@ def resolve_attack(
             reduce_tenacity(defender, roll)  # 掩体阻挡，等效未命中
             return {"hit": False, "critical": False, "roll": roll,
                     "location": None, "damage": 0, "halved": False,
-                    "blocked_by_cover": True, "cover_pos": cover_pos}
+                    "blocked_by_cover": True, "cover_pos": cover_pos,
+                    "damage_type": weapon.damage_type}
 
     critical = (roll == 20)
     location = roll_hit_location(defender.body_type)
@@ -237,7 +280,8 @@ def resolve_attack(
 
     return {"hit": True, "critical": critical, "roll": roll,
             "location": location, "damage": damage, "halved": halved,
-            "blocked_by_cover": False, "cover_pos": None}
+            "blocked_by_cover": False, "cover_pos": None,
+            "damage_type": weapon.damage_type}
 
 
 # ═══════════════════════════════════════════════════
