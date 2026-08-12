@@ -12,7 +12,7 @@ class LogView(Static):
 
     def scroll_up(self) -> None:
         max_offset = max(0, len(self.messages) - 1)
-        self._scroll_offset = min(max_offset, self._scroll_offset + 1)
+        self._scroll_offset = min(max_offset, self._scroll_offset + 5)
         self.refresh()
 
     def scroll_down(self) -> None:
