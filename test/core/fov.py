@@ -53,8 +53,14 @@ def compute_fov(
     light_grid: Grid[LightLevel],
     has_darkvision: bool = False,
     darkvision_range: int = 0,
-) -> set[tuple[int, int]]:
-    """计算视野内可见格子集合。
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """计算视野内可见格子集合，返回 (fov_bright, fov_dim)。
+
+    光照等级:
+    - BRIGHT 格 → 进入 fov_bright
+    - DIM 格 → 进入 fov_dim
+    - DARK 格 → 不在任何集合中
+    - 黑暗视觉生物: darkvision_range 内的 DARK 视为 DIM，DIM 视为 BRIGHT
 
     Args:
         grid: 透明/不透明网格 (True=透明, False=阻挡视野)
@@ -65,23 +71,35 @@ def compute_fov(
         darkvision_range: 黑暗视觉范围
 
     Returns:
-        可见格子坐标集合
+        (fov_bright: set, fov_dim: set)
     """
     ox, oy = origin
     if not grid.within_bounds(ox, oy):
-        return set()
+        return set(), set()
 
     cell_light = light_grid[ox, oy]
 
     # 确定有效视野半径
     if cell_light == LightLevel.DARK:
         if not has_darkvision:
-            return set()
+            return set(), set()
         use_radius = darkvision_range
     else:
         use_radius = radius  # BRIGHT or DIM
 
-    visible: set[tuple[int, int]] = {(ox, oy)}
+    fov_bright: set[tuple[int, int]] = set()
+    fov_dim: set[tuple[int, int]] = set()
+
+    # 起点始终明亮（如果起点不是 DARK 或者有黑暗视觉且起点视为 DIM）
+    if cell_light == LightLevel.BRIGHT:
+        fov_bright.add((ox, oy))
+    elif cell_light == LightLevel.DIM:
+        if has_darkvision:
+            fov_bright.add((ox, oy))
+        else:
+            fov_dim.add((ox, oy))
+    elif cell_light == LightLevel.DARK and has_darkvision:
+        fov_dim.add((ox, oy))
 
     # 遍历圆形范围内的所有格子
     for col in range(ox - use_radius, ox + use_radius + 1):
@@ -93,7 +111,23 @@ def compute_fov(
             # 欧几里得距离检查（圆形视野）
             if (col - ox) ** 2 + (row - oy) ** 2 > use_radius ** 2:
                 continue
-            if _line_of_sight(grid, ox, oy, col, row):
-                visible.add((col, row))
+            if not _line_of_sight(grid, ox, oy, col, row):
+                continue
 
-    return visible
+            tile_light = light_grid[col, row]
+            if has_darkvision:
+                # 黑暗视觉：DARK→DIM, DIM→BRIGHT
+                if tile_light == LightLevel.BRIGHT or tile_light == LightLevel.DIM:
+                    fov_bright.add((col, row))
+                elif tile_light == LightLevel.DARK:
+                    if max(abs(col - ox), abs(row - oy)) <= darkvision_range:
+                        fov_dim.add((col, row))
+            else:
+                # 正常视野
+                if tile_light == LightLevel.BRIGHT:
+                    fov_bright.add((col, row))
+                elif tile_light == LightLevel.DIM:
+                    fov_dim.add((col, row))
+                # DARK 不加入任何集合
+
+    return fov_bright, fov_dim

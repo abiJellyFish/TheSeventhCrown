@@ -182,6 +182,19 @@ class RightPanel(Static):
         else:
             lines.append(f"位置: ({cx}, {cy})")
 
+        # 特征（地下城入口/出口）
+        if self.state.dungeon_entrance and (cx, cy) == self.state.dungeon_entrance:
+            lines.append("特征: 洞口")
+        elif self.state.in_dungeon and self.state.dungeon_exit and (cx, cy) == self.state.dungeon_exit:
+            lines.append("特征: 洞口（出口）")
+
+        # 箱子
+        if (cx, cy) in self.state.chests:
+            chest_data = self.state.chests[(cx, cy)]
+            gp = chest_data.get("gp", 0)
+            gp_str = f" ({gp} GP)" if gp > 0 else ""
+            lines.append(f"箱子: {chest_data.get('label', '箱子')}{gp_str}")
+
         # 地形
         terrain = self.state.map[cx, cy]
         t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形", Terrain.PASSABLE: "草地/平地"}
@@ -200,8 +213,10 @@ class RightPanel(Static):
                 lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
 
         # 光照
-        if cursor in self.state.fov_cache:
-            lines.append("亮度: 可见")
+        if cursor in self.state.fov_bright:
+            lines.append("亮度: 明亮")
+        elif cursor in self.state.fov_dim:
+            lines.append("亮度: 微光")
         else:
             lines.append("亮度: 不可见")
 

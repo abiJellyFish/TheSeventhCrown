@@ -22,7 +22,7 @@ class CombatFlow:
 
     def __init__(self, state, act_log, left_panel, input_bar, map_view,
                  pn: str, start_combat_cb, refresh_all_cb,
-                 on_two_hand_cb=None, wake_cb=None):
+                 on_two_hand_cb=None, wake_cb=None, on_torch_action_cb=None):
         self._state = state
         self._act_log = act_log
         self._left_panel = left_panel
@@ -33,6 +33,7 @@ class CombatFlow:
         self._refresh_all = refresh_all_cb
         self._on_two_hand = on_two_hand_cb
         self._wake_cb = wake_cb
+        self._on_torch_action = on_torch_action_cb
 
     # ── 辅助 ──
 
@@ -54,7 +55,7 @@ class CombatFlow:
                 tc, tr = pc + dc, pr + dr
                 if not self._state.map.within_bounds(tc, tr):
                     continue
-                if (tc, tr) not in self._state.fov_cache:
+                if (tc, tr) not in self._state.fov_bright:
                     continue
                 dist = max(abs(dc), abs(dr))
                 ent = self._state.get_entity_at(tc, tr)
@@ -109,6 +110,20 @@ class CombatFlow:
         mode, weapon = entry
         hit_bonus = 0
         damage_bonus = 0
+
+        # 火把点燃/熄灭 — 无需目标选择，直接结算
+        if mode in ("torch_ignite", "torch_extinguish"):
+            if self._state.in_combat and p.ap < 1:
+                self._act_log.add("AP 不足")
+                return
+            if self._state.in_combat:
+                p.ap -= 1
+            if self._on_torch_action:
+                self._on_torch_action(weapon, mode)
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            self._refresh_all()
+            return
 
         if mode.endswith("_blocked"):
             self._act_log.add(f"{weapon.name} 无法用于攻击")
@@ -295,7 +310,7 @@ class CombatFlow:
             self._refresh_all()
             return
         # 目标必须在视野内
-        if cursor not in self._state.fov_cache:
+        if cursor not in self._state.fov_bright:
             self._act_log.add("无法瞄准不可见的目标")
             self._refresh_all()
             return

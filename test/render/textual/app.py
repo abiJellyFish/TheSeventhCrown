@@ -98,6 +98,7 @@ _INTERACT_DISPATCH = {
     InteractType.OPEN: "_interact_door",
     InteractType.ENTER: "_interact_entrance",
     InteractType.PICKUP: "_interact_pickup",
+    InteractType.CHEST: "_interact_chest",
 }
 
 
@@ -111,16 +112,42 @@ RECIPES = {
 
 def _update_fov(state: GameState) -> None:
     ox, oy = state.player_pos
+
+    # 同步玩家持有的火把光源位置
+    _sync_torch_light(state)
+
     transparent = Grid[bool](state.map.width, state.map.height, True)
     for col in range(state.map.width):
         for row in range(state.map.height):
             if state.map[col, row] == Terrain.WALL:
                 transparent[col, row] = False
-    light = Grid[LightLevel](state.map.width, state.map.height,
-                             LightLevel.BRIGHT if not state.in_dungeon else LightLevel.DARK)
-    state.fov_cache = compute_fov(transparent, (ox, oy), state.player.vision_range,
-                                  light, state.player.darkvision_range > 0,
-                                  state.player.darkvision_range)
+    light = state._build_light_grid()
+    bright, dim = compute_fov(transparent, (ox, oy), state.player.vision_range,
+                               light, state.player.darkvision_range > 0,
+                               state.player.darkvision_range)
+    state.fov_bright = bright
+    state.fov_dim = dim
+    state.fov_cache = bright | dim
+
+
+def _sync_torch_light(state: GameState) -> None:
+    """将玩家持有的已点燃火把光源同步到玩家当前位置。"""
+    from core.fov import LightLevel
+    player = state.player
+    # 检查装备栏和背包中的已点燃火把
+    for item in list(player.equipment.values()) + list(player.inventory):
+        if item is None:
+            continue
+        ls = getattr(item, 'light_source', None)
+        if ls and ls.get("condition") == "lit":
+            # 移除旧位置的光源
+            old_positions = [p for p in list(state.light_sources.keys())
+                           if state.light_sources[p] == (ls["radius"], LightLevel.BRIGHT)]
+            for old_pos in old_positions:
+                del state.light_sources[old_pos]
+            # 注册到新位置
+            state.register_light(state.player_pos, ls["radius"], LightLevel.BRIGHT)
+            return
 
 
 # ═══════════════════════════════════════ App ═══════════════════════════════════════
@@ -260,6 +287,7 @@ class MVPApp(App):
             lambda t: self._start_combat(t, ambush=True), self.refresh_all,
             on_two_hand_cb=self._on_two_hand_equip,
             wake_cb=lambda: self._wake_input(),
+            on_torch_action_cb=self._on_torch_action,
         )
 
     def compose(self) -> ComposeResult:
@@ -513,6 +541,25 @@ class MVPApp(App):
             self._sync_input()
             return
 
+        # 箱子交互
+        if self._state and self._state.interact_phase == "chest":
+            prefix = cmd[0].upper() if cmd else ""
+            if prefix == "C":
+                self._act_log.add(f"> :{cmd}")
+                self._handle_chest_take(cmd)
+                self._sync_input()
+                return
+            elif prefix == "S":
+                self._act_log.add(f"> :{cmd}")
+                self._handle_chest_store(cmd)
+                self._sync_input()
+                return
+            elif prefix == "0" or cmd == "0":
+                self._act_log.add(f"> :{cmd}")
+                self._cancel_interact()
+                self._sync_input()
+                return
+
         # 日志翻页（全局命令，任意视图可用）
         upper = cmd.upper()
         if upper == "LU":
@@ -588,6 +635,7 @@ class MVPApp(App):
             item.weight -= unit_weight
             # 创建单件副本
             if isinstance(item, ent.Weapon):
+                ls = getattr(item, 'light_source', None)
                 return ent.Weapon(
                     name=item.name, weapon_type=item.weapon_type,
                     category=item.category, damage=item.damage,
@@ -598,8 +646,10 @@ class MVPApp(App):
                     weight=unit_weight, price=dict(item.price),
                     description=item.description, count=1,
                     loaded=getattr(item, 'loaded', True),
+                    light_source=dict(ls) if ls else None,
                 )
             elif isinstance(item, ent.Armor):
+                ls = getattr(item, 'light_source', None)
                 return ent.Armor(
                     name=item.name, armor_type=item.armor_type,
                     slot=item.slot, ac_bonus=item.ac_bonus,
@@ -607,6 +657,7 @@ class MVPApp(App):
                     str_requirement=item.str_requirement,
                     weight=unit_weight, price=dict(item.price),
                     description=item.description, count=1,
+                    light_source=dict(ls) if ls else None,
                 )
             else:
                 return None
@@ -1157,6 +1208,27 @@ class MVPApp(App):
 
         self._apply_item_effect(item)
 
+    def _on_torch_action(self, item, mode: str) -> None:
+        """火把点燃/熄灭回调（由 CombatFlow 的动作处理触发）。"""
+        ls = getattr(item, 'light_source', None) or {}
+        radius = ls.get("radius", 5)
+        level_str = ls.get("level", "bright")
+        level = LightLevel.BRIGHT if level_str == "bright" else LightLevel.DIM
+
+        if mode == "torch_ignite":
+            self._state.register_light(self._state.player_pos, radius, level)
+            if hasattr(item, 'light_source') and item.light_source:
+                item.light_source["condition"] = "lit"
+            self._act_log.add(f"{self._pn} 点燃了 {item.name}")
+        else:
+            self._state.unregister_light(self._state.player_pos)
+            if hasattr(item, 'light_source') and item.light_source:
+                item.light_source["condition"] = "unlit"
+            self._act_log.add(f"{self._pn} 熄灭了 {item.name}")
+
+        _update_fov(self._state)
+        self.refresh_all()
+
     # 物品操作 → 方法映射表
     _ITEM_ACTION_HANDLERS = {
         "装备(左手)": _action_equip_left,
@@ -1197,6 +1269,81 @@ class MVPApp(App):
             self._cancel_interact()
         self.refresh_all()
 
+    def _interact_chest(self, target) -> None:
+        """打开箱子交互面板。"""
+        pos = target.pos
+        chest_data = target.extra.get("chest_data", {})
+        if not chest_data:
+            return
+        self._state.interact_target = target
+        self._state.interact_phase = "chest"
+        self._act_log.add(f"打开了 {chest_data.get('label', '箱子')} — :C序号 拿取 :S序号 存放 [0] 离开")
+        self._wake_input()
+        self.refresh_all()
+
+    def _handle_chest_take(self, cmd: str) -> None:
+        """从箱子拿取物品到背包（含 GP 转移）。"""
+        try:
+            num = int(cmd[1:])
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :C序号  如 :C1 拿取第1个物品")
+            return
+
+        target = getattr(self._state, 'interact_target', None)
+        if target is None:
+            return
+        chest_data = target.extra.get("chest_data", {})
+        chest_inv = chest_data.get("inventory", [])
+
+        if num < 1 or num > len(chest_inv):
+            self._act_log.add("序号无效")
+            return
+
+        item = chest_inv[num - 1]
+        # 从箱子移除
+        chest_inv.pop(num - 1)
+        # 加入玩家背包（始终是 Item 对象）
+        item_obj = item
+        _add_to_inventory(self._state.player, item_obj)
+        self._act_log.add(f"拿取了 {item_obj.name}")
+
+        # 箱子清空时自动转移金币
+        if not chest_inv:
+            gp = chest_data.get("gp", 0)
+            if gp > 0:
+                self._state.player.gp += gp
+                chest_data["gp"] = 0
+                self._act_log.add(f"拿取了 {gp} GP")
+
+        self.refresh_all()
+
+    def _handle_chest_store(self, cmd: str) -> None:
+        """从背包存放物品到箱子。"""
+        try:
+            num = int(cmd[1:])
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :S序号  如 :S1 存放第1个物品")
+            return
+
+        target = getattr(self._state, 'interact_target', None)
+        if target is None:
+            return
+        chest_data = target.extra.get("chest_data", {})
+        chest_inv = chest_data.get("inventory", [])
+        player_inv = self._state.player.inventory
+
+        if num < 1 or num > len(player_inv):
+            self._act_log.add("序号无效")
+            return
+
+        item = player_inv[num - 1]
+        # 从背包移除
+        player_inv.pop(num - 1)
+        # 直接存入箱子（保持 Item 对象）
+        chest_inv.append(item)
+        self._act_log.add(f"存放了 {item.name}")
+        self.refresh_all()
+
     # ── Movement ──
 
     def _move_player(self, dc: int, dr: int) -> None:
@@ -1225,7 +1372,7 @@ class MVPApp(App):
             oc, oro = self._state.observe_cursor
             nc, nr = oc + dc, oro + dr
             if 0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height:
-                if (nc, nr) in self._state.fov_cache:
+                if (nc, nr) in self._state.fov_bright:
                     if max(abs(nc - pc), abs(nr - pr)) <= max_range:
                         self._state.observe_cursor = (nc, nr)
                         self._left_panel.refresh()
@@ -1254,10 +1401,6 @@ class MVPApp(App):
                     if max(abs(px - tx), abs(py - ty)) > 1:
                         self._cancel_interact()
                         self._act_log.add("离开了交互范围")
-            # 走进地下城入口
-            if (not self._state.in_dungeon and self._state.dungeon_entrance
-                    and self._state.player_pos == self._state.dungeon_entrance):
-                self._enter_dungeon()
 
     def action_move_up(self): self._move_player(0, -1)
     def action_move_down(self): self._move_player(0, 1)
@@ -1584,6 +1727,10 @@ class MVPApp(App):
             "location_map": self._state.location_map,
         }
         build_dungeon(self._state, _loader)
+        # 修复：build_dungeon 清空了 entities，需重新加入被控生物
+        p = self._state.player
+        if not any(c is p for c, _ in self._state.entities):
+            self._state.entities.append((p, self._state.player_pos))
         self._state.in_dungeon = True
         self._act_log.add(f"{self._pn} 走入了地下城...")
         self._end_combat(); _update_fov(self._state)
@@ -1600,6 +1747,10 @@ class MVPApp(App):
             self._state.bed_positions = ws["bed_positions"]
             self._state.door_states = ws["door_states"]
             self._state.location_map = ws.get("location_map", {})
+        # 确保被控生物在实体列表中
+        p = self._state.player
+        if p is not None and not any(c is p for c, _ in self._state.entities):
+            self._state.entities.append((p, self._state.player_pos))
         self._state.in_dungeon = False
         self._act_log.add(f"{self._pn} 回到了地面")
         self._end_combat(); _update_fov(self._state)

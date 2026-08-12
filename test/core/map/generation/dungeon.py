@@ -10,6 +10,7 @@ def build_dungeon(state: GameState, loader) -> None:
     """BSP 生成地下城 (30×20)。"""
     w, h = 30, 20
     state.current_map = "地下城"
+    state.in_dungeon = True
     state.map = Grid[Terrain](w, h, Terrain.WALL)
     state.entities = []
     state.bed_positions = set()

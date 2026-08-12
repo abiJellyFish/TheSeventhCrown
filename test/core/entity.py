@@ -340,6 +340,7 @@ class Item:
     throw_damage: str = ""                # 投掷伤害骰（空=用 weight 推算或近战伤害）
     throw_damage_type: str = "bludgeoning"
     throw_effect: str = ""                # 投掷特效: "heal"|""
+    light_source: dict | None = None     # {"radius": 5, "level": "bright", "condition": "lit"}
 
     def __post_init__(self):
         if self.space <= 0:
@@ -363,6 +364,7 @@ class Item:
             throw_damage=data.get("throw_damage", ""),
             throw_damage_type=data.get("throw_damage_type", "bludgeoning"),
             throw_effect=data.get("throw_effect", ""),
+            light_source=data.get("light_source"),
         )
 
 
@@ -403,6 +405,7 @@ class Weapon(Item):
             weight=data.get("weight", 0.0),
             price=data.get("price", {}),
             description=data.get("description", ""),
+            light_source=data.get("light_source"),
         )
 
 

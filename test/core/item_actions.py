@@ -51,6 +51,7 @@ def get_item_actions(item) -> list[str]:
 
     # 所有物品通用操作
     actions.extend(_TERMINAL_ACTIONS)
+
     return actions
 
 
@@ -203,6 +204,7 @@ def copy_item_with_count(item, count: int, weight: float):
             description=getattr(item, 'description', ''),
             count=count, space=getattr(item, 'space', 1),
             loaded=getattr(item, 'loaded', True),
+            light_source=dict(getattr(item, 'light_source', None) or {}),
         )
     elif item_type == "armor":
         return Armor(

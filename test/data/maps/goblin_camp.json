@@ -19,6 +19,18 @@
     {"key": "long_ear_dog", "pos": [2, 3]}
   ],
   "location_name": "营地",
+  "chests": [
+    {
+      "pos": [4, 3],
+      "label": "地精的储藏室",
+      "gp": 4,
+      "inventory": [
+        {"name": "一包口粮", "item_type": "consumable", "effect": "restore_food", "amount": "15000", "ap_cost": 1, "weight": 1.0, "count": 6, "description": "几块晒干的兽肉和浆果"},
+        {"name": "圆盾", "item_type": "armor", "armor_type": "shield", "slot": "full_body", "ac_bonus": 2, "tenacity_bonus": 3, "str_requirement": 8, "weight": 2.0},
+        {"name": "铁质头盔", "item_type": "armor", "armor_type": "heavy", "slot": "head", "ac_bonus": 2, "tenacity_bonus": 1, "str_requirement": 10, "weight": 1.5}
+      ]
+    }
+  ],
   "width": 9,
   "height": 15
 }

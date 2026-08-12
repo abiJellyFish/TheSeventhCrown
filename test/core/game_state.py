@@ -35,6 +35,7 @@ class GameState:
     dungeon_entrance: tuple[int, int] | None = None
     dungeon_exit: tuple[int, int] | None = None
     in_dungeon: bool = False
+    chests: dict[tuple[int,int], dict] = field(default_factory=dict)
     world_state: dict | None = None
     location_map: dict[tuple[int, int], str] = field(default_factory=dict)
 
@@ -58,7 +59,42 @@ class GameState:
 
     # 光照与视野
     light_map: Grid | None = None
-    fov_cache: set = field(default_factory=set)       # 当前 FOV 可见格集合
+    light_sources: dict = field(default_factory=dict)          # {pos: (radius, LightLevel)}
+    fov_bright: set = field(default_factory=set)               # 明亮视野格子
+    fov_dim: set = field(default_factory=set)                  # 微光视野格子
+    fov_cache: set = field(default_factory=set)                # Deprecated: 兼容旧引用，返回 fov_bright | fov_dim
+
+    # ---- 光照注册 ----
+
+    def register_light(self, pos: tuple[int, int], radius: int, level) -> None:
+        """注册光源。"""
+        from core.fov import LightLevel
+        self.light_sources[pos] = (radius, level)
+
+    def unregister_light(self, pos: tuple[int, int]) -> None:
+        """注销光源。"""
+        self.light_sources.pop(pos, None)
+
+    def _build_light_grid(self):
+        """根据光源注册表合成光照等级网格。
+        基准: in_dungeon 内为 DARK，否则 BRIGHT。
+        光源按 BRIGHT > DIM > DARK 优先级叠加（只在更暗时覆盖）。
+        """
+        from core.fov import LightLevel
+        from core.grid import Grid
+        base = LightLevel.BRIGHT if not self.in_dungeon else LightLevel.DARK
+        lg = Grid[LightLevel](self.map.width, self.map.height, base)
+        for (lx, ly), (radius, level) in self.light_sources.items():
+            for dc in range(-radius, radius + 1):
+                for dr in range(-radius, radius + 1):
+                    if max(abs(dc), abs(dr)) <= radius:
+                        nc, nr = lx + dc, ly + dr
+                        if lg.within_bounds(nc, nr):
+                            current = lg[nc, nr]
+                            # BRIGHT > DIM > DARK (higher enum value = brighter)
+                            if current.value < level.value:
+                                lg[nc, nr] = level
+        return lg
 
     # 战技数据
     maneuvers: list[dict] = field(default_factory=list)
@@ -1007,7 +1043,7 @@ class GameState:
         for creature, (ec, er) in self.entities:
             if creature.hp <= 0:
                 continue
-            if are_hostile(creature, self.player) and (ec, er) in self.fov_cache:
+            if are_hostile(creature, self.player) and (ec, er) in self.fov_bright:
                 dist = max(abs(ec - pc), abs(er - pr))
                 if dist <= getattr(creature, 'vision_range', 0):
                     self.pending_combat_target = creature

@@ -20,6 +20,11 @@ test/修改日志.md
 test/待定计划*.md
 test/代码审查报告.md
 test/ui*.md
+test/经验.md
+test/项目设计规范*.md
+test/AI行为系统方案.md
+test/审查报告*.md
+test/重构*.md
 
 # 根目录设计文档 & 笔记
 方案*.md
@@ -30,6 +35,7 @@ test/ui*.md
 内容参考_修改.md
 开发流程总结.md
 新建 文本文档*.txt
+修改日志.md
 
 # 存档运行时
 saves/
@@ -44,3 +50,10 @@ MVP2.md
 *.swp
 *.swo
 MVP.md MVP2.md
+
+# 调试 & 临时文件
+*.log
+ai逻辑.txt
+
+# 测试
+test/tests/

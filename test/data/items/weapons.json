@@ -78,6 +78,7 @@
     "ap_cost": 2,
     "properties": ["light_5", "ignite_surface"],
     "special_damage": {"amount": "1d4", "type": "fire", "condition": "lit"},
+    "light_source": {"radius": 5, "level": "bright", "condition": "unlit"},
     "weight": 1.0,
     "price": {"sp": 40},
     "description": "点燃后提供5格明亮照明，可引燃地表，灼烧敌人"

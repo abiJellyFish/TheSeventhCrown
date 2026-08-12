@@ -61,6 +61,28 @@ def _place_zone(state: GameState, data: dict, loader) -> None:
             c.template_name = ent["key"]
             state.add_entity(c, (ox + ent["pos"][0], oy + ent["pos"][1]))
 
+    # 箱子
+    for chest in data.get("chests", []):
+        cx = ox + chest["pos"][0]
+        cy = oy + chest["pos"][1]
+        # 解析箱子内物品
+        inv = []
+        for item_data in chest.get("inventory", []):
+            if item_data.get("item_type") == "weapon":
+                from core.entity import Weapon
+                inv.append(Weapon.from_dict(item_data))
+            elif item_data.get("item_type") == "armor":
+                from core.entity import Armor
+                inv.append(Armor.from_dict(item_data))
+            else:
+                from core.entity import Item
+                inv.append(Item.from_dict(item_data))
+        state.chests[(cx, cy)] = {
+            "label": chest.get("label", "箱子"),
+            "gp": chest.get("gp", 0),
+            "inventory": inv,
+        }
+
     # 位置名
     name = data.get("location_name", "")
     w = data.get("width", 0)

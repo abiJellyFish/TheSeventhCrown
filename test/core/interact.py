@@ -22,6 +22,7 @@ class InteractType(Enum):
     OPEN = auto()        # 开门/关门
     ENTER = auto()       # 进入地城
     PICKUP = auto()      # 捡起地上物品
+    CHEST = auto()       # 箱子
 
 
 @dataclass
@@ -123,19 +124,38 @@ def _detect_bushes(state) -> list[InteractTarget]:
 
 
 def _detect_entrances(state) -> list[InteractTarget]:
-    """检测自身格是否为地城入口/出口。"""
+    """检测自身格及相邻格是否为地城入口/出口。"""
     pc, pr = state.player_pos
     results = []
-    if state.dungeon_entrance and (pc, pr) == state.dungeon_entrance:
-        results.append(InteractTarget(
-            label="地下城入口", interact_type=InteractType.ENTER,
-            pos=(pc, pr), extra={"direction": "enter"},
-        ))
-    if state.in_dungeon and state.dungeon_exit and (pc, pr) == state.dungeon_exit:
-        results.append(InteractTarget(
-            label="地下城出口", interact_type=InteractType.ENTER,
-            pos=(pc, pr), extra={"direction": "exit"},
-        ))
+    if not state.in_dungeon and state.dungeon_entrance:
+        ex, ey = state.dungeon_entrance
+        if max(abs(ex - pc), abs(ey - pr)) <= 1:
+            results.append(InteractTarget(
+                label="洞口", interact_type=InteractType.ENTER,
+                pos=(ex, ey), extra={"direction": "enter"},
+            ))
+    if state.in_dungeon and state.dungeon_exit:
+        ex, ey = state.dungeon_exit
+        if max(abs(ex - pc), abs(ey - pr)) <= 1:
+            results.append(InteractTarget(
+                label="洞口（离开）", interact_type=InteractType.ENTER,
+                pos=(ex, ey), extra={"direction": "exit"},
+            ))
+    return results
+
+
+def _detect_chests(state) -> list[InteractTarget]:
+    """检测相邻格箱子。"""
+    pc, pr = state.player_pos
+    results = []
+    for (cx, cy), chest_data in state.chests.items():
+        if max(abs(cx - pc), abs(cy - pr)) <= 1:
+            results.append(InteractTarget(
+                label=chest_data.get("label", "箱子"),
+                interact_type=InteractType.CHEST,
+                pos=(cx, cy),
+                extra={"chest_data": chest_data},
+            ))
     return results
 
 
@@ -171,6 +191,7 @@ def _detect_ground_items(state) -> list[InteractTarget]:
 _DETECTORS: list = [
     _detect_doors,
     _detect_entrances,
+    _detect_chests,
     _detect_beds,
     _detect_creatures,
     _detect_bushes,

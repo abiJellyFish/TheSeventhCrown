@@ -36,6 +36,8 @@ class LeftPanel(Static):
             return self._render_cooking_tools()
         if iphase == "cooking":
             return self._render_cooking_panel()
+        if iphase == "chest":
+            return self._render_chest_panel()
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
         if phase == "select_action":
@@ -65,7 +67,7 @@ class LeftPanel(Static):
 
     def _render_combat_default(self) -> str:
         p = self.state.player
-        filled = int(p.ap / max(p.max_ap, 1) * 10)
+        filled = int(p.ap / max(p.max_ap, 1) * p.max_ap)
         lines = [
             f"AP [{'|' * filled}{'.' * (10 - filled)}]",
             "S-Tab 结束战斗轮",
@@ -176,6 +178,23 @@ class LeftPanel(Static):
                     "label": f"双手攻击(近战)  {w.name} {m['damage']}+力量 {m['damage_type']} AP:{m['ap_cost']}"})
                 break
 
+        # 7) 火把点燃/熄灭 — 检查装备栏中手持的火把
+        for side, slot in [("left", "left_hand"), ("right", "right_hand")]:
+            hand_label = "左手" if side == "left" else "右手"
+            hand_item = p.equipment.get(slot)
+            if hand_item is None:
+                continue
+            ls = getattr(hand_item, 'light_source', None)
+            if not ls:
+                continue
+            condition = ls.get("condition", "")
+            if condition == "lit":
+                actions.append({"mode": "torch_extinguish", "weapon": hand_item,
+                    "label": f"熄灭火把({hand_label})  AP:1"})
+            else:
+                actions.append({"mode": "torch_ignite", "weapon": hand_item,
+                    "label": f"点燃火把({hand_label})  AP:1"})
+
         return actions
 
     def _render_action_panel(self) -> str:
@@ -233,8 +252,10 @@ class LeftPanel(Static):
             lines.append("目标: (空地)")
 
         # 可见性
-        if (oc, oro) in self.state.fov_cache:
-            lines.append("可见: 是")
+        if (oc, oro) in self.state.fov_bright:
+            lines.append("可见: 明亮")
+        elif (oc, oro) in self.state.fov_dim:
+            lines.append("可见: 微光")
         else:
             lines.append("可见: 否")
 
@@ -261,7 +282,7 @@ class LeftPanel(Static):
                 tc, tr = pc + dc, pr + dr
                 if not self.state.map.within_bounds(tc, tr):
                     continue
-                if (tc, tr) not in self.state.fov_cache:
+                if (tc, tr) not in self.state.fov_bright:
                     continue
                 dist = max(abs(dc), abs(dr))
                 ent = self.state.get_entity_at(tc, tr)
@@ -464,6 +485,50 @@ class LeftPanel(Static):
         lines.append("")
         lines.append("[[A0]]返回")
         return "\n".join(lines)
+
+
+    def _render_chest_panel(self) -> str:
+        """箱子交互面板：拿取区 + 存放区。"""
+        target = getattr(self.state, 'interact_target', None)
+        if target is None:
+            return "── 箱子 ──\n\n(数据异常)\n\n[0] 离开"
+
+        chest_data = target.extra.get("chest_data", {})
+        label = chest_data.get("label", "箱子")
+        gp = chest_data.get("gp", 0)
+        chest_inv = chest_data.get("inventory", [])
+        max_h = self.size.height
+
+        lines = [f"[bold]── {label} ──[/]", ""]
+        if gp > 0:
+            lines.append(f"金币: {gp} GP")
+        lines.append("")
+
+        # 拿取区
+        lines.append("[bold][拿取][/]")
+        if chest_inv:
+            for i, item in enumerate(chest_inv, 1):
+                name = item.name
+                count = getattr(item, 'count', 1)
+                count_str = f" x{count}" if count > 1 else ""
+                lines.append(f"  [C{i}]{name}{count_str}")
+        else:
+            lines.append("  (箱子为空)")
+        lines.append("")
+
+        # 存放区
+        lines.append("[bold][存放]（你的物品栏）[/]")
+        player_inv = self.state.player.inventory
+        if player_inv:
+            for i, item in enumerate(player_inv, 1):
+                count_str = f" x{item.count}" if item.count > 1 else ""
+                lines.append(f"  [S{i}]{item.name}{count_str}")
+        else:
+            lines.append("  (背包为空)")
+        lines.append("")
+
+        lines.append(":C序号 拿取  :S序号 存放  [0] 离开")
+        return "\n".join(lines[:max_h])
 
 
 def sell_price_local(price: dict) -> dict:
