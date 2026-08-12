@@ -52,7 +52,7 @@ def _detect_creatures(state) -> list[InteractTarget]:
     pc, pr = state.player_pos
     results = []
     for creature, (ec, er) in state.entities:
-        if creature is state.player:
+        if creature.controlled:
             continue
         if max(abs(ec - pc), abs(er - pr)) > 1:
             continue

@@ -10,7 +10,7 @@ from textual.binding import Binding
 from textual.events import Key
 
 from core.game_state import GameState
-from core.entity import Player, Creature, Weapon, are_hostile
+from core.entity import Player, Creature, Weapon, are_hostile, create_fighter, create_mage
 import core.entity as ent
 from core.movement import Terrain
 from core.grid import Grid
@@ -211,13 +211,14 @@ class MVPApp(App):
             stats[s] += 2
 
         _class_factories = {
-            "fighter": Player.create_fighter,
-            "mage": Player.create_fighter,  # mage 未完成，暂时复用 fighter 模板
+            "fighter": create_fighter,
+            "mage": create_fighter,  # mage 未完成，暂时复用 fighter 模板
         }
-        factory = _class_factories.get(ps_data["class"], Player.create_fighter)
-        player = factory(name=ps_data["name"], stats=stats)
+        factory = _class_factories.get(ps_data["class"], create_fighter)
+        c = factory(name=ps_data["name"], stats=stats)
+        c.controlled = True
 
-        self._state = GameState(player=player, map_width=80, map_height=60)
+        self._state = GameState(player=c, map_width=80, map_height=60)
 
         # 加载战技数据
         with open(os.path.join(DATA_DIR, "maneuvers.json"), "r", encoding="utf-8") as f:
@@ -229,7 +230,11 @@ class MVPApp(App):
         self._state._npc_log_cb = lambda msg: self._act_log.add(msg) if self._act_log else None
         self._state._ai_decide_cb = lambda c, ek: _ai_engine.decide(c, extra_keys=ek)
         build_world(self._state, _loader)
-        self._state.player_pos = tuple(ps_data["start_pos"])
+        # Phase 1 兼容：build_world 重置了 entities，重新加入被控生物
+        c.controlled = True
+        start_pos = tuple(ps_data["start_pos"])
+        self._state.entities.append((c, start_pos))
+        self._state.set_controlled(c)
 
         # 初始装备
         for slot, item_data in ps_data.get("equipment", {}).items():

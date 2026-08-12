@@ -17,10 +17,10 @@ from core.pendulum import PendulumClock
 class GameState:
     """全局游戏状态。"""
 
-    player: Player
+    player: Creature | None = None     # Phase 3 删除，改为 property
     map_width: int = 80
     map_height: int = 60
-    player_pos: tuple[int, int] = (0, 0)
+    player_pos: tuple[int, int] = field(default=(0, 0), repr=False)  # Phase 3 删除，改为 property
 
     # 地图
     map: Grid[Terrain] = field(init=False)
@@ -40,6 +40,10 @@ class GameState:
 
     # 实体
     entities: list[tuple[Creature, tuple[int, int]]] = field(default_factory=list)
+
+    # 控制组件
+    controlled_id: int | None = None
+    _controlled_cache: Creature | None = field(default=None, repr=False)
 
     # 时间
     clock: PendulumClock = field(default_factory=PendulumClock)
@@ -88,6 +92,13 @@ class GameState:
     def __post_init__(self):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.PASSABLE)
         self.clock.set_npc_advance_callback(self._advance_npcs)
+        # 兼容旧 player 参数：从 instance __dict__ 读取（property 可能已拦截）
+        _p = self.__dict__.get('_player_backup')
+        _pp = self.__dict__.get('_player_pos_backup', (0, 0))
+        if _p is not None:
+            _p.controlled = True
+            self.entities.append((_p, _pp))
+            self.set_controlled(_p)
         self._NPC_ACTIONS = {
             "wander": self._npc_wander,
             "forage": self._npc_move_to_food,
@@ -104,6 +115,15 @@ class GameState:
             "rest": self._npc_rest,
             "idle": None,
         }
+
+    # ---- 控制组件 ----
+
+    def set_controlled(self, creature: Creature | None) -> None:
+        """设置当前被玩家控制的生物。同一时间只能有一个 controlled=True。"""
+        for c, _ in self.entities:
+            c.controlled = (c is creature)
+        self.controlled_id = id(creature) if creature else None
+        self._controlled_cache = creature
 
     # ---- 实体管理 ----
 
@@ -131,13 +151,18 @@ class GameState:
     # ---- 移动 ----
 
     def move_player(self, col: int, row: int) -> bool:
-        if can_enter(col, row, self.map, self.entities,
-                     self.player_pos[0], self.player_pos[1]):
-            self.player_pos = (col, row)
-            self._check_campfire_burn(self.player)
-            if not self.in_combat:
-                self.clock.tick_move(self.player.speed)
-            return True
+        p = self.player
+        if p is None:
+            return False
+        # 在 entities 中查找当前被控生物的位置并更新
+        for i, (c, (ec, er)) in enumerate(self.entities):
+            if c is p:
+                if can_enter(col, row, self.map, self.entities, ec, er):
+                    self.entities[i] = (c, (col, row))
+                    self._check_campfire_burn(p)
+                    if not self.in_combat:
+                        self.clock.tick_move(p.speed)
+                    return True
         return False
 
     def move_entity(self, creature: Creature, from_col: int, from_row: int,
@@ -275,16 +300,6 @@ class GameState:
                     break
         ctx["enemy_adjacent"] = enemy_adjacent
         ctx["enemy_visible"] = enemy_visible
-
-        # player 也走同一套逻辑
-        if not enemy_adjacent and are_hostile(creature, self.player) and self.player.hp > 0:
-            p_dist = max(abs(self.player_pos[0] - ec), abs(self.player_pos[1] - er))
-            if p_dist <= vr:
-                enemy_visible = True
-                ctx["enemy_visible"] = True
-                if p_dist <= 1:
-                    enemy_adjacent = True
-                    ctx["enemy_adjacent"] = True
 
         # 缓存盟友数（供渲染使用，避免 O(N²)）
         ally_count = 0
@@ -675,7 +690,7 @@ class GameState:
 
     def _check_campfire_burn(self, creature: Creature) -> None:
         """若生物站在篝火上，施加灼烧状态（5 钟摆，自动刷新）。"""
-        pos = self.player_pos if creature is self.player else None
+        pos = self.player_pos if creature.controlled else None
         if pos is None:
             for c, (ec, er) in self.entities:
                 if c is creature:
@@ -685,19 +700,28 @@ class GameState:
             creature.add_status("灼烧", duration=5)
 
     def _tick_all_statuses(self) -> None:
-        """每钟摆推进玩家和所有实体的状态计时。"""
-        self.player.tick_statuses()
+        """每钟摆推进所有实体的状态计时。
+        被控生物若在 entities 中则随迭代处理，否则单独处理。"""
         for creature, _ in self.entities:
             creature.tick_statuses()
+        p = self.player
+        if p is not None and not any(c is p for c, _ in self.entities):
+            p.tick_statuses()
 
     def _tick_food(self) -> None:
-        """每钟摆所有非 food_locked 生物消耗 1 饮食值，归零后扣 HP。"""
-        for creature in [self.player] + [c for c, _ in self.entities]:
+        """每钟摆所有非 food_locked 生物消耗 1 饮食值，归零后扣 HP。
+        被控生物若在 entities 中则随迭代处理，否则单独处理。"""
+        # 确保被控生物被处理（build_world 等可能清空 entities）
+        all_creatures = list(self.entities)
+        p = self.player
+        if p is not None and not any(c is p for c, _ in all_creatures):
+            all_creatures.append((p, None))  # pos 占位
+        for creature, _ in all_creatures:
             if creature.food_locked:
                 continue
             # NPC 饥饿时优先吃背包食物（玩家手动吃，不自动）
             max_food = 15000
-            if creature is not self.player and creature.food_value < max_food * 0.2 and creature.inventory:
+            if not creature.controlled and creature.food_value < max_food * 0.2 and creature.inventory:
                 for item in list(creature.inventory):
                     if getattr(item, 'effect', '') == 'restore_food':
                         amt = item.amount
@@ -718,7 +742,7 @@ class GameState:
                         break
             creature.food_value = max(0, creature.food_value - 250)
             # 玩家饥饿/濒死提示
-            if creature is self.player and self._npc_log_cb:
+            if creature.controlled and self._npc_log_cb:
                 if creature.food_value == 3000:
                     self._npc_log_cb("你感到饥饿，需要进食了")
                 elif creature.food_value == 0 and creature.hp > 0:
@@ -726,7 +750,7 @@ class GameState:
             if creature.food_value == 0:
                 creature.hp = max(0, creature.hp - 1)
                 # 死亡时 inventory 物品加入掉落（玩家除外，玩家死亡走独立流程）
-                if creature is not self.player and creature.hp <= 0 and creature.inventory:
+                if not creature.controlled and creature.hp <= 0 and creature.inventory:
                     loot = getattr(creature, 'loot', {}) or {}
                     always = loot.get('always', [])
                     for item in creature.inventory:
@@ -740,8 +764,9 @@ class GameState:
                     loot['always'] = always
                     creature.loot = loot
 
-        if self.player.hp <= 0:
-            self.player.hp = 1
+        p = self.player
+        if p is not None and p.hp <= 0:
+            p.hp = 1
 
 
     def _npc_evaluate_and_dispatch(self, creature, ec, er) -> None:
@@ -931,16 +956,16 @@ class GameState:
             self._check_campfire_burn(self.player)
 
 
-        # 按 maxS 降序排序，同速按 ID；战斗中只处理敌对生物
+        # 按 maxS 降序排序，同速按 ID；跳过被控生物；战斗中只处理敌对生物
         if self.in_combat:
             sorted_entities = sorted(
-                [(c, p) for c, p in self.entities if c is not self.player and c.hp > 0
+                [(c, p) for c, p in self.entities if not c.controlled and c.hp > 0
                  and not c.has_status("不可移动") and are_hostile(c, self.player)],
                 key=lambda x: (-x[0].speed, id(x[0]))
             )
         else:
             sorted_entities = sorted(
-                [(c, p) for c, p in self.entities if c is not self.player and c.hp > 0 and not c.has_status("不可移动")],
+                [(c, p) for c, p in self.entities if not c.controlled and c.hp > 0 and not c.has_status("不可移动")],
                 key=lambda x: (-x[0].speed, id(x[0]))
             )
 
@@ -973,3 +998,55 @@ class GameState:
         for pos, regrow_at in list(self.harvested_bushes.items()):
             if self.clock.pendulum_count >= regrow_at:
                 del self.harvested_bushes[pos]
+
+
+# ═══════════════════════════════════════════════════
+# player / player_pos 属性（Phase 1：替换 dataclass 字段为 property）
+# 猴子补丁方式：dataclass __init__ 已生成但尚未创建实例时替换
+# self.player = value → property setter → _player_backup
+# __post_init__ 从 _player_backup 读取并加入 entities
+# ═══════════════════════════════════════════════════
+
+def _player_getter(self) -> Creature | None:
+    """当前被玩家控制的生物（带缓存）。
+    Phase 1 兼容：若 entities 中找不到，回退到 _player_backup。"""
+    if '_controlled_cache' not in self.__dict__:
+        return self.__dict__.get('_player_backup')
+    if self._controlled_cache is not None and self._controlled_cache.controlled:
+        return self._controlled_cache
+    for c, _ in getattr(self, 'entities', []):
+        if c.controlled:
+            self._controlled_cache = c
+            return c
+    # 回退到备份（例如 build_world 清空 entities 后）
+    self._controlled_cache = None
+    return self.__dict__.get('_player_backup')
+
+
+def _player_setter(self, value: Creature | None) -> None:
+    """Phase 1 兼容：存储以便 __post_init__ 处理。"""
+    self.__dict__['_player_backup'] = value
+
+
+def _player_pos_getter(self) -> tuple[int, int] | None:
+    """当前被控生物的位置。
+    Phase 1 兼容：若 entities 中找不到，回退到 _player_pos_backup。"""
+    for c, (ec, er) in getattr(self, 'entities', []):
+        if c.controlled:
+            return (ec, er)
+    return self.__dict__.get('_player_pos_backup')
+
+
+def _player_pos_setter(self, value: tuple[int, int]) -> None:
+    """设置被控生物的位置：若在 entities 中则更新坐标，同时同步备份。"""
+    self.__dict__['_player_pos_backup'] = value
+    if hasattr(self, 'entities'):
+        for i, (c, (ec, er)) in enumerate(self.entities):
+            if c.controlled:
+                self.entities[i] = (c, value)
+                return
+
+
+# 替换 dataclass 字段为 property（__init__ 已由 @dataclass 生成）
+GameState.player = property(_player_getter, _player_setter)
+GameState.player_pos = property(_player_pos_getter, _player_pos_setter)

@@ -84,6 +84,17 @@ class Creature:
         "left_hand": None, "right_hand": None, "accessory1": None,
         "accessory2": None, "accessory3": None,
     })
+    # 货币
+    gp: int = 0
+    sp: int = 0
+    cp: int = 0
+    # 角色
+    char_class: str = ""
+    background: str = ""
+    # 法术
+    memorized_spells: list[str] = field(default_factory=list)
+    # 控制组件
+    controlled: bool = False
     _hunt_target: Any = field(default=None, repr=False)  # 临时捕猎目标 (creature, pos)
     _hostile_to: set = field(default_factory=set, repr=False)  # 临时敌对的生物 id 集合
     curS_ticks: int = 0                    # 里程累积 [0, maxS*SCALE)，SCALE=10
@@ -182,8 +193,29 @@ class Creature:
 
     @property
     def total_carry_weight(self) -> float:
-        """总负重 = 物品栏物品重量之和。"""
-        return sum(getattr(i, 'weight', 0) * getattr(i, 'count', 1) for i in self.inventory)
+        """总负重 = 装备栏 + 物品栏重量之和。"""
+        total = 0.0
+        for item in self.equipment.values():
+            if item is not None:
+                total += getattr(item, 'weight', 0.0)
+        for item in self.inventory:
+            w = getattr(item, 'weight', 0.0)
+            count = getattr(item, 'count', 1)
+            total += w * count
+        return total
+
+    def carry_status(self) -> dict:
+        """返回当前负重状态 {threshold, label, effects}。"""
+        cap = self.carry_capacity()
+        if cap <= 0:
+            return CARRY_STATUS["overloaded"]
+        ratio = self.total_carry_weight / cap
+        if ratio < CARRY_STATUS["light"]["threshold"]:
+            return CARRY_STATUS["light"]
+        elif ratio < CARRY_STATUS["encumbered"]["threshold"]:
+            return CARRY_STATUS["encumbered"]
+        else:
+            return CARRY_STATUS["overloaded"]
 
     # ---- 构造 ----
 
@@ -491,3 +523,26 @@ class Armor(Item):
             price=data.get("price", {}),
             description=data.get("description", ""),
         )
+
+
+# ═══════════════════════════════════════════════════
+# 工厂函数（替代 Player.create_fighter / create_mage）
+# ═══════════════════════════════════════════════════
+
+def create_fighter(name: str, stats: dict) -> Creature:
+    """创建战士。"""
+    s = {**DEFAULT_STATS, **stats}
+    s["str"] += 2
+    s["con"] += 2
+    return Creature(name=name, char_class="fighter", faction="守序",
+                    hp=35, max_hp=35, max_ap=6, stats=s, gp=3)
+
+
+def create_mage(name: str, stats: dict, domain: str = "evocation") -> Creature:
+    """创建魔法使。domain: "evocation" | "abjuration" """
+    s = {**DEFAULT_STATS, **stats}
+    s["int"] += 2
+    spells = {"evocation": ["魔法飞弹"], "abjuration": ["护盾术", "疗伤术"]}
+    return Creature(name=name, char_class="mage", faction="守序",
+                    hp=30, max_hp=30, mp=100, max_mp=100, max_ap=6,
+                    stats=s, gp=3, memorized_spells=spells.get(domain, []))
