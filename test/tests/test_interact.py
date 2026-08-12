@@ -16,13 +16,13 @@ def state():
 
 class TestScanInteract:
     def test_detect_friendly_creature(self, state):
-        c = Creature(name="村民", hp=10, faction="friendly", char="v")
+        c = Creature(name="村民", hp=10, faction="守序", char="v")
         state.add_entity(c, (10, 9))
         targets = scan_interact_targets(state)
         assert any(t.interact_type == InteractType.TALK and t.creature is c for t in targets)
 
     def test_detect_corpse(self, state):
-        c = Creature(name="尸体", hp=0, faction="hostile", char="%")
+        c = Creature(name="尸体", hp=0, faction="混乱", char="%")
         state.add_entity(c, (10, 9))
         targets = scan_interact_targets(state)
         assert any(t.interact_type == InteractType.LOOT for t in targets)
@@ -44,7 +44,7 @@ class TestScanInteract:
         assert any(t.interact_type == InteractType.PICK for t in targets)
 
     def test_multiple_targets(self, state):
-        c = Creature(name="村民", hp=10, faction="friendly", char="v")
+        c = Creature(name="村民", hp=10, faction="守序", char="v")
         state.add_entity(c, (10, 9))
         state.map[11, 10] = Terrain.DIFFICULT
         targets = scan_interact_targets(state)

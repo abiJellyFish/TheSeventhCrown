@@ -7,7 +7,7 @@ from core.entity import Creature, Player, Weapon, Armor, Item, stat_adjust, CARR
 
 class TestCreature:
     def test_creature_from_dict(self):
-        data = {"name": "地精", "hp": 20, "max_hp": 20, "faction": "hostile",
+        data = {"name": "地精", "hp": 20, "max_hp": 20, "faction": "混乱",
                 "stats": {"str": 8, "dex": 12}, "char": "g"}
         c = Creature.from_dict(data)
         assert c.name == "地精"

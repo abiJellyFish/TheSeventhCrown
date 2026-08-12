@@ -186,8 +186,8 @@ class RightPanel(Static):
         ent = self.state.get_entity_at(cx, cy)
         if ent and ent is not self.state.player:
             hp_pct = ent.hp / max(ent.max_hp, 1) * 100
-            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+            faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
+                           "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
             lines.append(f"生物: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
             if ent.food_value > 0:
                 lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")

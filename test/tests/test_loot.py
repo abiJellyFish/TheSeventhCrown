@@ -110,7 +110,7 @@ def _make_player(gp=0, sp=0, cp=0):
 def _make_creature(name="测试怪物", loot=None):
     """创建测试用生物。"""
     return Creature(
-        name=name, faction="hostile",
+        name=name, faction="混乱",
         hp=10, max_hp=10,
         tenacity=5, max_tenacity=5,
         loot=loot or {},

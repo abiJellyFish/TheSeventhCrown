@@ -39,7 +39,7 @@ class Creature:
     """生物数据类。字段对齐 MVP2.md 六、生物 定义。"""
 
     name: str
-    faction: str = "neutral"              # "friendly" | "neutral" | "hostile"
+    faction: str = "中立"                  # "守序" | "中立" | "混乱"
     body_type: str = "humanoid"           # "humanoid" | "beast" | "undead" | ...
 
     # 核心数值
@@ -85,6 +85,7 @@ class Creature:
         "accessory2": None, "accessory3": None,
     })
     _hunt_target: Any = field(default=None, repr=False)  # 临时捕猎目标 (creature, pos)
+    _hostile_to: set = field(default_factory=set, repr=False)  # 临时敌对的生物 id 集合
     curS_ticks: int = 0                    # 里程累积 [0, maxS*SCALE)，SCALE=10
     _action_remaining_cost: float = 0.0    # 当前动作剩余耗时（钟摆），0=无活跃动作
     _cached_path: Any = field(default=None, repr=False)   # 寻路缓存
@@ -134,11 +135,6 @@ class Creature:
     aggression_tier: str = "medium"       # "low" | "medium" | "high"
     schedule: str = "idle"               # 当前日程
 
-    # ---- 阵营反应 ----
-    original_faction: str = ""            # 记录原始阵营
-    hostility_triggered: bool = False     # 中立生物是否已被攻击
-    friendly_attack_count: int = 0        # 友好生物被攻击次数
-
     def meets_condition(self, cond: str) -> bool:
         """检查硬过滤条件。"""
         if cond == "can_move":
@@ -150,9 +146,6 @@ class Creature:
         if cond == "enemy_can_communicate":
             return self.language != ""
         return True
-
-    # ---- 预留字段 ----
-    ally_slot: Any = None                 # None = 未入队; 入队后设为槽位索引
 
     def __post_init__(self):
         # 钳制 HP/MP/韧性
@@ -199,7 +192,7 @@ class Creature:
         stats = {**DEFAULT_STATS, **data.get("stats", {})}
         creature = cls(
             name=data["name"],
-            faction=data.get("faction", "neutral"),
+            faction=data.get("faction", "中立"),
             body_type=data.get("body_type", "humanoid"),
             hp=data.get("hp", data.get("max_hp", 30)),
             max_hp=data.get("max_hp", data.get("hp", 30)),
@@ -232,6 +225,39 @@ class Creature:
             creature.behavior_table = list(DEFAULT_BEHAVIOR["components"])
             creature.behavior_overrides = dict(DEFAULT_BEHAVIOR["overrides"])
         return creature
+
+
+# ═══════════════════════════════════════════════════
+# 阵营关系
+# ═══════════════════════════════════════════════════
+
+FACTION_RELATIONS = {
+    "守序": {"allies": ["守序"], "enemies": ["混乱"]},
+    "混乱": {"allies": ["混乱"], "enemies": ["守序"]},
+    "中立": {"allies": [],        "enemies": []},
+}
+
+
+def are_hostile(a: "Creature", b: "Creature") -> bool:
+    """两生物是否敌对。同阵营不敌对，中立通过 _hostile_to 被动反击。"""
+    if a is b:
+        return False
+    af, bf = a.faction, b.faction
+    if af == bf:
+        return False
+    if af == "中立" and id(b) in a._hostile_to:
+        return True
+    if bf == "中立" and id(a) in b._hostile_to:
+        return True
+    enemies = FACTION_RELATIONS.get(af, {}).get("enemies", [])
+    return bf in enemies
+
+
+def is_ally(a: "Creature", b: "Creature") -> bool:
+    """两生物是否同盟（同阵营且非临时敌对）。"""
+    if a is b:
+        return True
+    return a.faction == b.faction
 
 
 # ═══════════════════════════════════════════════════
@@ -306,7 +332,7 @@ class Player(Creature):
         return cls(
             name=name,
             char_class="fighter",
-            faction="friendly",
+            faction="守序",
             hp=35, max_hp=35,         # 30 + 5
             max_ap=6,
             stats=s,
@@ -326,7 +352,7 @@ class Player(Creature):
         return cls(
             name=name,
             char_class="mage",
-            faction="friendly",
+            faction="守序",
             hp=30, max_hp=30,
             mp=100, max_mp=100,
             max_ap=6,

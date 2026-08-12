@@ -4,7 +4,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from core.entity import Creature, Item, Player
+from core.entity import Creature, Item, Player, are_hostile, is_ally
 from core.grid import Grid
 from core.dice import roll_2d6
 from core.movement import Terrain, can_enter, find_path
@@ -252,13 +252,13 @@ class GameState:
                 nearby_items.append((item, (ic, ir)))
         ctx["nearby_items"] = nearby_items
 
-        # 敌人检测（同阵营不视为敌人）
+        # 敌人检测（统一走 are_hostile，无特例）
         enemy_adjacent = False
         enemy_visible = False
         for c2, (e2c, e2r) in self.entities:
             if c2.hp <= 0 or c2 is creature:
                 continue
-            if c2.faction == creature.faction:
+            if not are_hostile(creature, c2):
                 continue
             dist = max(abs(e2c - ec), abs(e2r - er))
             if dist <= vr:
@@ -269,8 +269,8 @@ class GameState:
         ctx["enemy_adjacent"] = enemy_adjacent
         ctx["enemy_visible"] = enemy_visible
 
-        # player 也视为敌人
-        if creature.faction != self.player.faction and self.player.hp > 0:
+        # player 也走同一套逻辑
+        if not enemy_adjacent and are_hostile(creature, self.player) and self.player.hp > 0:
             p_dist = max(abs(self.player_pos[0] - ec), abs(self.player_pos[1] - er))
             if p_dist <= vr:
                 enemy_visible = True
@@ -282,7 +282,7 @@ class GameState:
         # 缓存盟友数（供渲染使用，避免 O(N²)）
         ally_count = 0
         for c2, _ in self.entities:
-            if c2.faction == creature.faction and c2.hp > 0 and c2 is not creature:
+            if is_ally(c2, creature) and c2.hp > 0 and c2 is not creature:
                 ally_count += 1
         creature._ally_count = ally_count
 
@@ -586,7 +586,7 @@ class GameState:
         for c2, (e2c, e2r) in self.entities:
             if c2.hp <= 0 or c2 is creature:
                 continue
-            if c2.faction == creature.faction:
+            if not are_hostile(creature, c2):
                 continue
             dist = max(abs(e2c - ec), abs(e2r - er))
             if dist <= 1 and dist < best_dist:
@@ -882,7 +882,7 @@ class GameState:
             for c2, (e2c, e2r) in self.entities:
                 if c2.hp <= 0 or c2 is creature:
                     continue
-                if c2.faction == creature.faction:
+                if not are_hostile(creature, c2):
                     continue
                 dist = max(abs(e2c - ec), abs(e2r - er))
                 if dist < best_dist:
@@ -913,11 +913,11 @@ class GameState:
             self._check_campfire_burn(self.player)
 
 
-        # 按 maxS 降序排序，同速按 ID；战斗中只处理 hostile
+        # 按 maxS 降序排序，同速按 ID；战斗中只处理敌对生物
         if self.in_combat:
             sorted_entities = sorted(
                 [(c, p) for c, p in self.entities if c is not self.player and c.hp > 0
-                 and not c.has_status("不可移动") and c.faction == "hostile"],
+                 and not c.has_status("不可移动") and are_hostile(c, self.player)],
                 key=lambda x: (-x[0].speed, id(x[0]))
             )
         else:
@@ -946,7 +946,7 @@ class GameState:
         for creature, (ec, er) in self.entities:
             if creature.hp <= 0:
                 continue
-            if creature.faction == "hostile" and (ec, er) in self.fov_cache:
+            if are_hostile(creature, self.player) and (ec, er) in self.fov_cache:
                 dist = max(abs(ec - pc), abs(er - pr))
                 if dist <= getattr(creature, 'vision_range', 0):
                     self.pending_combat_target = creature

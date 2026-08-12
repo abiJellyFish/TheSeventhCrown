@@ -43,7 +43,8 @@ def can_enter(
         if (ec, er) == (col, row):
             if creature.hp <= 0:
                 continue
-            if creature.faction == "hostile" or not allow_pass_through:
+            # 混乱阵营阻挡，守序/中立不阻挡
+            if creature.faction == "混乱" or not allow_pass_through:
                 return False
 
     return True

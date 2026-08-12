@@ -1,7 +1,7 @@
 """战斗流程状态机 —— 攻击方式选择 → 目标选择 → 命中检定 → 战技/特殊行动。"""
 
 import random
-from core.entity import Creature, Weapon
+from core.entity import Creature, Weapon, are_hostile
 from core.dice import roll_d20
 from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack, miss_message, cover_message
 from core.combat.cover import resolve_cover_line, terrain_cover_info
@@ -344,11 +344,11 @@ class CombatFlow:
             self._state.pending_attack = {}
             return
 
-        # 攻击掷骰前：目标能看到攻击者 → 变敌对 + 进战斗
+        # 攻击掷骰前：目标能看到攻击者 → 记录临时敌对 + 进战斗
         if not self._state.in_combat and self._target_can_see_attacker(target_pos, target):
-            if target.faction != "hostile":
-                target.faction = "hostile"
-                self._act_log.add(f"{target.name} 变为敌对!")
+            if target.faction == "中立" or target.faction == "守序":
+                target._hostile_to.add(id(p))
+                self._act_log.add(f"{target.name} 被激怒，开始反击!")
             self._start_combat_from_ambush(target)
 
         hit, roll = hit_check(p, target, weapon)
@@ -447,12 +447,12 @@ class CombatFlow:
                 return
             p.ap -= weapon.ap_cost
 
-        # 攻击掷骰前（仅第一步）：目标能看到攻击者 → 变敌对 + 进战斗
+        # 攻击掷骰前（仅第一步）：目标能看到攻击者 → 记录临时敌对 + 进战斗
         if step == "left" and not self._state.in_combat and target \
            and self._target_can_see_attacker(target_pos, target):
-            if target.faction != "hostile":
-                target.faction = "hostile"
-                self._act_log.add(f"{target.name} 变为敌对!")
+            if target.faction == "中立" or target.faction == "守序":
+                target._hostile_to.add(id(p))
+                self._act_log.add(f"{target.name} 被激怒，开始反击!")
             self._start_combat_from_ambush(target)
 
         # 无目标 → 直接结束双持
@@ -566,7 +566,7 @@ class CombatFlow:
         if target.hp <= 0:
             self._act_log.add(f"{target.name} 倒在地上，不再动弹")
 
-        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0 \
+        if not self._state.in_combat and are_hostile(target, self._state.player) and target.hp > 0 \
            and self._target_can_see_attacker(pa.get("target_pos"), target):
             self._start_combat_from_ambush(target)
 
@@ -637,7 +637,7 @@ class CombatFlow:
                 p.ap -= 1
             self._act_log.add(f"{self._pn} 挑衅了 {target.name}")
 
-        if not self._state.in_combat and target.faction == "hostile" and target.hp > 0 \
+        if not self._state.in_combat and target and are_hostile(target, self._state.player) and target.hp > 0 \
            and self._target_can_see_attacker(pa.get("target_pos"), target):
             self._start_combat_from_ambush(target)
 
@@ -679,26 +679,11 @@ class CombatFlow:
     def check_faction_reaction(self, target: Creature,
                                 target_pos: tuple = None) -> None:
         """玩家攻击非敌对生物后检查阵营反应。视野外攻击不触发。"""
-        if target.faction == "hostile":
-            return
         if target_pos and not self._target_can_see_attacker(target_pos, target):
             return  # 目标看不到攻击者，不知道谁打的
-        if target.faction == "neutral" and not target.hostility_triggered:
-            target.hostility_triggered = True
-            target.original_faction = "neutral"
-            target.faction = "hostile"
+        if target.faction == "中立" or target.faction == "守序":
+            target._hostile_to.add(id(self._state.player))
             self._act_log.add(f"{target.name} 被激怒了! 开始反击")
             if self._state.in_combat:
                 if target not in self._state.combat_initiative:
                     self._state.combat_initiative.append(target)
-        elif target.faction == "friendly":
-            target.friendly_attack_count += 1
-            if target.friendly_attack_count >= 2:
-                target.original_faction = "friendly"
-                target.faction = "hostile"
-                self._act_log.add(f"{target.name} 怒不可遏! 开始反击")
-                if self._state.in_combat:
-                    if target not in self._state.combat_initiative:
-                        self._state.combat_initiative.append(target)
-            else:
-                self._act_log.add(f"{target.name} 被{self._pn}的攻击吓了一跳，但忍住了")

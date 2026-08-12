@@ -104,14 +104,14 @@ class TestScanContextEnemy:
 
     def test_enemy_adjacent_when_hostile_nearby(self, state):
         from core.entity import Creature
-        hostile = Creature(name="goblin", faction="hostile", hp=10, char="g")
+        hostile = Creature(name="goblin", faction="混乱", hp=10, char="g")
         state.entities = [(hostile, (6, 5))]
         ctx = state._scan_context(state.player, 5, 5)
         assert ctx["enemy_adjacent"]
 
     def test_no_enemy_when_same_faction(self, state):
         from core.entity import Creature
-        ally = Creature(name="friend", faction="friendly", hp=10, char="f")
+        ally = Creature(name="friend", faction="守序", hp=10, char="f")
         state.entities = [(ally, (6, 5))]
         ctx = state._scan_context(state.player, 5, 5)
         assert not ctx["enemy_adjacent"]

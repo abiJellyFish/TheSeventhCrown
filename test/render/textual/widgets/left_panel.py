@@ -221,8 +221,8 @@ class LeftPanel(Static):
 
         if has_valid_target:
             hp_pct = ent.hp / max(ent.max_hp, 1) * 100
-            faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                           "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+            faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
+                           "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
             lines.append(f"目标: {ent.name} {faction_tag}")
             lines.append(f"  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
             if ent.statuses:
@@ -274,8 +274,8 @@ class LeftPanel(Static):
 
         for i, (_, tc, tr, ent) in enumerate(tiles[:9]):
             if ent:
-                faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                               "neutral": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+                faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
+                               "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
                 label = f"{ent.name} {faction_tag} HP:{ent.hp}"
             else:
                 terrain = self.state.map[tc, tr]
@@ -369,8 +369,8 @@ class LeftPanel(Static):
         ]
         # 显示基本状态
         hp_pct = c.hp / max(c.max_hp, 1) * 100
-        faction_tag = {"hostile": "[red]敌对[/]", "friendly": "[green]友好[/]",
-                       "neutral": "[yellow]中立[/]"}.get(c.faction, c.faction)
+        faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
+                       "中立": "[yellow]中立[/]"}.get(c.faction, c.faction)
         lines.append(f"HP {c.hp}/{c.max_hp} ({hp_pct:.0f}%)  {faction_tag}")
         if c.statuses:
             lines.append(f"状态: {', '.join(s.name for s in c.statuses)}")

@@ -144,9 +144,6 @@ class SaveManager:
                 "ap": creature.ap,
                 "statuses": [{"name": s.name, "duration": s.duration} for s in creature.statuses],
                 "food_value": creature.food_value,
-                "hostility_triggered": creature.hostility_triggered,
-                "original_faction": creature.original_faction,
-                "friendly_attack_count": creature.friendly_attack_count,
                 "_looted": getattr(creature, "_looted", False),
             })
         return result
@@ -219,9 +216,6 @@ class SaveManager:
                 c.statuses = [StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in entry.get("statuses", [])]
                 c.food_value = entry.get("food_value", c.food_value)
                 c.faction = entry.get("faction", c.faction)
-                c.hostility_triggered = entry.get("hostility_triggered", False)
-                c.original_faction = entry.get("original_faction", "")
-                c.friendly_attack_count = entry.get("friendly_attack_count", 0)
                 c._looted = entry.get("_looted", False)
                 state.add_entity(c, tuple(entry["pos"]))
 

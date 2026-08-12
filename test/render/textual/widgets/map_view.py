@@ -12,7 +12,7 @@ TERRAIN_COLORS = {
     Terrain.DIFFICULT: "green",
     Terrain.WALL: "rgb(140,140,140)",
 }
-FACTION_COLORS = {"hostile": "red", "friendly": "green", "neutral": "yellow"}
+FACTION_COLORS = {"守序": "green", "混乱": "red", "中立": "yellow"}
 
 
 class MapView(Static):
@@ -59,7 +59,7 @@ class MapView(Static):
                 if ent is not None:
                     ch = "%" if ent.hp <= 0 else ent.char
                     color = FACTION_COLORS.get(ent.faction, "")
-                    text.append(ch, style=f"bold {color}{cur}" if ent.faction == "hostile" else f"{color}{cur}")
+                    text.append(ch, style=f"bold {color}{cur}" if ent.faction == "混乱" else f"{color}{cur}")
                 elif (col, row) == (pc, pr):
                     text.append("@", style=f"bold bright_cyan{cur}")
                 elif (col, row) in self.state.bed_positions:

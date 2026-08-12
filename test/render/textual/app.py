@@ -9,7 +9,7 @@ from textual.binding import Binding
 from textual.events import Key
 
 from core.game_state import GameState
-from core.entity import Player, Creature, Weapon
+from core.entity import Player, Creature, Weapon, are_hostile
 import core.entity as ent
 from core.movement import Terrain
 from core.grid import Grid
@@ -1358,7 +1358,7 @@ class MVPApp(App):
         c = target.creature
         if c is None:
             return
-        if c.faction == "hostile":
+        if are_hostile(c, self._state.player):
             self._act_log.add(f"{self._pn} 拔剑冲向 {c.name}!")
             self._start_combat(c)
             return
@@ -1606,7 +1606,7 @@ class MVPApp(App):
         combatants = [self._state.player]
         pc, pr = self._state.player_pos
         for creature, (ec, er) in self._state.entities:
-            if creature.hp > 0 and creature.faction == "hostile" \
+            if creature.hp > 0 and are_hostile(creature, self._state.player) \
                and max(abs(ec - pc), abs(er - pr)) <= creature.vision_range:
                 combatants.append(creature)
                 creature.ap = creature.max_ap
@@ -1642,6 +1642,9 @@ class MVPApp(App):
         self._state.combat_turn_entity = None
         self._state.player.ap = self._state.player.max_ap
         self._state._combat_ticked = False
+        # 清理临时敌对记录
+        for c, _ in self._state.entities:
+            c._hostile_to.clear()
         self._act_log.add("=== 战斗结束 ===")
 
     def _next_turn(self) -> None:
@@ -1651,7 +1654,7 @@ class MVPApp(App):
         # 拉入范围内未参战的敌对生物（基于生物自身视野检测玩家）
         pc, pr = self._state.player_pos
         for creature, (ec, er) in self._state.entities:
-            if creature.hp > 0 and creature.faction == "hostile" \
+            if creature.hp > 0 and are_hostile(creature, self._state.player) \
                and max(abs(ec - pc), abs(er - pr)) <= creature.vision_range \
                and creature not in self._state.combat_initiative:
                 creature.ap = creature.max_ap
@@ -1659,7 +1662,7 @@ class MVPApp(App):
                 self._act_log.add(f"{creature.name} 加入了战斗!")
 
         alive = [e for e in self._state.combat_initiative if e is self._state.player or e.hp > 0]
-        hostiles = [e for e in alive if e.faction == "hostile" and e.hp > 0]
+        hostiles = [e for e in alive if are_hostile(e, self._state.player) and e.hp > 0]
         if not hostiles:
             self._end_combat(); self.refresh_all(); return
 
@@ -1896,9 +1899,9 @@ class MVPApp(App):
                     target_pos = cursor
                     dist_to_target = max(abs(target_pos[0] - pc), abs(target_pos[1] - pr))
                     if dist_to_target <= getattr(target, 'vision_range', 0):
-                        if target.faction != "hostile":
-                            target.faction = "hostile"
-                            self._act_log.add(f"{target.name} 变为敌对!")
+                        if target.faction == "中立" or target.faction == "守序":
+                            target._hostile_to.add(id(self._state.player))
+                            self._act_log.add(f"{target.name} 被激怒，开始反击!")
                         self._start_combat(target)
                 dmg = roll_damage(single, player, critical=(roll == 20))
                 dmg = apply_damage_type_modifiers(dmg, getattr(single, 'damage_type', 'bludgeoning'), target)

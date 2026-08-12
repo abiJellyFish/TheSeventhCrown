@@ -8,7 +8,7 @@ from core.game_state import GameState
 
 @pytest.fixture
 def goblin():
-    c = Creature(name="地精打手", hp=20, max_hp=20, faction="hostile", tenacity=6)
+    c = Creature(name="地精打手", hp=20, max_hp=20, faction="混乱", tenacity=6)
     c.template_name = "goblin_brawler"
     c.behavior_table = ["wander", "hunt", "attack_prey", "forage", "eat_food", "eat_inventory", "flee", "idle"]
     c.behavior_overrides = {"hunt": 0.8, "attack_prey": 0.9}
@@ -119,7 +119,7 @@ class TestCombatComponents:
         from core.ai.engine import BehaviorEngine
         from core.entity import Creature
         engine = BehaviorEngine()
-        c = Creature(name="test", faction="hostile", hp=20, max_hp=20)
+        c = Creature(name="test", faction="混乱", hp=20, max_hp=20)
         c.behavior_table = ["attack_enemy", "wander", "idle"]
         extra = {"env:enemy_adjacent"}
         results = engine.decide(c, extra_keys=extra)
@@ -130,7 +130,7 @@ class TestCombatComponents:
         from core.ai.engine import BehaviorEngine
         from core.entity import Creature
         engine = BehaviorEngine()
-        c = Creature(name="test", faction="hostile", hp=20, max_hp=20)
+        c = Creature(name="test", faction="混乱", hp=20, max_hp=20)
         c.behavior_table = ["attack_enemy", "wander", "idle"]
         results = engine.decide(c)
         assert results[0][0] != "attack_enemy"
