@@ -237,7 +237,7 @@ class Creature:
             max_ap=data.get("max_ap", 6),
             speed=data.get("speed", 1),
             ac_base=data.get("ac_base", data.get("ac", 8)),
-            char=data.get("char", "?"),
+            char=data.get("char") or data.get("key", "?")[0].lower(),
             stats=stats,
             vision_range=data.get("vision_range", 8),
             food_value=data.get("food_value", 15000),

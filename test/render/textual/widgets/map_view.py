@@ -57,8 +57,12 @@ class MapView(Static):
                 cur = " reverse" if (col, row) == obs_cur else ""
                 ent = self.state.get_entity_at(col, row)
                 if ent is not None:
-                    ch = "%" if ent.hp <= 0 else ent.char
-                    color = FACTION_COLORS.get(ent.faction, "")
+                    if ent.controlled:
+                        ch, color = "@", "green"
+                    elif ent.hp <= 0:
+                        ch, color = "%", FACTION_COLORS.get(ent.faction, "")
+                    else:
+                        ch, color = ent.char, FACTION_COLORS.get(ent.faction, "")
                     text.append(ch, style=f"bold {color}{cur}" if ent.faction == "混乱" else f"{color}{cur}")
                 elif (col, row) == (pc, pr):
                     text.append("@", style=f"bold bright_cyan{cur}")

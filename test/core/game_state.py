@@ -749,10 +749,11 @@ class GameState:
                     self._npc_log_cb("你快要饿死了！")
             if creature.food_value == 0:
                 creature.hp = max(0, creature.hp - 1)
-                # 死亡时 inventory 物品加入掉落（玩家除外，玩家死亡走独立流程）
-                if not creature.controlled and creature.hp <= 0 and creature.inventory:
+                # 死亡时 inventory + equipment 物品加入掉落（被控生物除外）
+                if not creature.controlled and creature.hp <= 0:
                     loot = getattr(creature, 'loot', {}) or {}
                     always = loot.get('always', [])
+                    # 背包物品
                     for item in creature.inventory:
                         always.append({
                             "name": item.name, "item_type": item.item_type,
@@ -761,8 +762,20 @@ class GameState:
                             "effect": getattr(item, 'effect', ''),
                             "description": getattr(item, 'description', ''),
                         })
-                    loot['always'] = always
-                    creature.loot = loot
+                    # 装备栏物品
+                    for slot, item in creature.equipment.items():
+                        if item is not None:
+                            always.append({
+                                "name": item.name, "item_type": item.item_type,
+                                "amount": item.count if hasattr(item, 'count') else 1,
+                                "weight": item.weight, "price": item.price,
+                                "effect": getattr(item, 'effect', ''),
+                                "description": getattr(item, 'description', ''),
+                                "slot": slot,
+                            })
+                    if always:  # 只在有物品时更新
+                        loot['always'] = always
+                        creature.loot = loot
 
         p = self.player
         if p is not None and p.hp <= 0:
