@@ -4,6 +4,7 @@ import json
 import re
 import random
 from textual.app import App, ComposeResult
+from textual.screen import Screen
 from textual.widgets import Input
 from textual.containers import Horizontal, Vertical
 from textual.binding import Binding
@@ -32,6 +33,7 @@ from core.item_actions import get_item_actions, find_placeable_tile, place_on_gr
 from render.textual.widgets import (
     TopBar, LeftPanel, MapView, MapLegend, RightPanel, ActionLog, SceneLog,
 )
+from render.textual.screens.title_main import TitleScreen
 import os
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -150,9 +152,9 @@ def _sync_torch_light(state: GameState) -> None:
             return
 
 
-# ═══════════════════════════════════════ App ═══════════════════════════════════════
+# ═════════════════════════════════ GameScreen ════════════════════════════════════
 
-class MVPApp(App):
+class GameScreen(Screen):
     CSS = """
     * { margin: 0; padding: 0; overflow: hidden; }
 
@@ -229,7 +231,7 @@ class MVPApp(App):
 
     def _create_game(self) -> None:
         # 加载玩家初始数据
-        with open(os.path.join(DATA_DIR, "player_start.json"), "r", encoding="utf-8") as f:
+        with open(os.path.join(DATA_DIR, "player_start_mage.json"), "r", encoding="utf-8") as f:
             ps_data = json.load(f)
 
         stats = dict(ps_data["stats"])
@@ -239,7 +241,7 @@ class MVPApp(App):
 
         _class_factories = {
             "fighter": create_fighter,
-            "mage": create_fighter,  # mage 未完成，暂时复用 fighter 模板
+            "mage": create_mage,
         }
         factory = _class_factories.get(ps_data["class"], create_fighter)
         c = factory(name=ps_data["name"], stats=stats)
@@ -262,6 +264,24 @@ class MVPApp(App):
         start_pos = tuple(ps_data["start_pos"])
         self._state.entities.append((c, start_pos))
         self._state.set_controlled(c)
+
+        # 将凯恩作为 NPC 加入世界（不再由玩家控制）
+        kane = create_fighter(name="凯恩", stats=dict(ps_data["stats"]))
+        kane.char = "k"
+        kane_pos = (start_pos[0] + 1, start_pos[1])
+        self._state.entities.append((kane, kane_pos))
+        # 凯恩装备长剑
+        kane_sword = Weapon.from_dict({
+            "name": "长剑", "weapon_type": "melee", "category": "martial",
+            "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
+            "ap_cost": 3, "weight": 2.0,
+        })
+        kane.equipment["right_hand"] = kane_sword
+        # 凯恩 AI 行为表（与村民一致）
+        kane.behavior_table = ["wander", "pickup", "hunt", "forage", "eat_food",
+                               "collect", "eat_inventory", "open_door", "close_door",
+                               "approach_enemy", "flee", "rest", "idle"]
+        kane.behavior_overrides = {"hunt": 0.7, "collect": 0.5}
 
         # 初始装备
         for slot, item_data in ps_data.get("equipment", {}).items():
@@ -291,7 +311,6 @@ class MVPApp(App):
         )
 
     def compose(self) -> ComposeResult:
-        self._create_game()
         self._top_bar = TopBar(id="top"); yield self._top_bar
         with Horizontal(id="main"):
             self._left_panel = LeftPanel(id="left"); yield self._left_panel
@@ -306,6 +325,7 @@ class MVPApp(App):
             self._scene_log = SceneLog(id="scene-log"); yield self._scene_log
 
     def on_mount(self) -> None:
+        self._create_game()
         for w in [self._map_view, self._map_legend, self._left_panel, self._right_panel, self._top_bar]:
             w.state = self._state
         self._init_combat_flow()
@@ -442,7 +462,7 @@ class MVPApp(App):
             self._act_log.add(f"[{key}] 功能待定")
 
     def _quit_game(self) -> None:
-        self.exit()
+        self.app.exit()
 
     # ── Input ──
 
@@ -470,8 +490,8 @@ class MVPApp(App):
             rv = self._right_panel.view_mode if self._right_panel else "default"
             if rv != "default":
                 views.append(rv)
-        # 基础视图：仅在左侧栏渲染基础面板时活跃（combat_phase == "idle"）
-        if cp == "idle":
+        # 基础视图：仅在左侧栏渲染基础面板时活跃（combat_phase == "idle" 且无交互覆盖）
+        if cp == "idle" and not ip:
             base = "combat_idle" if state.in_combat else "explore"
             if base not in views:
                 views.append(base)
@@ -538,6 +558,18 @@ class MVPApp(App):
                 return
             self._act_log.add(f"> :{cmd}")
             self._act_log.add("用法: :A序号  如 :A1 选择第1项")
+            self._sync_input()
+            return
+
+        # 箱子数量选择子状态
+        if self._state and self._state.interact_phase == "chest_take_qty":
+            self._act_log.add(f"> :{cmd}")
+            self._handle_chest_take_qty(cmd)
+            self._sync_input()
+            return
+        if self._state and self._state.interact_phase == "chest_store_qty":
+            self._act_log.add(f"> :{cmd}")
+            self._handle_chest_store_qty(cmd)
             self._sync_input()
             return
 
@@ -1300,12 +1332,22 @@ class MVPApp(App):
             return
 
         item = chest_inv[num - 1]
-        # 从箱子移除
+        item_count = getattr(item, 'count', 1)
+
+        # count > 1 → 进入数量选择
+        if item_count > 1:
+            target.extra["_qty_item"] = item
+            target.extra["_qty_max"] = item_count
+            target.extra["_qty_index"] = num - 1
+            self._state.interact_phase = "chest_take_qty"
+            self._act_log.add(f"拿取 {item.name} — 输入 :C数量  (1-{item_count})")
+            self.refresh_all()
+            return
+
+        # count == 1 → 直接转移
         chest_inv.pop(num - 1)
-        # 加入玩家背包（始终是 Item 对象）
-        item_obj = item
-        _add_to_inventory(self._state.player, item_obj)
-        self._act_log.add(f"拿取了 {item_obj.name}")
+        _add_to_inventory(self._state.player, item)
+        self._act_log.add(f"拿取了 {item.name}")
 
         # 箱子清空时自动转移金币
         if not chest_inv:
@@ -1337,16 +1379,137 @@ class MVPApp(App):
             return
 
         item = player_inv[num - 1]
-        # 从背包移除
+        item_count = getattr(item, 'count', 1)
+
+        # count > 1 → 进入数量选择
+        if item_count > 1:
+            target.extra["_qty_item"] = item
+            target.extra["_qty_max"] = item_count
+            target.extra["_qty_index"] = num - 1
+            self._state.interact_phase = "chest_store_qty"
+            self._act_log.add(f"存放 {item.name} — 输入 :S数量  (1-{item_count})")
+            self.refresh_all()
+            return
+
+        # count == 1 → 直接转移
         player_inv.pop(num - 1)
-        # 直接存入箱子（保持 Item 对象）
         chest_inv.append(item)
         self._act_log.add(f"存放了 {item.name}")
+        self.refresh_all()
+
+    def _handle_chest_take_qty(self, cmd: str) -> None:
+        """拿取数量选择。"""
+        if cmd == "0":
+            self._state.interact_phase = "chest"
+            self.refresh_all()
+            return
+
+        try:
+            qty = int(cmd[1:])
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :C数量  如 :C3 拿取3个")
+            return
+
+        target = getattr(self._state, 'interact_target', None)
+        if target is None:
+            return
+        chest_data = target.extra.get("chest_data", {})
+        chest_inv = chest_data.get("inventory", [])
+        extra = target.extra
+        item = extra.get("_qty_item")
+        max_qty = extra.get("_qty_max", 1)
+        idx = extra.get("_qty_index", 0)
+
+        if item is None or qty < 1 or qty > max_qty:
+            self._act_log.add(f"数量无效 (1-{max_qty})")
+            return
+
+        if qty >= max_qty:
+            # 全量转移
+            chest_inv.pop(idx)
+            _add_to_inventory(self._state.player, item)
+            self._act_log.add(f"拿取了 {item.name} x{max_qty}")
+        else:
+            # 部分转移
+            from core.item_actions import copy_item_with_count
+            unit_w = item.weight / item.count if item.count > 0 else 0
+            split = copy_item_with_count(item, qty, unit_w * qty)
+            item.count -= qty
+            item.weight -= split.weight
+            _add_to_inventory(self._state.player, split)
+            self._act_log.add(f"拿取了 {split.name} x{qty}")
+
+        # 箱子清空时自动转移金币
+        if not chest_inv:
+            gp = chest_data.get("gp", 0)
+            if gp > 0:
+                self._state.player.gp += gp
+                chest_data["gp"] = 0
+                self._act_log.add(f"拿取了 {gp} GP")
+
+        # 清理临时字段
+        for k in ("_qty_item", "_qty_max", "_qty_index"):
+            extra.pop(k, None)
+        self._state.interact_phase = "chest"
+        self.refresh_all()
+
+    def _handle_chest_store_qty(self, cmd: str) -> None:
+        """存放数量选择。"""
+        if cmd == "0":
+            self._state.interact_phase = "chest"
+            self.refresh_all()
+            return
+
+        try:
+            qty = int(cmd[1:])
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :S数量  如 :S3 存放3个")
+            return
+
+        target = getattr(self._state, 'interact_target', None)
+        if target is None:
+            return
+        chest_data = target.extra.get("chest_data", {})
+        chest_inv = chest_data.get("inventory", [])
+        player_inv = self._state.player.inventory
+        extra = target.extra
+        item = extra.get("_qty_item")
+        max_qty = extra.get("_qty_max", 1)
+
+        if item is None or qty < 1 or qty > max_qty:
+            self._act_log.add(f"数量无效 (1-{max_qty})")
+            return
+
+        if qty >= max_qty:
+            # 全量转移
+            # 从背包找到并移除（索引可能因其他操作变化，重新查找）
+            for i, inv_item in enumerate(player_inv):
+                if inv_item is item:
+                    player_inv.pop(i)
+                    break
+            chest_inv.append(item)
+            self._act_log.add(f"存放了 {item.name} x{max_qty}")
+        else:
+            # 部分转移
+            from core.item_actions import copy_item_with_count
+            unit_w = item.weight / item.count if item.count > 0 else 0
+            split = copy_item_with_count(item, qty, unit_w * qty)
+            item.count -= qty
+            item.weight -= split.weight
+            chest_inv.append(split)
+            self._act_log.add(f"存放了 {split.name} x{qty}")
+
+        # 清理临时字段
+        for k in ("_qty_item", "_qty_max", "_qty_index"):
+            extra.pop(k, None)
+        self._state.interact_phase = "chest"
         self.refresh_all()
 
     # ── Movement ──
 
     def _move_player(self, dc: int, dr: int) -> None:
+        if self._state is None:
+            return
         if self._state.observe_mode:
             oc, oro = self._state.observe_cursor
             nc, nr = oc + dc, oro + dr
@@ -1402,8 +1565,12 @@ class MVPApp(App):
                         self._cancel_interact()
                         self._act_log.add("离开了交互范围")
 
-    def action_move_up(self): self._move_player(0, -1)
-    def action_move_down(self): self._move_player(0, 1)
+    def action_move_up(self):
+        self._move_player(0, -1)
+
+    def action_move_down(self):
+        self._move_player(0, 1)
+
     def action_move_left(self): self._move_player(-1, 0)
     def action_move_right(self): self._move_player(1, 0)
 
@@ -1426,6 +1593,8 @@ class MVPApp(App):
 
     def action_end_turn(self) -> None:
         """手动结束当前回合（Shift+Tab）。"""
+        if self._state is None:
+            return
         if self._state.combat_phase != "idle":
             return  # 战斗子面板中不响应
         if self._state.in_combat and self._state.combat_turn_entity is self._state.player:
@@ -1481,7 +1650,7 @@ class MVPApp(App):
             self._act_log.add(f"{self._pn} 环顾四周，这里没什么特别的")
             return
         # 单目标直接触发，但 PICKUP 和 PICK 类型总是弹菜单让玩家确认
-        if len(targets) == 1 and targets[0].interact_type not in (InteractType.PICKUP, InteractType.PICK, InteractType.LOOT):
+        if len(targets) == 1 and targets[0].interact_type not in (InteractType.PICKUP, InteractType.PICK, InteractType.LOOT, InteractType.CHEST):
             self._dispatch_interact(targets[0])
             return
         # 多个目标 → 弹菜单
@@ -2505,6 +2674,8 @@ class MVPApp(App):
 
     def action_quick_save(self) -> None:
         """快速存档 — 固定使用 quicksave 槽位（持久化到磁盘）。"""
+        if self._state is None:
+            return
         if self._state.in_combat:
             self._act_log.add("战斗中无法存档")
             return
@@ -2513,6 +2684,8 @@ class MVPApp(App):
 
     def action_quick_load(self) -> None:
         """快速读档 — 从 quicksave 槽位恢复。"""
+        if self._state is None:
+            return
         if self._state.in_combat:
             self._act_log.add("战斗中无法读档")
             return
@@ -2545,3 +2718,15 @@ class MVPApp(App):
         else:
             self._act_log.add("[快速读档] 失败")
         self.refresh_all()
+
+
+# ═════════════════════════════════════ MVPApp ═══════════════════════════════════════
+
+class MVPApp(App):
+    """薄壳 App：只负责标题/游戏两个屏幕之间的切换。"""
+
+    def on_mount(self) -> None:
+        self.push_screen(TitleScreen())
+
+    def start_new_game(self) -> None:
+        self.switch_screen(GameScreen())

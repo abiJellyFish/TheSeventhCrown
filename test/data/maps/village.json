@@ -35,6 +35,16 @@
     {"key": "wild_boar", "pos": [19, 2]},
     {"key": "wild_boar", "pos": [9, 11]}
   ],
+  "chests": [
+    {
+      "pos": [12, 8],
+      "label": "木箱",
+      "inventory": [
+        {"name": "一包草药", "item_type": "consumable", "effect": "heal", "amount": "1d4", "ap_cost": 1, "weight": 0.1, "count": 2},
+        {"name": "一包口粮", "item_type": "consumable", "effect": "restore_food", "amount": "15000", "ap_cost": 1, "weight": 1.0, "count": 4}
+      ]
+    }
+  ],
   "location_name": "小村庄",
   "width": 21,
   "height": 16

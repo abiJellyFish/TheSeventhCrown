@@ -38,6 +38,10 @@ class LeftPanel(Static):
             return self._render_cooking_panel()
         if iphase == "chest":
             return self._render_chest_panel()
+        if iphase == "chest_take_qty":
+            return self._render_chest_qty_panel("take")
+        if iphase == "chest_store_qty":
+            return self._render_chest_qty_panel("store")
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
         if phase == "select_action":
@@ -511,7 +515,7 @@ class LeftPanel(Static):
                 name = item.name
                 count = getattr(item, 'count', 1)
                 count_str = f" x{count}" if count > 1 else ""
-                lines.append(f"  [C{i}]{name}{count_str}")
+                lines.append(f"  [[C{i}]]{name}{count_str}")
         else:
             lines.append("  (箱子为空)")
         lines.append("")
@@ -522,13 +526,32 @@ class LeftPanel(Static):
         if player_inv:
             for i, item in enumerate(player_inv, 1):
                 count_str = f" x{item.count}" if item.count > 1 else ""
-                lines.append(f"  [S{i}]{item.name}{count_str}")
+                lines.append(f"  [[S{i}]]{item.name}{count_str}")
         else:
             lines.append("  (背包为空)")
         lines.append("")
 
         lines.append(":C序号 拿取  :S序号 存放  [0] 离开")
         return "\n".join(lines[:max_h])
+
+    def _render_chest_qty_panel(self, mode: str) -> str:
+        """箱子数量选择面板。mode: "take" | "store" """
+        target = getattr(self.state, 'interact_target', None)
+        if target is None:
+            return "── 箱子 ──\n\n(数据异常)\n\n[0] 返回"
+        extra = target.extra
+        item = extra.get("_qty_item")
+        max_qty = extra.get("_qty_max", 1)
+        if item is None:
+            return "── 箱子 ──\n\n(数据异常)\n\n[0] 返回"
+        action = "拿取" if mode == "take" else "存放"
+        prefix = "C" if mode == "take" else "S"
+        return "\n".join([
+            f"[bold]── {action} {item.name} ──[/]",
+            f"可选: 1 - {max_qty}",
+            "",
+            f"输入 :{prefix}数量 确认  [0] 返回",
+        ])
 
 
 def sell_price_local(price: dict) -> dict:

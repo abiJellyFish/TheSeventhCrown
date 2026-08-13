@@ -1,0 +1,34 @@
+{
+  "name": "伊芙琳",
+  "class": "mage",
+  "stats": {"str": 8, "dex": 8, "con": 8, "int": 8, "wis": 8, "cha": 8},
+  "boosted_stats": 2,
+  "start_pos": [9, 26],
+  "equipment": {
+    "right_hand": {
+      "name": "长杖", "weapon_type": "melee", "category": "simple",
+      "damage": "1d6", "damage_type": "bludgeoning", "attack_stat": "str",
+      "ap_cost": 2, "properties": ["versatile(1d10)"],
+      "weight": 1.5, "price": {"gp": 1, "sp": 5}
+    }
+  },
+  "inventory": [
+    {
+      "name": "法术残页", "item_type": "misc",
+      "weight": 0.5, "description": "记载基础法术的残破书页"
+    },
+    {
+      "name": "一包口粮", "item_type": "consumable",
+      "effect": "restore_food", "amount": "15000", "ap_cost": 1,
+      "weight": 1.0, "price": {"cp": 5}
+    },
+    {
+      "name": "火把", "item_type": "weapon",
+      "weapon_type": "melee", "category": "simple",
+      "damage": "1d4", "damage_type": "bludgeoning", "attack_stat": "str",
+      "ap_cost": 2, "properties": ["light_5", "ignite_surface"],
+      "light_source": {"radius": 5, "level": "bright", "condition": "unlit"},
+      "weight": 1.0, "price": {"sp": 40}
+    }
+  ]
+}
