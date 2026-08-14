@@ -44,6 +44,8 @@ class LeftPanel(Static):
             return self._render_chest_qty_panel("store")
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
+        if phase == "select_spell":
+            return self._render_spell_panel()
         if phase == "select_action":
             return self._render_action_panel()
         elif phase == "ranged_target":
@@ -212,6 +214,27 @@ class LeftPanel(Static):
         lines.append("[[A0]]取消")
         return "\n".join(lines)
 
+    def _render_spell_panel(self) -> str:
+        """选择施放法术面板 —— 显示已记忆法术 + 法术位占用。"""
+        from core.spell import get_memorized_spells, get_spell_slots
+        p = self.state.player
+        memorized = get_memorized_spells(p)
+        slots = get_spell_slots(p)
+        total_slots = sum(slots.values())
+        used = len(memorized)
+        max_h = self.size.height
+        lines = ["── 选择法术 ──", f"法术位: {used}/{total_slots}", ""]
+        for i, s in enumerate(memorized, 1):
+            mp = s.get("mp_cost", 0)
+            ap = s.get("cast_time_ap", 0)
+            rng = s.get("range", 0)
+            rng_str = f"射程:{rng}" if rng > 0 else "自身"
+            lines.append(f"[[A{i}]]{s['name']}  MP:{mp}  AP:{ap}  {rng_str}")
+        for i in range(used + 1, total_slots + 1):
+            lines.append(f"[[A{i}]](空位)")
+        lines.append("[[A0]]取消")
+        return "\n".join(lines[:max_h])
+
     def _render_ranged_target_panel(self) -> str:
         pa = self.state.pending_attack or {}
         weapon = pa.get("weapon")
@@ -220,7 +243,14 @@ class LeftPanel(Static):
         max_h = self.size.height
 
         weapon_name = weapon.name if weapon else "武器"
-        max_range = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
+        # 射程：法术模式从 spell.range 动态读取（min 视野），武器模式用 weapon.range_max
+        if pa.get("mode") == "spell":
+            spell = pa.get("spell", {})
+            max_range = min(self.state.player.vision_range, spell.get("range", 8))
+            target_label = f"法术: {spell.get('name', '?')}"
+        else:
+            max_range = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
+            target_label = f"武器: {weapon_name}"
         dist = max(abs(oc - pc), abs(oro - pr))
         in_range = dist <= max_range
 
@@ -229,18 +259,30 @@ class LeftPanel(Static):
         t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木", Terrain.PASSABLE: "草地"}
         terrain_name = t_names.get(terrain, "未知")
 
-        # 目标
+        # 目标：法术模式允许自身，武器模式排除自身
         ent = self.state.get_entity_at(oc, oro)
-        has_valid_target = ent and ent.hp > 0 and ent is not self.state.player
+        allow_self = pa.get("mode") == "spell"
+        has_valid_target = ent and ent.hp > 0 and (allow_self or ent is not self.state.player)
 
         lines = [
             "[bold]── 远程瞄准 ──[/]",
-            f"武器: {weapon_name}  射程: {max_range}",
+            f"{target_label}  射程: {max_range}",
             f"光标: ({oc}, {oro})  距离: {dist}/{max_range}"
             + (" [green]✓[/]" if in_range else " [red]超出射程[/]"),
             f"地表: {terrain_name}",
             "",
         ]
+
+        # 多目标进度
+        target_count = pa.get("target_count", 1)
+        if target_count > 1:
+            prog = f"目标: {min(len(pa.get('targets', [])) + 1, target_count)}/{target_count}"
+            names = []
+            for _, _, t in pa.get("targets", []):
+                names.append(t.name if t else "空地")
+            if names:
+                prog += f"  已选: {', '.join(names)}"
+            lines.append(prog)
 
         if has_valid_target:
             hp_pct = ent.hp / max(ent.max_hp, 1) * 100

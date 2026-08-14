@@ -328,7 +328,7 @@ class TitleScreen(Screen):
     def action_select(self) -> None:
         label = self._merged.current_label()
         if label == "唤醒":
-            start = getattr(self.app, "start_new_game", None)
+            start = getattr(self.app, "start_char_select", None)
             if start:
                 start()
         elif label == "回忆":

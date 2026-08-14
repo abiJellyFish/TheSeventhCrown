@@ -63,20 +63,31 @@ def _step_cost(
     pos: tuple[int, int],
     player_pos: tuple[int, int] | None = None,
     ground_items: list | None = None,
+    occupied_alive: set | None = None,
+    dead_positions: set | None = None,
 ) -> int | None:
-    """返回经过该格的代价，None 表示不可达。"""
+    """返回经过该格的代价，None 表示不可达。
 
+    occupied_alive / dead_positions 为预建的坐标集合（find_path 一次预建），
+    传入时 O(1) 判断占据，避免逐实体 O(N) 遍历。
+    """
     t = grid[pos[0], pos[1]]
     if is_full_cover(t):
         return None
     if player_pos and pos == player_pos:
         return None  # 不能走到玩家格
-    for c, (ec, er) in entities:
-        if (ec, er) == pos:
-            if c.hp <= 0:
-                return 3  # 尸体：可通过，代价 3
-            else:
-                return None  # 活物：不可达
+    if occupied_alive is not None and dead_positions is not None:
+        if pos in occupied_alive:
+            return None  # 活物：不可达
+        if pos in dead_positions:
+            return 3  # 尸体：可通过，代价 3
+    else:
+        for c, (ec, er) in entities:
+            if (ec, er) == pos:
+                if c.hp <= 0:
+                    return 3  # 尸体：可通过，代价 3
+                else:
+                    return None  # 活物：不可达
     if t == Terrain.DIFFICULT:
         return 3
     # 物品堆积格（space >= 10）-> 困难地形代价
@@ -114,7 +125,12 @@ def find_path(
     if start == goal:
         return [start]
 
-    if _step_cost(grid, entities, goal, player_pos, ground_items) is None:
+    # 预建占据集合，A* 每步 O(1) 判断（O(N) → O(1)）
+    occupied_alive = {pos for c, pos in entities if c.hp > 0}
+    dead_positions = {pos for c, pos in entities if c.hp <= 0}
+
+    if _step_cost(grid, entities, goal, player_pos, ground_items,
+                  occupied_alive, dead_positions) is None:
         return None
 
     def h(pos):
@@ -143,7 +159,8 @@ def find_path(
             nc, nr = current[0] + dc, current[1] + dr
             if not grid.within_bounds(nc, nr):
                 continue
-            cost = _step_cost(grid, entities, (nc, nr), player_pos, ground_items)
+            cost = _step_cost(grid, entities, (nc, nr), player_pos, ground_items,
+                              occupied_alive, dead_positions)
             if cost is None:
                 continue
             tentative_g = g_score[current] + cost

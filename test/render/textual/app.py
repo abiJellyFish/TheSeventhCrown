@@ -34,12 +34,50 @@ from render.textual.widgets import (
     TopBar, LeftPanel, MapView, MapLegend, RightPanel, ActionLog, SceneLog,
 )
 from render.textual.screens.title_main import TitleScreen
+from render.textual.screens.char_select import CharSelectScreen
 import os
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 SAVE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "saves")
 _loader = DataLoader(DATA_DIR)
 _ai_engine = BehaviorEngine()
+
+# 角色 key → 初始档案 JSON
+PLAYER_START_FILES = {
+    "fighter": "player_start.json",
+    "mage": "player_start_mage.json",
+}
+
+# 职业工厂哈希表
+_CLASS_FACTORIES = {
+    "fighter": create_fighter,
+    "mage": create_mage,
+}
+
+# 同伴配置：以玩家所选 key 查表，得到未选中的那一位
+_COMPANION_CONFIG = {
+    "fighter": {
+        "name": "伊芙琳", "factory": create_mage, "char": "e",
+        "file": "player_start_mage.json",
+        "weapon": {"name": "长杖", "weapon_type": "melee", "category": "simple",
+                   "damage": "1d6", "damage_type": "bludgeoning", "attack_stat": "str",
+                   "ap_cost": 2, "properties": ["versatile(1d10)"], "weight": 1.5},
+    },
+    "mage": {
+        "name": "凯恩", "factory": create_fighter, "char": "k",
+        "file": "player_start.json",
+        "weapon": {"name": "长剑", "weapon_type": "melee", "category": "martial",
+                   "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
+                   "ap_cost": 3, "weight": 2.0},
+    },
+}
+
+
+def _load_start_data(file: str) -> dict:
+    """从 data/ 加载角色初始档案 JSON。"""
+    path = os.path.join(DATA_DIR, file)
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 class GameInput(Input):
@@ -109,6 +147,16 @@ _INTERACT_DISPATCH = {
 RECIPES = {
     "一磅野猪肉": {"result": "烤兽肉", "time": 1},
     "浆果": {"result": "烤熟的浆果", "time": 1},
+}
+
+# ── 「思绪」面板选项（:E序号 → (显示名, 动作)）──
+_SYSTEM_ACTIONS = {
+    1: ("手册",    "stub"),
+    2: ("封存记忆", "stub"),
+    3: ("回想记忆", "stub"),
+    4: ("入眠",    "exit"),
+    5: ("主标题",  "title"),
+    6: ("设置",    "stub"),
 }
 
 
@@ -200,20 +248,25 @@ class GameScreen(Screen):
         "combat_idle":            {"keys": _EXPLORE_KEYS, "commands": {}},
         "inventory":              {"keys": _EXPLORE_KEYS, "commands": {"I": "_use_item", "U": "_handle_unequip", "W": "_swap_hands"}},
         "character":              {"keys": _EXPLORE_KEYS, "commands": {}},
+        "system":                 {"keys": {"E", "escape"}, "commands": {"E": "_cmd_system_input"}},
+        "spellbook":              {"keys": {"B", "escape"}, "commands": {"I": "_cmd_spellbook_input"}},
         "observe":                {"keys": {"X", "escape"}, "commands": {}},
         "trading":                {"keys": {"0", "colon", "escape"}, "commands": {"B": "_cmd_trade_buy", "S": "_cmd_trade_sell"}},
         "talking":                {"keys": {"0", "T", "colon", "escape"}, "commands": {}},
         "interact_menu":          {"keys": {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "colon", "escape"}, "commands": {}},
         "item_menu":              {"keys": {"colon", "escape"}, "commands": {"U": "_cmd_item_action"}},
         "combat_select_action":   {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_action_input"}},
+        "combat_select_spell":    {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_spell_input"}},
         "combat_select_target":   {"keys": {"X", "C", "I", "enter"}, "commands": {"T": "_cmd_target_input"}},
         "combat_select_maneuver": {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_maneuver_input"}},
         "combat_select_special":  {"keys": {"X", "C", "I", "enter"}, "commands": {"A": "_cmd_special_input"}},
         "combat_ranged_target":   {"keys": set(), "commands": {}},
     }
 
-    def __init__(self):
+    def __init__(self, char_key: str = "mage", domain: str | None = None):
         super().__init__()
+        self._char_key = char_key
+        self._domain = domain
         self._state: GameState | None = None
         self._act_log: ActionLog | None = None
         self._scene_log: SceneLog | None = None
@@ -230,21 +283,20 @@ class GameScreen(Screen):
         return self._state.player.name
 
     def _create_game(self) -> None:
-        # 加载玩家初始数据
-        with open(os.path.join(DATA_DIR, "player_start_mage.json"), "r", encoding="utf-8") as f:
-            ps_data = json.load(f)
+        # 根据所选角色 key 查表加载初始 JSON
+        char_key = self._char_key
+        ps_data = _load_start_data(PLAYER_START_FILES[char_key])
 
         stats = dict(ps_data["stats"])
         boosted = random.sample(["str", "dex", "con", "int", "wis", "cha"], ps_data["boosted_stats"])
         for s in boosted:
             stats[s] += 2
 
-        _class_factories = {
-            "fighter": create_fighter,
-            "mage": create_mage,
-        }
-        factory = _class_factories.get(ps_data["class"], create_fighter)
-        c = factory(name=ps_data["name"], stats=stats)
+        factory = _CLASS_FACTORIES.get(ps_data["class"], create_fighter)
+        if ps_data["class"] == "mage":
+            c = factory(name=ps_data["name"], stats=stats, domain=self._domain or "evocation")
+        else:
+            c = factory(name=ps_data["name"], stats=stats)
         c.controlled = True
 
         self._state = GameState(player=c, map_width=80, map_height=60)
@@ -265,23 +317,8 @@ class GameScreen(Screen):
         self._state.entities.append((c, start_pos))
         self._state.set_controlled(c)
 
-        # 将凯恩作为 NPC 加入世界（不再由玩家控制）
-        kane = create_fighter(name="凯恩", stats=dict(ps_data["stats"]))
-        kane.char = "k"
-        kane_pos = (start_pos[0] + 1, start_pos[1])
-        self._state.entities.append((kane, kane_pos))
-        # 凯恩装备长剑
-        kane_sword = Weapon.from_dict({
-            "name": "长剑", "weapon_type": "melee", "category": "martial",
-            "damage": "1d8", "damage_type": "slashing", "attack_stat": "str",
-            "ap_cost": 3, "weight": 2.0,
-        })
-        kane.equipment["right_hand"] = kane_sword
-        # 凯恩 AI 行为表（与村民一致）
-        kane.behavior_table = ["wander", "pickup", "hunt", "forage", "eat_food",
-                               "collect", "eat_inventory", "open_door", "close_door",
-                               "approach_enemy", "flee", "rest", "idle"]
-        kane.behavior_overrides = {"hunt": 0.7, "collect": 0.5}
+        # 同伴 NPC：未选中的那一位作为 NPC 加入世界
+        self._spawn_companion(char_key, start_pos)
 
         # 初始装备
         for slot, item_data in ps_data.get("equipment", {}).items():
@@ -298,6 +335,28 @@ class GameScreen(Screen):
         self._save_manager = SaveManager(SAVE_DIR)
         # 战斗流程状态机（需在 widgets 创建后初始化，使用延迟绑定）
         self._combat_flow: CombatFlow | None = None
+
+    def _spawn_companion(self, player_key: str, start_pos: tuple[int, int]) -> None:
+        """把未选中的那一位作为同伴 NPC 加入世界（工厂 + 初始武器 + 通用 AI 行为）。"""
+        cfg = _COMPANION_CONFIG[player_key]
+        comp_data = _load_start_data(cfg["file"])
+        factory = _CLASS_FACTORIES.get(comp_data["class"], create_fighter)
+        if comp_data["class"] == "mage":
+            # 魔法使同伴：取与玩家互补的领域
+            comp_domain = "abjuration" if self._domain != "abjuration" else "evocation"
+            companion = factory(name=cfg["name"], stats=dict(comp_data["stats"]), domain=comp_domain)
+        else:
+            companion = factory(name=cfg["name"], stats=dict(comp_data["stats"]))
+        companion.char = cfg["char"]
+        companion_pos = (start_pos[0] + 1, start_pos[1])
+        self._state.entities.append((companion, companion_pos))
+        # 初始武器
+        companion.equipment["right_hand"] = ent.Weapon.from_dict(cfg["weapon"])
+        # 通用 AI 行为表（与村民一致）
+        companion.behavior_table = ["wander", "pickup", "hunt", "forage", "eat_food",
+                                    "collect", "eat_inventory", "open_door", "close_door",
+                                    "approach_enemy", "flee", "rest", "idle"]
+        companion.behavior_overrides = {"hunt": 0.7, "collect": 0.5}
 
     def _init_combat_flow(self) -> None:
         """在 compose 完成后初始化 CombatFlow（依赖已创建的 widgets）。"""
@@ -541,6 +600,116 @@ class GameScreen(Screen):
     def _cmd_special_input(self, cmd: str) -> None:
         self._combat_flow.handle_special_input(cmd)
 
+    def _cmd_spell_input(self, cmd: str) -> None:
+        """S 键施法：:A序号 选择记忆法术。"""
+        try:
+            num = int(cmd[1:])
+        except (ValueError, IndexError):
+            self._act_log.add(f"无效选项: {cmd}")
+            return
+        if num == 0:
+            self._state.combat_phase = "idle"
+            self._state.pending_spells = []
+            self._state.pending_attack = {}
+            self.refresh_all()
+            return
+        spells = getattr(self._state, 'pending_spells', [])
+        if num < 1 or num > len(spells):
+            self._act_log.add("序号无效")
+            return
+        spell = spells[num - 1]
+        self._start_spell_targeting(spell)
+
+    def _start_spell_targeting(self, spell: dict) -> None:
+        """进入法术瞄准阶段：统一选格子（同远程攻击），范围允许即可选自身/空地。支持多目标。"""
+        missiles = spell.get("effect", {}).get("missiles", 1)
+        self._state.pending_attack = {
+            "mode": "spell", "spell": spell,
+            "target_count": missiles, "targets": [],
+        }
+        self._state.combat_phase = "ranged_target"
+        self._state.observe_cursor = self._state.player_pos
+        rng = min(self._state.player.vision_range, spell.get("range", 1))
+        if missiles > 1:
+            prompt = f"选择 {spell['name']} 目标 (1/{missiles})"
+        else:
+            prompt = f"选择 {spell['name']} 目标"
+        self._act_log.add(f"{prompt} — 射程:{rng} [方向键]移动 [Enter]确认 [Q]取消")
+        self._close_input()
+        self.refresh_all()
+
+    def _cast_spell(self, spell: dict, target: "Creature | None | list") -> None:
+        """执行法术施放：扣 MP + AP/钟摆，结算效果。target 可为单个/None 或多目标列表。"""
+        from core.spell import resolve_spell
+        caster = self._state.player
+        mp_cost = spell.get("mp_cost", 0)
+        if caster.mp < mp_cost:
+            self._act_log.add("MP 不足")
+            return
+        caster.mp -= mp_cost
+        # 消耗 AP（战斗）或钟摆（探索）
+        if self._state.in_combat:
+            caster.ap -= spell.get("cast_time_ap", 0)
+        else:
+            self._state.clock.tick_action(spell.get("cast_time_pendulum", 0))
+        result = resolve_spell(caster, target, spell)
+        self._act_log.add(result["message"])
+        # 伤害型法术 → 检查态度反应（多目标逐个）
+        if result.get("effect") != "heal" and result.get("damage", 0) > 0:
+            targets = target if isinstance(target, list) else [target]
+            for t in targets:
+                if t is not None and t.hp >= 0:
+                    self._check_faction_reaction(t)
+        self._state.combat_phase = "idle"
+        self._state.pending_attack = {}
+        self._state.pending_spells = []
+        _update_fov(self._state)
+        self.refresh_all()
+
+    def _cmd_spellbook_input(self, cmd: str) -> None:
+        from core.spell import get_known_spells, get_available_slots, memorize_spell, unmemorize_spell
+        try:
+            idx = int(cmd[1:]) - 1
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :I序号  如 :I1 选择第1个法术")
+            return
+        known = get_known_spells(self._state.player)
+        if idx < 0 or idx >= len(known):
+            self._act_log.add("序号无效")
+            return
+        p = self._state.player
+        spell = known[idx]
+        name = spell["name"]
+        if name in p.memorized_spells:
+            unmemorize_spell(p, name)
+            self._act_log.add(f"取消了记忆 {name}")
+        elif get_available_slots(p) > 0:
+            memorize_spell(p, name)
+            self._act_log.add(f"记忆了 {name}")
+        else:
+            self._act_log.add("法术位已满，请先取消一个已记忆法术")
+        self._right_panel.refresh()
+        self._wake_input()
+
+    def _cmd_system_input(self, cmd: str) -> None:
+        """思绪面板命令：:E1~:E6 按 _SYSTEM_ACTIONS 分发。"""
+        try:
+            num = int(cmd[1:].upper().replace("E", ""))
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :E序号  如 :E1 手册")
+            return
+        entry = _SYSTEM_ACTIONS.get(num)
+        if entry is None:
+            self._act_log.add(f"无效选项: {cmd}")
+            return
+        label, action = entry
+        if action == "stub":
+            self._act_log.add(f"[思绪] {label} 功能待定")
+        elif action == "exit":
+            self.app.exit()
+        elif action == "title":
+            self.app.back_to_title()
+
     def on_input_submitted(self, event: Input.Submitted) -> None:
         cmd = event.value.strip()
         self._input_bar.value = ""
@@ -618,6 +787,7 @@ class GameScreen(Screen):
         if handler_name is None and self._state and self._state.combat_phase != "idle":
             phase_handlers = {
                 "select_action": {"A": "_cmd_action_input"},
+                "select_spell": {"A": "_cmd_spell_input"},
                 "select_target": {"T": "_cmd_target_input"},
                 "select_maneuver": {"A": "_cmd_maneuver_input"},
                 "select_special": {"A": "_cmd_special_input"},
@@ -1581,12 +1751,17 @@ class GameScreen(Screen):
             self.refresh_all()
 
     def action_cancel_ranged_target(self) -> None:
-        """' 键取消远程瞄准。"""
+        """' 键取消远程瞄准。法术模式回到法术选择，投掷模式直接取消，远程攻击回到攻击选择。"""
         if self._state and self._state.combat_phase == "ranged_target":
             if self._state.pending_attack and self._state.pending_attack.get("mode") == "throw":
                 self._state.combat_phase = "idle"
                 self._state.pending_attack = {}
                 self._act_log.add("取消投掷")
+            elif self._state.pending_attack and self._state.pending_attack.get("mode") == "spell":
+                self._state.combat_phase = "select_spell"
+                self._state.pending_attack = {"mode": "spell"}
+                self._act_log.add("[法术] 选择要施放的法术 — 输入 :A序号 确认, :A0 取消")
+                self._wake_input()
             else:
                 self._combat_flow.cancel_ranged_target()
             self.refresh_all()
@@ -1963,7 +2138,10 @@ class GameScreen(Screen):
             self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
         else:
             self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
-            self._npc_turn(turn)
+            self._state._npc_act(turn)
+            self._next_turn()
+            self.refresh_all()
+            return
 
     def _end_combat(self) -> None:
         # 当前轮未完成（敌人死在半轮等场景）→ 补推
@@ -1973,9 +2151,6 @@ class GameScreen(Screen):
         self._state.combat_turn_entity = None
         self._state.player.ap = self._state.player.max_ap
         self._state._combat_ticked = False
-        # 清理临时敌对记录
-        for c, _ in self._state.entities:
-            c._hostile_to.clear()
         self._act_log.add("=== 战斗结束 ===")
 
     def _next_turn(self) -> None:
@@ -2017,29 +2192,24 @@ class GameScreen(Screen):
 
         self._state.combat_initiative = alive
         idx = (self._state.combat_turn_index + 1) % len(alive)
-        # 满轮 → 推进钟摆 6
+        # 满轮 → 推进钟摆 6 + 非参战生物结算 6 钟摆
         if idx == 0:
             self._state.clock.tick_combat_round()
             self._state._combat_ticked = True
+            self._state._advance_npcs(6.0, combatants=False)
         self._state.combat_turn_index = idx; turn = alive[idx]
         self._state.combat_turn_entity = turn; turn.ap = turn.max_ap
         if turn is self._state.player:
             self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
         else:
             self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
-            self._state._advance_npcs(1.0)
+            self._state._npc_act(turn)
             self._next_turn()
             self.refresh_all()
             return
         self.refresh_all()
 
     # ── 攻击流程状态机 ──
-
-    def _resolve_melee_attack(self, attacker, target, weapon,
-                               hit_bonus=0, damage_bonus=0) -> dict:
-        """委托 CombatFlow 执行近战攻击检定。"""
-        return self._combat_flow.resolve_melee_attack(
-            attacker, target, weapon, hit_bonus, damage_bonus)
 
     def _handle_action_input(self, cmd: str) -> None:
         """阶段一：选择攻击方式 → 委托 CombatFlow。"""
@@ -2063,18 +2233,64 @@ class GameScreen(Screen):
 
     def _check_faction_reaction(self, target: Creature) -> None:
         """玩家攻击非敌对生物后检查阵营反应 → 委托 CombatFlow。"""
-        self._combat_flow.check_faction_reaction(target)
+        self._combat_flow.check_faction_reaction(target, self._state.player)
 
     def _confirm_ranged_target(self) -> None:
-        """Enter 键确认远程目标选择。"""
+        """Enter 键确认远程目标选择。多目标模式依次收集目标，满后统一结算。"""
         if self._state.combat_phase != "ranged_target":
             return
         pa = self._state.pending_attack
+        # ── 多目标模式 ──
+        if pa.get("target_count", 1) > 1:
+            pc, pr = self._state.player_pos
+            oc, orow = self._state.observe_cursor
+            spell = pa.get("spell", {})
+            rng = min(self._state.player.vision_range, spell.get("range", 1))
+            if max(abs(oc - pc), abs(orow - pr)) > rng:
+                self._act_log.add("目标超出了射程")
+                self.refresh_all()
+                return
+            target = self._state.get_entity_at(oc, orow)
+            if target and target.hp <= 0:
+                target = None
+            pa["targets"].append((oc, orow, target))
+            target_count = pa["target_count"]
+            if len(pa["targets"]) < target_count:
+                self._state.observe_cursor = self._state.player_pos
+                self._act_log.add(f"选择 {spell['name']} 目标 ({len(pa['targets'])+1}/{target_count})")
+                self.refresh_all()
+                return
+            if pa.get("mode") == "spell":
+                self._cast_spell(spell, [t for _, _, t in pa["targets"]])
+            return
+        # ── 单目标模式 ──
         if pa and pa.get("mode") == "throw":
             self._resolve_throw()
             return
+        if pa and pa.get("mode") == "spell":
+            self._confirm_spell_target()
+            return
         self._combat_flow.confirm_ranged_target()
         self.refresh_all()
+
+    def _confirm_spell_target(self) -> None:
+        """Enter 确认法术瞄准目标：统一选格子，范围允许即可选自身/空地/死亡。"""
+        pa = self._state.pending_attack or {}
+        spell = pa.get("spell")
+        if not spell:
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            self.refresh_all()
+            return
+        oc, orow = self._state.observe_cursor
+        pc, pr = self._state.player_pos
+        rng = min(self._state.player.vision_range, spell.get("range", 1))
+        if max(abs(oc - pc), abs(orow - pr)) > rng:
+            self._act_log.add("目标超出了射程")
+            self.refresh_all()
+            return
+        target = self._state.get_entity_at(oc, orow)
+        self._cast_spell(spell, target)
 
     def _bresenham_line(self, x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
         """Bresenham 直线算法，返回从 (x0,y0) 到 (x1,y1) 的所有格子坐标（含两端）。"""
@@ -2122,11 +2338,11 @@ class GameScreen(Screen):
         item = pa["throw_item"]
         inv_index = pa["throw_inv_index"]
         cursor = self._state.observe_cursor
-        player = self._state.player
+        attacker = self._state.player
         pc, pr = self._state.player_pos
 
         # 从背包扣除
-        single = item_remove_from_inventory(player, inv_index, 1)
+        single = item_remove_from_inventory(attacker, inv_index, 1)
         if single is None:
             self._act_log.add("投掷失败：物品数量不足")
             self._state.combat_phase = "idle"
@@ -2136,7 +2352,7 @@ class GameScreen(Screen):
 
         # 查找落点生物
         target = self._state.get_entity_at(cursor[0], cursor[1])
-        if target is self._state.player:
+        if target is attacker:
             target = None
 
         throw_effect = getattr(single, 'throw_effect', '') or getattr(single, 'effect', '')
@@ -2177,7 +2393,7 @@ class GameScreen(Screen):
                 roll = roll_d20(disadvantage=1)
             else:
                 roll = roll_d20()
-            mod = player.stat_adjust("str")
+            mod = attacker.stat_adjust("str")
             target_ac = target.total_ac("chest")
             if roll == 1 or (roll + mod < target_ac and roll != 20):
                 # 未命中：沿轨迹回溯合法落点
@@ -2187,15 +2403,15 @@ class GameScreen(Screen):
             else:
                 # 命中
                 # 命中后：检查视野 → 变敌对 + 进战斗（与近战/远程攻击逻辑一致）
-                if target and not self._state.in_combat:
+                if target is not attacker and target and not self._state.in_combat:
                     target_pos = cursor
                     dist_to_target = max(abs(target_pos[0] - pc), abs(target_pos[1] - pr))
                     if dist_to_target <= getattr(target, 'vision_range', 0):
                         if target.faction == "中立" or target.faction == "守序":
-                            target._hostile_to.add(id(self._state.player))
+                            target._attitude[id(attacker)] = "敌对"
                             self._act_log.add(f"{target.name} 被激怒，开始反击!")
                         self._start_combat(target)
-                dmg = roll_damage(single, player, critical=(roll == 20))
+                dmg = roll_damage(single, attacker, critical=(roll == 20))
                 dmg = apply_damage_type_modifiers(dmg, getattr(single, 'damage_type', 'bludgeoning'), target)
                 target.hp = max(0, target.hp - dmg)
                 self._act_log.add(f"{self._pn} 投掷{single.name}击中了{target.name}，造成{dmg}点伤害")
@@ -2481,7 +2697,22 @@ class GameScreen(Screen):
     def action_show_actions(self):
         """按 A 键 → 委托 CombatFlow 进入攻击方式选择阶段。"""
         self._combat_flow.start_action_phase()
-    def action_show_spells(self): self._act_log.add("[法术] 功能待定")
+    def action_show_spells(self):
+        """S 键：显示已记忆法术列表，进入施法流程。"""
+        from core.spell import get_memorized_spells
+        p = self._state.player
+        spells = get_memorized_spells(p)
+        if not spells:
+            self._act_log.add("没有记忆任何法术 (B 键打开法术书记忆)")
+            return
+        if self._state.combat_phase != "idle":
+            return
+        self._state.pending_spells = spells
+        self._state.combat_phase = "select_spell"
+        self._state.pending_attack = {"mode": "spell"}
+        self._act_log.add("[法术] 选择要施放的法术 — 输入 :A序号 确认, :A0 取消")
+        self._wake_input()
+        self.refresh_all()
     def action_char_panel(self):
         if self._right_panel.view_mode == "character":
             self._right_panel.view_mode = "default"
@@ -2503,7 +2734,15 @@ class GameScreen(Screen):
             self._wake_input()
         else:
             self._sync_input()
-    def action_spellbook(self): self._act_log.add("[法术书] 功能待定")
+    def action_spellbook(self):
+        """B 键：切换「法术书」面板。"""
+        if self._right_panel.view_mode == "spellbook":
+            self._right_panel.view_mode = "default"
+            self._sync_input()
+        else:
+            self._right_panel.view_mode = "spellbook"
+            self._wake_input()
+        self._right_panel.refresh()
     def action_crafting(self): self._act_log.add("[制作] 功能待定")
     def action_cooking(self):
         """按 K 键进入烹饪：检测厨具 → 选择厨具 → 选择原材料。"""
@@ -2617,7 +2856,17 @@ class GameScreen(Screen):
     def action_alchemy(self): self._act_log.add("[炼药] 功能待定")
     def action_height_view(self): self._act_log.add("[高度] 功能待定")
     def action_map_overview(self): self._act_log.add("[地图] 功能待定")
-    def action_system_menu(self): self._act_log.add("[系统] 功能待定")
+    def action_system_menu(self):
+        """E 键：切换「- 思绪 -」面板。"""
+        if self._right_panel.view_mode == "system":
+            self._right_panel.view_mode = "default"
+        else:
+            self._right_panel.view_mode = "system"
+        self._right_panel.refresh()
+        if self._right_panel.view_mode == "system":
+            self._wake_input()
+        else:
+            self._sync_input()
 
     # ── Scene ──
 
@@ -2728,5 +2977,14 @@ class MVPApp(App):
     def on_mount(self) -> None:
         self.push_screen(TitleScreen())
 
-    def start_new_game(self) -> None:
-        self.switch_screen(GameScreen())
+    def start_char_select(self) -> None:
+        """唤醒 → 进入角色选择画面。"""
+        self.switch_screen(CharSelectScreen())
+
+    def start_game_with(self, char_key: str, domain: str | None = None) -> None:
+        """以所选角色启动游戏。mage 需传魔法领域。"""
+        self.switch_screen(GameScreen(char_key=char_key, domain=domain))
+
+    def back_to_title(self) -> None:
+        """返回标题画面（新实例，不预存）。"""
+        self.switch_screen(TitleScreen())

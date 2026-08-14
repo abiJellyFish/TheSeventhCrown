@@ -3,7 +3,7 @@
 import random
 from core.entity import Creature, Weapon, are_hostile
 from core.dice import roll_d20
-from core.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, resolve_attack, miss_message, cover_message
+from core.combat.attack import hit_check, reduce_tenacity, resolve_attack, miss_message, cover_message
 from core.combat.cover import resolve_cover_line, terrain_cover_info
 from core.movement import Terrain
 
@@ -314,9 +314,9 @@ class CombatFlow:
             self._act_log.add("无法瞄准不可见的目标")
             self._refresh_all()
             return
-        # 查找格子上的生物（可为 None）
+        # 查找格子上的生物（可为 None，范围允许即可选自身/空地）
         target = self._state.get_entity_at(cursor[0], cursor[1])
-        if target is self._state.player or (target and target.hp <= 0):
+        if target and target.hp <= 0:
             target = None
         pa["target_pos"] = cursor
         pa["target"] = target
@@ -360,9 +360,9 @@ class CombatFlow:
             return
 
         # 攻击掷骰前：目标能看到攻击者 → 记录临时敌对 + 进战斗
-        if not self._state.in_combat and self._target_can_see_attacker(target_pos, target):
+        if not self._state.in_combat and target is not p and self._target_can_see_attacker(target_pos, target):
             if target.faction == "中立" or target.faction == "守序":
-                target._hostile_to.add(id(p))
+                target._attitude[id(p)] = "敌对"
                 self._act_log.add(f"{target.name} 被激怒，开始反击!")
             self._start_combat_from_ambush(target)
 
@@ -463,10 +463,10 @@ class CombatFlow:
             p.ap -= weapon.ap_cost
 
         # 攻击掷骰前（仅第一步）：目标能看到攻击者 → 记录临时敌对 + 进战斗
-        if step == "left" and not self._state.in_combat and target \
+        if step == "left" and not self._state.in_combat and target is not p \
            and self._target_can_see_attacker(target_pos, target):
             if target.faction == "中立" or target.faction == "守序":
-                target._hostile_to.add(id(p))
+                target._attitude[id(p)] = "敌对"
                 self._act_log.add(f"{target.name} 被激怒，开始反击!")
             self._start_combat_from_ambush(target)
 
@@ -567,16 +567,16 @@ class CombatFlow:
             self._refresh_all()
             return
 
-        # 结算伤害
-        roll = pa.get("attack_roll", 0)
-        critical = (roll == 20)
-        dmg = roll_damage(weapon, p, critical=critical)
-        dmg += pa.get("damage_bonus", 0)
-        dmg = apply_damage_type_modifiers(dmg, weapon.damage_type, target)
-        target.hp = max(0, target.hp - dmg)
-        if getattr(target, 'controlled', False) and target.hp < 1:
-            target.hp = 1  # 仅测试：被控生物 HP 保底，后续接入死亡系统后移除
-        self.check_faction_reaction(target, pa.get("target_pos"))
+        # 结算伤害（复用 execute_attack_roll 阶段已掷出的攻击骰，与 NPC 走同一完整结算）
+        result = resolve_attack(p, target, weapon,
+                                hit=True, roll=pa.get("attack_roll", 0),
+                                damage_bonus=pa.get("damage_bonus", 0))
+        dmg = result["damage"]
+        self.check_faction_reaction(target, p, pa.get("target_pos"))
+
+        # 命中 → 玩家获得职业经验（实体通用，仅玩家升级时提示）
+        if result.get("class_leveled"):
+            self._act_log.add(f"{p.name} 的 {p.char_class} 等级提升至 {p.class_level:.1f}!")
 
         hand_prefix = f"{hand_label}" if hand_label else ""
         self._act_log.add(f"{self._pn} {hand_prefix}{weapon.name}砍中了 {target.name}, 造成 {dmg} 点伤害")
@@ -633,8 +633,10 @@ class CombatFlow:
             self._act_log.add("奋力一击! 重掷攻击骰")
             result = self.resolve_melee_attack(p, target, weapon)
             if result["hit"]:
-                self.check_faction_reaction(target, pa.get("target_pos"))
+                self.check_faction_reaction(target, p, pa.get("target_pos"))
                 self._act_log.add(f"命中! 造成 {result['damage']} 点伤害")
+                if result.get("class_leveled"):
+                    self._act_log.add(f"{p.name} 的 {p.char_class} 等级提升至 {p.class_level:.1f}!")
             else:
                 self._act_log.add("再次未命中...")
         elif action_key == "feint":
@@ -686,13 +688,15 @@ class CombatFlow:
             result["damage"] += damage_bonus
         return result
 
-    def check_faction_reaction(self, target: Creature,
+    def check_faction_reaction(self, target: Creature, attacker: Creature,
                                 target_pos: tuple = None) -> None:
-        """玩家攻击非敌对生物后检查阵营反应。视野外攻击不触发。"""
+        """攻击非敌对生物后检查阵营反应。视野外攻击不触发。"""
+        if target is attacker:
+            return  # 攻击自己，不触发态度反应
         if target_pos and not self._target_can_see_attacker(target_pos, target):
             return  # 目标看不到攻击者，不知道谁打的
         if target.faction == "中立" or target.faction == "守序":
-            target._hostile_to.add(id(self._state.player))
+            target._attitude[id(attacker)] = "敌对"
             self._act_log.add(f"{target.name} 被激怒了! 开始反击")
             if self._state.in_combat:
                 if target not in self._state.combat_initiative:

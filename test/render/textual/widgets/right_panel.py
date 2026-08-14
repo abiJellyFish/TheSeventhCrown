@@ -3,12 +3,13 @@
 from textual.widgets import Static
 
 from core.game_state import GameState
+from core.entity import get_attitude
 from core.movement import Terrain
 
 
 class RightPanel(Static):
     state: GameState | None = None
-    view_mode: str = "default"  # "default" | "inventory" | "character"
+    view_mode: str = "default"  # "default" | "inventory" | "character" | "system" | "spellbook"
 
     def render(self) -> str:
         if self.state is None:
@@ -22,6 +23,10 @@ class RightPanel(Static):
             return self._render_inventory()
         elif self.view_mode == "character":
             return self._render_character()
+        elif self.view_mode == "system":
+            return self._render_system()
+        elif self.view_mode == "spellbook":
+            return self._render_spellbook()
         return self._render_default()
 
     def _render_default(self) -> str:
@@ -29,15 +34,15 @@ class RightPanel(Static):
         slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
         food_pct = p.food_value * 100 // 15000
         lines = [
-            f"[bold]{p.name}[/]  人类 Lv.1 {p.char_class}{slow_tag}",
+            f"[bold]{p.name}[/]  人类 Lv.{p.class_level:.1f} {p.char_class}{slow_tag}",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight:.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
             "",
             "[[X]]观察 [[Q]]退出",
-            "[[C]]角色面板 [[I]]物品栏 [[B]]法术书",
+            "[[C]]角色面板 [[I]]物品栏 [[B]]法术书 [[E]]思绪",
             "[[Z]]制作 [[K]]烹饪 [[Y]]炼药",
-            "[[H]]高度 [[M]]地图 [[E]]系统",
+            "[[H]]高度 [[M]]地图",
         ]
         if p.statuses:
             lines.append(f"[red]{' '.join(s.name for s in p.statuses)}[/]")
@@ -146,8 +151,10 @@ class RightPanel(Static):
     def _render_character(self) -> str:
         p = self.state.player
         max_h = self.size.height
+        exp_bar = "+" * int(p.class_exp * 10) + "_" * (10 - int(p.class_exp * 10))
         lines = [
-            f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.char_class} Lv.1",
+            f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.faction}  {p.char_class} Lv.{p.class_level:.1f}",
+            f"经验: [{exp_bar}]  {p.class_exp * 100:.0f}%",
             f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
@@ -165,6 +172,41 @@ class RightPanel(Static):
         if p.statuses:
             lines.append(f"[red]状态: {' '.join(s.name for s in p.statuses)}[/]")
         lines.append("[dim][[C]]关闭 [[I]]物品栏 [[X]]观察[/]")
+        return "\n".join(lines[:max_h])
+
+    def _render_system(self) -> str:
+        """渲染「- 思绪 -」面板。"""
+        max_h = self.size.height
+        lines = [
+            "[bold]─ 思绪 -[/] [dim]E返回[/]",
+            "",
+            "  [[E1]]手册",
+            "  [[E2]]封存记忆",
+            "  [[E3]]回想记忆",
+            "  [[E4]]入眠",
+            "  [[E5]]主标题",
+            "  [[E6]]设置",
+            "",
+            "[dim]:E序号 选择  E返回[/]",
+        ]
+        return "\n".join(lines[:max_h])
+
+    def _render_spellbook(self) -> str:
+        """渲染法术书 —— 只记载已知法术本体。"""
+        from core.spell import get_known_spells
+        p = self.state.player
+        known = get_known_spells(p)
+        max_h = self.size.height
+        lines = [f"[bold]法术书[/] [dim]B返回[/]", ""]
+        if not known:
+            lines.append("  (尚未记载任何法术)")
+        for i, s in enumerate(known, 1):
+            domain = s.get("domain_cn", s.get("domain", ""))
+            lv = s.get("level", 0)
+            mp = s.get("mp_cost", 0)
+            lines.append(f"  [{i}] {s['name']}  {domain} Lv.{lv}  MP:{mp}")
+        lines.append("")
+        lines.append("[dim]:I序号 记忆/取消记忆  B返回[/]")
         return "\n".join(lines[:max_h])
 
     def _render_observe(self) -> str:
@@ -204,9 +246,10 @@ class RightPanel(Static):
         ent = self.state.get_entity_at(cx, cy)
         if ent and ent is not self.state.player:
             hp_pct = ent.hp / max(ent.max_hp, 1) * 100
-            faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
-                           "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
-            lines.append(f"生物: {ent.name} {faction_tag}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
+            attitude = get_attitude(ent, self.state.player)
+            att_color = {"敌对": "[red]敌对[/]", "友好": "[green]友好[/]", "冷漠": "[yellow]冷漠[/]"}.get(attitude, attitude)
+            lines.append(f"生物: {ent.name} Lv.{ent.class_level:.1f}  阵营:{ent.faction}  态度:{att_color}")
+            lines.append(f"  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
             if ent.food_value > 0:
                 lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
             if ent.statuses:

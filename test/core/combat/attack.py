@@ -215,6 +215,10 @@ def resolve_attack(
     target_pos: tuple[int, int] | None = None,
     grid: Grid[Terrain] | None = None,
     ground_items: list | None = None,
+    *,
+    hit: bool | None = None,
+    roll: int | None = None,
+    damage_bonus: int = 0,
 ) -> dict:
     """完整一次攻击结算（含掩体检查）。
 
@@ -226,6 +230,10 @@ def resolve_attack(
         target_pos: 目标坐标（掩体检查用，可选）
         grid: 地形网格（掩体检查用，可选）
         ground_items: 地上物品列表（掩体检查用，可选）
+        hit / roll: 预置命中结果与攻击骰。调用方已判定命中时传入（如玩家主攻复用
+            execute_attack_roll 阶段已掷出的骰），跳过内部命中检定直接结算伤害。
+            hit/roll 均为 None 时走完整命中检定。
+        damage_bonus: 额外伤害加成（战技/重掷），不参与「按 AC 减半」。
 
     Returns:
         {
@@ -238,9 +246,15 @@ def resolve_attack(
             "blocked_by_cover": bool,
             "cover_pos": tuple | None,
             "damage_type": str,
+            "class_leveled": bool,
         }
     """
-    hit, roll = hit_check(attacker, defender, weapon)
+    preset_hit = hit is not None
+    # 护盾术：承受一次攻击（即使未命中）后消散
+    if defender.has_status("shield"):
+        defender.remove_status("shield")
+    if hit is None:
+        hit, roll = hit_check(attacker, defender, weapon)
     if not hit:
         # 未命中 → 削韧
         reduce_tenacity(defender, roll)
@@ -249,8 +263,9 @@ def resolve_attack(
                 "blocked_by_cover": False, "cover_pos": None,
                 "damage_type": weapon.damage_type}
 
-    # 掩体检查（仅远程武器，需要坐标和地形网格）
-    if weapon.weapon_type == "ranged" and attacker_pos and target_pos and grid:
+    # 掩体检查（仅远程武器真实命中检定，需要坐标和地形网格）。
+    # 玩家主攻已在 execute_attack_roll 阶段处理过掩体，预置 hit 时不重复检查。
+    if not preset_hit and weapon.weapon_type == "ranged" and attacker_pos and target_pos and grid:
         blocked, cover_pos = resolve_cover_line(
             roll, attacker_pos, target_pos, grid, weapon.weapon_type,
             ground_items=ground_items,
@@ -275,6 +290,9 @@ def resolve_attack(
     if halved:
         damage = max(1, damage // 2)
 
+    # 战技/重掷加成：不参与减半（保持玩家主攻原行为）
+    damage += damage_bonus
+
     # 伤害类型修正
     damage = apply_damage_type_modifiers(damage, weapon.damage_type, defender)
 
@@ -283,10 +301,13 @@ def resolve_attack(
     if getattr(defender, 'controlled', False) and defender.hp < 1:
         defender.hp = 1  # 仅测试：被控生物 HP 保底，后续接入死亡系统后移除
 
-    return {"hit": True, "critical": critical, "roll": roll,
-            "location": location, "damage": damage, "halved": halved,
-            "blocked_by_cover": False, "cover_pos": None,
-            "damage_type": weapon.damage_type}
+    result = {"hit": True, "critical": critical, "roll": roll,
+              "location": location, "damage": damage, "halved": halved,
+              "blocked_by_cover": False, "cover_pos": None,
+              "damage_type": weapon.damage_type}
+    # 命中 → 攻击者获得职业经验（实体通用，NPC 同样累积）
+    result["class_leveled"] = attacker.grant_class_exp()
+    return result
 
 
 # ═══════════════════════════════════════════════════

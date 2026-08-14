@@ -505,6 +505,20 @@ class GameState:
                     self._resolve_hunt_loot(creature, hunt_target, max_food)
             elif self._npc_log_cb and in_fov:
                 self._npc_log_cb(f"{creature.name} 攻击{hunt_target.name}未命中")
+        else:
+            # 无配置动作 → 兜底徒手攻击（1d4 钝击）
+            dmg = random.randint(1, 4)
+            atk_roll = random.randint(1, 20) + creature.stat_adjust("str")
+            if atk_roll >= hunt_target.total_ac('chest'):
+                hunt_target.hp = max(0, hunt_target.hp - dmg)
+                if getattr(hunt_target, 'controlled', False) and hunt_target.hp < 1:
+                    hunt_target.hp = 1
+                if self._npc_log_cb and in_fov:
+                    self._npc_log_cb(f"{creature.name} 徒手攻击了{hunt_target.name}，造成 {dmg} 点伤害")
+                if hunt_target.hp <= 0:
+                    self._resolve_hunt_loot(creature, hunt_target, max_food)
+            elif self._npc_log_cb and in_fov:
+                self._npc_log_cb(f"{creature.name} 徒手攻击{hunt_target.name}未命中")
 
     def _resolve_hunt_loot(self, hunter, hunt_target, max_food) -> None:
         """捕猎击杀后 2d6 搜刮。"""
@@ -746,6 +760,14 @@ class GameState:
         if p is not None and not any(c is p for c, _ in self.entities):
             p.tick_statuses()
 
+    def _tick_mp_regen(self) -> None:
+        """每钟摆魔法使自然恢复 MP：1d4 + 智力调整值 + 感知调整值。"""
+        p = self.player
+        if not p or p.mp >= p.max_mp or p.char_class != "mage":
+            return
+        restore = random.randint(1, 4) + p.stat_adjust("int") + p.stat_adjust("wis")
+        p.mp = min(p.max_mp, p.mp + restore)
+
     def _tick_food(self) -> None:
         """每钟摆所有非 food_locked 生物消耗 1 饮食值，归零后扣 HP。
         被控生物若在 entities 中则随迭代处理，否则单独处理。"""
@@ -869,7 +891,7 @@ class GameState:
                 return
 
             # 统一扣费：参战生物扣 AP，非参战扣钟摆
-            in_combat_action = self.in_combat
+            in_combat_action = self.in_combat and creature in self.combat_initiative
             if in_combat_action and creature.ap < comp.cost:
                 # AP 不足 → 尝试下一个候选动作
                 candidates.pop(0)
@@ -1002,41 +1024,72 @@ class GameState:
 
         return None
 
-    def _advance_npcs(self, delta: float) -> None:
-        """delta 钟摆的 NPC 结算。"""
+    def _npc_act(self, creature: Creature) -> None:
+        """单个NPC的战斗回合：循环执行动作直到 AP 耗尽或无动作可做。"""
+        pos = self.get_entity_pos(creature)
+        if pos is None:
+            return
+        ec, er = pos
+        while creature.ap > 0:
+            ap_before = creature.ap
+            self._npc_evaluate_and_dispatch(creature, ec, er)
+            if creature.ap >= ap_before:
+                break  # 无动作被执行（AP 未消耗）
+            # 刷新位置（移动后）
+            pos = self.get_entity_pos(creature)
+            if pos is None:
+                break
+            ec, er = pos
+
+    def _advance_npcs(self, delta: float, combatants: bool = True) -> None:
+        """delta 钟摆的 NPC 结算。
+
+        combatants=True（默认）：参战生物仅首轮行动，非参战生物每轮行动。
+        combatants=False：仅非参战生物行动（战斗满轮结算时使用）。
+
+        无论是否参战，每个动作都通过 _npc_evaluate_and_dispatch 重新评估行动表，
+        只是分配资源不同（参战扣 AP，非参战扣钟摆）。
+        """
         self._tick_all_statuses()
+        self._tick_mp_regen()
         self._tick_food()
         if self.player_pos in self.campfire_positions:
             self._check_campfire_burn(self.player)
 
-
-        # 按 maxS 降序排序，同速按 ID；跳过被控生物；战斗中只处理敌对生物
-        if self.in_combat:
-            sorted_entities = sorted(
-                [(c, p) for c, p in self.entities if not c.controlled and c.hp > 0
-                 and not c.has_status("不可移动") and are_hostile(c, self.player)],
-                key=lambda x: (-x[0].speed, id(x[0]))
-            )
-        else:
+        loops = max(1, int(delta))
+        for loop_idx in range(loops):
+            # 按 maxS 降序排序，同速按 ID；跳过被控生物
             sorted_entities = sorted(
                 [(c, p) for c, p in self.entities if not c.controlled and c.hp > 0 and not c.has_status("不可移动")],
                 key=lambda x: (-x[0].speed, id(x[0]))
             )
 
-        for creature, (ec, er) in sorted_entities:
-            # 刷新位置
-            for _c, (_ec, _er) in self.entities:
-                if _c is creature:
-                    ec, er = _ec, _er
-                    break
+            # 预建 id → pos 映射，避免逐实体 O(N) 线性查找（O(N²)→O(N)）
+            pos_map = {id(c): (ec, er) for c, (ec, er) in self.entities}
 
-            # 忙碌中 → cost 倒计时
-            if creature._action_remaining_cost > 0:
-                creature._action_remaining_cost -= 1.0
-                continue
+            for creature, _ in sorted_entities:
+                ec, er = pos_map[id(creature)]
 
-            # 评估 + 执行
-            self._npc_evaluate_and_dispatch(creature, ec, er)
+                # 参战生物：仅在首轮行动（combatants=True 时），后续轮跳过
+                in_initiative = creature in self.combat_initiative
+                if in_initiative and loop_idx > 0:
+                    continue
+
+                # combatants=False 时跳过参战生物
+                if not combatants and in_initiative:
+                    continue
+
+                # 忙碌中 → cost 倒计时
+                if creature._action_remaining_cost > 0:
+                    creature._action_remaining_cost = max(0, creature._action_remaining_cost - 1.0)
+                    continue
+
+                # 评估 + 执行（每个动作都根据行动表重新评估）
+                self._npc_evaluate_and_dispatch(creature, ec, er)
+                # 移动后刷新 pos_map，供后续实体读取最新坐标
+                new_pos = self.get_entity_pos(creature)
+                if new_pos:
+                    pos_map[id(creature)] = new_pos
 
         # 敌对检测：双方互相在视野内才触发战斗（跳过尸体）
         pc, pr = self.player_pos

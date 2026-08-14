@@ -126,6 +126,8 @@ class SaveManager:
                 for item in player.inventory
             ],
             "memorized_spells": list(player.memorized_spells),
+            "spell_slots": dict(player.spell_slots),
+            "spell_domains": list(player.spell_domains),
         }
 
     @staticmethod
@@ -184,6 +186,8 @@ class SaveManager:
         player.food_locked = data.get("food_locked", False)
         player.statuses = [StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in data.get("statuses", [])]
         player.memorized_spells = data.get("memorized_spells", [])
+        player.spell_slots = data.get("spell_slots", {})
+        player.spell_domains = data.get("spell_domains", [])
 
         # 装备重建
         if loader:

@@ -92,12 +92,17 @@ class Creature:
     # 角色
     char_class: str = ""
     background: str = ""
+    # 职业等级（所有实体通用，默认 0）
+    class_level: float = 0.0       # 职业等级（0–2.0）
+    class_exp: float = 0.0         # 累积职业经验（0–1，满 1 升一级）
     # 法术
     memorized_spells: list[str] = field(default_factory=list)
+    spell_slots: dict = field(default_factory=dict)        # 法术位 {"1": 2}
+    spell_domains: list[str] = field(default_factory=list)  # 已掌握领域（英文 key）
     # 控制组件
     controlled: bool = False
     _hunt_target: Any = field(default=None, repr=False)  # 临时捕猎目标 (creature, pos)
-    _hostile_to: set = field(default_factory=set, repr=False)  # 临时敌对的生物 id 集合
+    _attitude: dict[int, str] = field(default_factory=dict, repr=False)  # 态度：目标实体id → "友好"|"冷漠"|"敌对"
     curS_ticks: int = 0                    # 里程累积 [0, maxS*SCALE)，SCALE=10
     _action_remaining_cost: float = 0.0    # 当前动作剩余耗时（钟摆），0=无活跃动作
     _cached_path: Any = field(default=None, repr=False)   # 寻路缓存
@@ -172,6 +177,17 @@ class Creature:
     def stat_adjust(self, name: str) -> int:
         return stat_adjust(self.stat(name))
 
+    def grant_class_exp(self, amount: float = 0.2) -> bool:
+        """命中后累积职业经验，满 1.0 升一级。返回 True 表示本次升级。"""
+        if self.class_level >= 2.0:
+            return False
+        self.class_exp += amount
+        if self.class_exp >= 1.0:
+            self.class_exp -= 1.0
+            self.class_level = min(2.0, self.class_level + 0.2)
+            return True
+        return False
+
     # ---- 衍生值 ----
 
     def initiative_bonus(self) -> int:
@@ -186,7 +202,13 @@ class Creature:
             "legs": self.ac_legs,
             "head": self.ac_head,
         }.get(body_part, 0)
-        return base + part_bonus + self.ac_shield
+        # 状态 AC 加成：guarding(+1) / shield(+5 护盾术，全身)
+        status_bonus = 0
+        if self.has_status("guarding"):
+            status_bonus += 1
+        if self.has_status("shield"):
+            status_bonus += 5
+        return base + part_bonus + self.ac_shield + status_bonus
 
     def carry_capacity(self) -> float:
         """负重上限 (kg) = 20 + 力量调整值 * 2"""
@@ -272,22 +294,38 @@ FACTION_RELATIONS = {
 
 
 def are_hostile(a: "Creature", b: "Creature") -> bool:
-    """两生物是否敌对。同阵营不敌对，中立通过 _hostile_to 被动反击。"""
+    """两生物是否敌对。显式态度优先，无记录时按阵营默认推导。"""
     if a is b:
         return False
-    af, bf = a.faction, b.faction
-    if af == bf:
+    # 显式态度优先
+    a_att = a._attitude.get(id(b))
+    b_att = b._attitude.get(id(a))
+    if a_att == "敌对" or b_att == "敌对":
+        return True
+    if a_att == "友好" or b_att == "友好":
         return False
-    if af == "中立" and id(b) in a._hostile_to:
-        return True
-    if bf == "中立" and id(a) in b._hostile_to:
-        return True
-    enemies = FACTION_RELATIONS.get(af, {}).get("enemies", [])
-    return bf in enemies
+    # 无显式态度 → 按阵营默认
+    if a.faction == b.faction:
+        return False  # 同阵营默认友好
+    enemies = FACTION_RELATIONS.get(a.faction, {}).get("enemies", [])
+    return b.faction in enemies
+
+
+def get_attitude(a: "Creature", b: "Creature") -> str:
+    """获取 a 对 b 的态度："友好"|"冷漠"|"敌对"。与 are_hostile 共用推导逻辑。"""
+    att = a._attitude.get(id(b))
+    if att:
+        return att
+    if a.faction == b.faction:
+        return "友好"
+    enemies = FACTION_RELATIONS.get(a.faction, {}).get("enemies", [])
+    if b.faction in enemies:
+        return "敌对"
+    return "冷漠"
 
 
 def is_ally(a: "Creature", b: "Creature") -> bool:
-    """两生物是否同盟（同阵营且非临时敌对）。"""
+    """两生物是否同盟（同阵营，且无显式敌对态度）。"""
     if a is b:
         return True
     return a.faction == b.faction
@@ -455,6 +493,10 @@ def create_mage(name: str, stats: dict, domain: str = "evocation") -> Creature:
     s = {**DEFAULT_STATS, **stats}
     s["int"] += 2
     spells = {"evocation": ["魔法飞弹"], "abjuration": ["护盾术", "疗伤术"]}
+    from core.spell import load_class_data
+    class_data = load_class_data("mage") or {}
+    slots = dict(class_data.get("spell_slots", {}))
     return Creature(name=name, char_class="mage", faction="守序",
                     hp=30, max_hp=30, mp=100, max_mp=100, max_ap=6,
-                    stats=s, gp=3, memorized_spells=spells.get(domain, []))
+                    stats=s, gp=3, memorized_spells=spells.get(domain, []),
+                    spell_slots=slots, spell_domains=[domain])

@@ -482,7 +482,7 @@
       ]
     },
     "behavior": {
-      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "approach_enemy", "flee", "rest", "idle"],
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "attack_enemy", "approach_enemy", "flee", "rest", "idle"],
       "overrides": {"hunt": 0.6, "collect": 0.5}
     },
     "char": "E"
@@ -558,7 +558,7 @@
       ]
     },
     "behavior": {
-      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "approach_enemy", "flee", "rest", "idle"],
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "attack_enemy", "approach_enemy", "flee", "rest", "idle"],
       "overrides": {"hunt": 0.7, "collect": 0.5}
     },
     "char": "M"
@@ -616,7 +616,7 @@
       ]
     },
     "behavior": {
-      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "approach_enemy", "flee", "rest", "idle"],
+      "components": ["wander", "pickup", "hunt", "forage", "eat_food", "collect", "eat_inventory", "open_door", "close_door", "attack_enemy", "approach_enemy", "flee", "rest", "idle"],
       "overrides": {"hunt": 0.7, "collect": 0.5}
     },
     "char": "v"
