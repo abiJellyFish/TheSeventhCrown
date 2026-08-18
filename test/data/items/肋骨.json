@@ -1,0 +1,21 @@
+{
+  "name": "肋骨",
+  "weight": 0.1,
+  "price": {
+    "cp": 10
+  },
+  "description": "风干的骨头，可以投掷",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "ranged",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 2,
+    "range_normal": 4,
+    "range_max": 6,
+    "properties": [
+      "thrown"
+    ]
+  }
+}

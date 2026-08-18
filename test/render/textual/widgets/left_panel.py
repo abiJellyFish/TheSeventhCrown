@@ -5,8 +5,9 @@ import os
 from textual.widgets import Static
 
 from core.game_state import GameState
-from core.movement import Terrain
+from core.movement import Terrain, facing_label
 from core.combat.dual_wield import dual_wield_mode, dual_wield_ap_cost
+from core.actions import collect_actions, _load_special_actions
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
 
@@ -42,6 +43,12 @@ class LeftPanel(Static):
             return self._render_chest_qty_panel("take")
         if iphase == "chest_store_qty":
             return self._render_chest_qty_panel("store")
+        if iphase == "action_menu":
+            return self._render_action_menu()
+        if iphase == "shove_choice":
+            return self._render_shove_choice()
+        if iphase == "corpse":
+            return self._render_corpse_panel()
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
         if phase == "select_spell":
@@ -49,162 +56,124 @@ class LeftPanel(Static):
         if phase == "select_action":
             return self._render_action_panel()
         elif phase == "ranged_target":
-            return self._render_ranged_target_panel()
-        elif phase == "select_target":
-            return self._render_target_panel()
+            return self._render_aim_panel()
         elif phase == "select_maneuver":
             return self._render_maneuver_panel()
         elif phase == "select_special":
             return self._render_special_panel()
+        elif phase == "adv_select":
+            return self._render_adv_select_panel()
         # 探索 vs 战斗默认面板
         if self.state.in_combat:
             return self._render_combat_default()
         else:
             return self._render_explore_default()
 
+    def _knockout_line(self) -> str:
+        """击晕/杀害模式切换键文案（阶段9）：击晕模式→切换杀害，杀害模式→切换击晕。"""
+        mode = getattr(self.state, 'knockout_mode', False)
+        if mode:
+            return "[[F]]切换杀害"
+        return "[[F]]切换击晕"
+
     def _render_explore_default(self) -> str:
         return "\n".join([
-            "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
-            "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
-            "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
-            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
-            "[[S]]法术",
+            "[[0]]交互 [[N]]动作",
+            "[[g]]慢速 [[G]]疾走  [[r]]短休 [[R]]长休  [[,]]消磨",
+            "[[A]]攻击 [[S]]法术  " + self._knockout_line(),
+            self._stealth_line(),
+            "[[D1]]北 [[D2]]东 [[D3]]南 [[D4]]西",
         ])
 
     def _render_combat_default(self) -> str:
         p = self.state.player
-        filled = int(p.ap / max(p.max_ap, 1) * p.max_ap)
+        # 阶段7.6：AP%化（固定10格），右侧显示"剩余AP/上限"
+        filled = max(0, min(10, round(p.ap / max(p.max_ap, 1) * 10)))
         lines = [
-            f"AP [{'|' * filled}{'.' * (10 - filled)}]",
+            f"AP [{'|' * filled}{'.' * (10 - filled)}] {p.ap}/{p.max_ap}",
             "S-Tab 结束战斗轮",
-            "[[0]]交互 [[1]]探查  [[2]]躲藏 [[3]]协助",
-            "[[4]]跳跃 [[5]]撤离  [[6]]回避 [[7]]推撞",
-            "[[8]]擒抱 [[ / ]]击晕  [[g]]慢速 [[G]]疾走",
-            "[[r]]短休 [[R]]长休  [[,]]消磨 [[A]]攻击",
-            "[[S]]法术",
+            "[[0]]交互 [[N]]动作",
+            "[[g]]慢速 [[G]]疾走  [[r]]短休 [[R]]长休  [[,]]消磨",
+            "[[A]]攻击 [[S]]法术  " + self._knockout_line(),
+            self._stealth_line(),
+            "[[D1]]北 [[D2]]东 [[D3]]南 [[D4]]西",
         ]
         return "\n".join(lines)
 
-    def _is_two_handed(self, item) -> bool:
-        props = getattr(item, 'properties', []) or []
-        return 'two_handed' in props
+    def _stealth_line(self) -> str:
+        """隐匿提示行：当前控制的实体对谁隐匿。"""
+        p = self.state.player
+        hidden = self.state._hidden_target_names(p)
+        if hidden:
+            return f"隐匿: 对{', '.join(hidden)}"
+        return "隐匿: 无"
 
-    def _weapon_ap_display(self, weapon) -> str:
-        """返回武器的 AP 消耗显示字符串，含弹药装填信息。"""
-        props = getattr(weapon, 'properties', []) or []
-        if "ammo" in props and not getattr(weapon, 'loaded', True):
-            return f"装填1+攻击{weapon.ap_cost}AP (未装填)"
-        return f"AP:{weapon.ap_cost}"
+    def _render_action_menu(self) -> str:
+        """动作子面板：扫描实体 actions 动态生成（D22）。"""
+        actions = self.state.player.actions
+        max_h = self.size.height
+        lines = ["[bold]── 动作 ──[/]", ""]
+        for i, a in enumerate(actions, 1):
+            if len(lines) >= max_h - 1:
+                lines.append(f"  ... 还有 {len(actions) - i + 1} 个动作")
+                break
+            name = a.get("name", a.get("key", "?"))
+            cost_ap = a.get("cost_ap", 0)
+            cost_p = a.get("cost_pendulum", 0)
+            # 躲藏始终显示"躲藏"（起身改为独立动作 stand，阶段7.5/7.6）
+            # 起身按状态动态显示费用；无倒地/躲藏状态时不显示起身
+            if a.get("key") == "stand":
+                prone = self.state.player.has_status("prone")
+                hiding = self.state.player.has_status("hiding")
+                if not prone and not hiding:
+                    continue
+                cost_ap = 30 if prone else 20
+                cost_p = 3 if prone else 2
+            lines.append(f"[[N{i}]]{name}  AP:{cost_ap} 钟摆:{cost_p}")
+        lines.append("")
+        lines.append("[[N0]]返回")
+        return "\n".join(lines[:max_h])
+
+    def _render_shove_choice(self) -> str:
+        """推撞二选一面板（阶段6）：撞倒 / 推开。"""
+        target = getattr(self.state, 'shove_target', None)
+        tname = target.name if target else "目标"
+        return "\n".join([
+            "[bold]── 推撞 ──[/]",
+            f"目标: {tname}",
+            "",
+            "[[S1]]撞倒  —  使目标倒地",
+            "[[S2]]推开  —  将目标推离 1 格",
+            "",
+            "[[S0]]取消",
+        ])
+
+    def _render_corpse_panel(self) -> str:
+        """尸体面板：搜刮 / 捡起。"""
+        target = getattr(self.state, 'interact_target', None)
+        c = target.creature if target else None
+        if c is None:
+            return "── 尸体 ──\n\n(目标已消失)\n\n[[0]]离开"
+        looted = getattr(c, '_looted', False)
+        loot_label = "搜刮(已搜刮)" if looted else "搜刮"
+        lines = [
+            "[bold]── 尸体 ──[/]",
+            c.name,
+            "",
+            f"[[1]]{loot_label}",
+        ]
+        if getattr(c, 'corpse', None) is not None:
+            lines.append("[[2]]捡起")
+        lines.append("")
+        lines.append("[[0]]离开")
+        return "\n".join(lines[:self.size.height])
+
 
     # ── 动作收集（数据与渲染分离）──
 
-    def _collect_actions(self) -> list[dict]:
-        """收集当前装备状态下的所有可用攻击动作。返回动作列表，每项: {mode, weapon, label}。"""
-        p = self.state.player
-        left = p.equipment.get("left_hand")
-        right = p.equipment.get("right_hand")
-        actions = []
-
-        # 分析手部状态
-        def hand(weapon, other_weapon):
-            """返回手部信息: kind, weapon, can_attack, is_light, ap"""
-            if weapon is None:
-                if other_weapon and self._is_two_handed(other_weapon):
-                    return {"kind": "blocked", "weapon": None, "can_attack": False}
-                return {"kind": "unarmed", "weapon": None, "can_attack": True,
-                        "is_light": True, "ap": 1, "name": "徒手"}
-            if not hasattr(weapon, 'weapon_type'):
-                return {"kind": "shield", "weapon": weapon, "can_attack": False}
-            if self._is_two_handed(weapon):
-                return {"kind": "two_handed", "weapon": weapon, "can_attack": False}
-            props = getattr(weapon, 'properties', []) or []
-            return {"kind": "weapon", "weapon": weapon, "can_attack": True,
-                    "is_light": 'light' in props,
-                    "ap": weapon.ap_cost, "name": weapon.name,
-                    "damage": weapon.damage, "damage_type": weapon.damage_type}
-
-        L = hand(left, right)
-        R = hand(right, left)
-
-        # 1) 单手武器
-        for side, h in [("left", L), ("right", R)]:
-            hand_label = "左手" if side == "left" else "右手"
-            if h["kind"] == "weapon":
-                w = h["weapon"]
-                actions.append({"mode": f"{side}_hand", "weapon": w,
-                    "label": f"{hand_label}武器  {w.name} {w.damage} {w.damage_type} {self._weapon_ap_display(w)}"})
-            elif h["kind"] == "shield":
-                actions.append({"mode": f"{side}_hand_blocked", "weapon": h["weapon"],
-                    "label": f"{hand_label}武器  {h['weapon'].name} (不能攻击)"})
-
-        # 2) 徒手
-        for side, h in [("left", L), ("right", R)]:
-            hand_label = "左手" if side == "left" else "右手"
-            if h["kind"] == "unarmed":
-                actions.append({"mode": f"unarmed_{side}", "weapon": None,
-                    "label": f"徒手打击({hand_label})  1+力量 钝击 AP:1"})
-
-        # 3) 双持 — 两手都能攻击且都不是双手武器
-        if L["can_attack"] and R["can_attack"]:
-            l_light = L["is_light"]
-            r_light = R["is_light"]
-            l_ap = L["ap"]; r_ap = R["ap"]
-            l_name = L["name"]; r_name = R["name"]
-            if l_light and r_light:
-                ap = max(l_ap, r_ap)
-                actions.append({"mode": "dual_wield", "weapon": R.get("weapon") or "unarmed",
-                    "label": f"双持武器  {l_name}+{r_name} AP:{ap}"})
-            else:
-                actions.append({"mode": "dual_attack", "weapon": R.get("weapon") or "unarmed",
-                    "label": f"双持攻击  {l_name}({l_ap}AP)+{r_name}({r_ap}AP)"})
-
-        # 4) 双手武器 — 单条
-        for h in [L, R]:
-            if h["kind"] == "two_handed":
-                w = h["weapon"]
-                actions.append({"mode": "two_hand", "weapon": w,
-                    "label": f"双手并用  {w.name} {self._weapon_ap_display(w)}"})
-                break
-
-        # 5) 双手并用（两用武器）— 一手武器近战 + 另一手空
-        for side, h, other in [("left", L, R), ("right", R, L)]:
-            hand_label = "左手" if side == "left" else "右手"
-            if h["kind"] == "weapon" and h["weapon"].weapon_type == "melee" \
-               and other["kind"] == "unarmed":
-                w = h["weapon"]
-                actions.append({"mode": f"two_hand_{side}", "weapon": w,
-                    "label": f"双手并用({hand_label})  {w.name} 命中+1 伤害+2 AP:{w.ap_cost}"})
-
-        # 6) 远程武器近战
-        for h in [L, R]:
-            if h["kind"] == "two_handed" and h["weapon"].weapon_type == "ranged" \
-               and getattr(h["weapon"], 'melee', None):
-                w = h["weapon"]; m = w.melee
-                actions.append({"mode": "ranged_melee", "weapon": w,
-                    "label": f"双手攻击(近战)  {w.name} {m['damage']}+力量 {m['damage_type']} AP:{m['ap_cost']}"})
-                break
-
-        # 7) 火把点燃/熄灭 — 检查装备栏中手持的火把
-        for side, slot in [("left", "left_hand"), ("right", "right_hand")]:
-            hand_label = "左手" if side == "left" else "右手"
-            hand_item = p.equipment.get(slot)
-            if hand_item is None:
-                continue
-            ls = getattr(hand_item, 'light_source', None)
-            if not ls:
-                continue
-            condition = ls.get("condition", "")
-            if condition == "lit":
-                actions.append({"mode": "torch_extinguish", "weapon": hand_item,
-                    "label": f"熄灭火把({hand_label})  AP:1"})
-            else:
-                actions.append({"mode": "torch_ignite", "weapon": hand_item,
-                    "label": f"点燃火把({hand_label})  AP:1"})
-
-        return actions
 
     def _render_action_panel(self) -> str:
-        actions = self._collect_actions()
+        actions = collect_actions(self.state)
         self._action_map = {}
         lines = ["── 选择攻击方式 ──"]
         for i, a in enumerate(actions, 1):
@@ -235,7 +204,8 @@ class LeftPanel(Static):
         lines.append("[[A0]]取消")
         return "\n".join(lines[:max_h])
 
-    def _render_ranged_target_panel(self) -> str:
+    def _render_aim_panel(self) -> str:
+        """通用瞄准面板（近战/远程/法术/投掷/点火）。只看范围，不看视野。"""
         pa = self.state.pending_attack or {}
         weapon = pa.get("weapon")
         pc, pr = self.state.player_pos
@@ -243,32 +213,43 @@ class LeftPanel(Static):
         max_h = self.size.height
 
         weapon_name = weapon.name if weapon else "武器"
-        # 射程：法术模式从 spell.range 动态读取（min 视野），武器模式用 weapon.range_max
+        # 范围：统一读 pending_attack["max_range"]，fallback 按模式推导
         if pa.get("mode") == "spell":
             spell = pa.get("spell", {})
-            max_range = min(self.state.player.vision_range, spell.get("range", 8))
+            max_range = pa.get("max_range") or spell.get("range", 8)
             target_label = f"法术: {spell.get('name', '?')}"
+        elif pa.get("mode") == "throw":
+            max_range = pa.get("max_range") or pa.get("throw_max_range", pa.get("throw_range", 3))
+            target_label = f"投掷: {weapon_name}"
+        elif pa.get("mode") in ("torch_ignite_surface", "ignite_surface"):
+            max_range = pa.get("max_range", 1)
+            target_label = f"点火: {weapon_name}" if pa.get("mode") == "torch_ignite_surface" else "生火: 空玻璃瓶"
+        elif pa.get("mode") == "action":
+            max_range = pa.get("max_range", 1)
+            target_label = f"动作: {pa.get('action_name', '动作')}"
+        elif weapon and getattr(weapon, 'weapon_type', '') == "ranged":
+            max_range = pa.get("max_range") or getattr(weapon, 'range_max', 1)
+            target_label = f"远程: {weapon_name}"
         else:
-            max_range = weapon.range_max if weapon and hasattr(weapon, 'range_max') else 1
-            target_label = f"武器: {weapon_name}"
+            max_range = pa.get("max_range") or (weapon.reach if weapon and hasattr(weapon, 'reach') and weapon.reach else 1)
+            target_label = f"近战: {weapon_name}"
         dist = max(abs(oc - pc), abs(oro - pr))
         in_range = dist <= max_range
 
         # 地表
         terrain = self.state.map[oc, oro]
-        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木", Terrain.PASSABLE: "草地"}
+        t_names = {Terrain.GRASS: "草地", Terrain.BARREN: "荒地", Terrain.PLAIN: "平原", Terrain.FLOOR: "地面", Terrain.BED: "床铺", Terrain.STAIRS_DOWN: "楼梯下", Terrain.STAIRS_UP: "楼梯上", Terrain.WATER: "水", Terrain.BUSH: "灌木丛", Terrain.STONE: "石头", Terrain.LOW_WALL: "矮墙", Terrain.TREE: "树", Terrain.CAMPFIRE: "篝火", Terrain.DOOR: "门", Terrain.WALL: "墙壁"}
         terrain_name = t_names.get(terrain, "未知")
 
-        # 目标：法术模式允许自身，武器模式排除自身
+        # 目标：范围允许即可选（含自身，不校验视野）
         ent = self.state.get_entity_at(oc, oro)
-        allow_self = pa.get("mode") == "spell"
-        has_valid_target = ent and ent.hp > 0 and (allow_self or ent is not self.state.player)
+        has_valid_target = ent and not ent.is_dead
 
         lines = [
-            "[bold]── 远程瞄准 ──[/]",
-            f"{target_label}  射程: {max_range}",
+            "[bold]── 瞄准 ──[/]",
+            f"{target_label}  范围: {max_range}",
             f"光标: ({oc}, {oro})  距离: {dist}/{max_range}"
-            + (" [green]✓[/]" if in_range else " [red]超出射程[/]"),
+            + (" [green]✓[/]" if in_range else " [red]超出范围[/]"),
             f"地表: {terrain_name}",
             "",
         ]
@@ -286,10 +267,11 @@ class LeftPanel(Static):
 
         if has_valid_target:
             hp_pct = ent.hp / max(ent.max_hp, 1) * 100
+            self_tag = " (你)" if ent is self.state.player else ""
             faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
                            "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
-            lines.append(f"目标: {ent.name} {faction_tag}")
-            lines.append(f"  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
+            lines.append(f"目标: {ent.name}{self_tag} {faction_tag}")
+            lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
             if ent.statuses:
                 lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
         elif terrain == Terrain.WALL:
@@ -297,61 +279,21 @@ class LeftPanel(Static):
         else:
             lines.append("目标: (空地)")
 
-        # 可见性
-        if (oc, oro) in self.state.fov_bright:
-            lines.append("可见: 明亮")
-        elif (oc, oro) in self.state.fov_dim:
-            lines.append("可见: 微光")
-        else:
-            lines.append("可见: 否")
-
         lines.append("")
         lines.append("[[方向键]] 移动光标  [[Enter]] 确认  [[']] 取消")
         return "\n".join(lines[:max_h])
 
-    def _render_target_panel(self) -> str:
+    def _render_adv_select_panel(self) -> str:
+        """优势选择面板：显示各骰面点数及序号，玩家输入序号选择。"""
         pa = self.state.pending_attack or {}
-        weapon = pa.get("weapon")
-        pc, pr = self.state.player_pos
-
-        weapon_name = weapon.name if weapon else "武器"
-        reach = weapon.reach if weapon and hasattr(weapon, 'reach') and weapon.reach else 1
-        lines = ["── 选择目标格子 ──",
-                 f"{weapon_name} → 攻击范围: {reach}格"]
-
-        # 收集范围内格子（与 flow._find_melee_tiles 逻辑一致）
-        tiles = []
-        for dc in range(-reach, reach + 1):
-            for dr in range(-reach, reach + 1):
-                if dc == 0 and dr == 0:
-                    continue
-                tc, tr = pc + dc, pr + dr
-                if not self.state.map.within_bounds(tc, tr):
-                    continue
-                if (tc, tr) not in self.state.fov_bright:
-                    continue
-                dist = max(abs(dc), abs(dr))
-                ent = self.state.get_entity_at(tc, tr)
-                if ent is self.state.player:
-                    ent = None
-                if ent and ent.hp <= 0:
-                    ent = None
-                tiles.append((dist, tc, tr, ent))
-        tiles.sort(key=lambda x: (x[0], x[3] is None))
-
-        for i, (_, tc, tr, ent) in enumerate(tiles[:9]):
-            if ent:
-                faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
-                               "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
-                label = f"{ent.name} {faction_tag} HP:{ent.hp}"
-            else:
-                terrain = self.state.map[tc, tr]
-                t_name = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木", Terrain.PASSABLE: "空地"}.get(terrain, "空地")
-                label = t_name
-            lines.append(f"[[T{i + 1}]]({tc},{tr}) {label}")
-        if len(tiles) > 9:
-            lines.append(f"... 还有 {len(tiles) - 9} 个格")
-        lines.append("[[T0]]取消")
+        rolls = pa.get("adv_rolls") or []
+        if not rolls:
+            return "── 掷骰中 ──"
+        lines = ["── 优势! 选择点数 ──"]
+        for i, r in enumerate(rolls, 1):
+            lines.append(f"  [[{i}]] {r}")
+        lines.append("")
+        lines.append("输入序号选择其中一个点数")
         return "\n".join(lines)
 
     def _render_maneuver_panel(self) -> str:
@@ -515,7 +457,7 @@ class LeftPanel(Static):
 
     def _render_cooking_panel(self) -> str:
         """烹饪原材料选择面板。"""
-        from render.textual.app import RECIPES
+        from render.textual.controllers.interact import RECIPES
         player = self.state.player
         tool_name = getattr(self.app, '_selected_cooking_tool', {}).get('name', '?')
         lines = [f"[bold]── 烹饪（{tool_name}）──[/]", ""]
@@ -602,15 +544,3 @@ def sell_price_local(price: dict) -> dict:
     return sell_price(price)
 
 
-_SPECIAL_ACTIONS_CACHE: list | None = None
-
-
-def _load_special_actions() -> list:
-    """加载特殊行动定义。"""
-    global _SPECIAL_ACTIONS_CACHE
-    if _SPECIAL_ACTIONS_CACHE is not None:
-        return _SPECIAL_ACTIONS_CACHE
-    path = os.path.join(_DATA_DIR, "maneuvers.json")
-    with open(path, "r", encoding="utf-8") as f:
-        _SPECIAL_ACTIONS_CACHE = json.load(f).get("special_actions", [])
-    return _SPECIAL_ACTIONS_CACHE

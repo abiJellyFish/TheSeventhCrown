@@ -12,8 +12,22 @@ from core.grid import Grid, Terrain
 # 掩体唯一数据源：(AC, 中文标签)。None = 不提供掩体。
 COVER_TABLE: dict[Terrain, tuple[int, str] | None] = {
     Terrain.WALL:      (30, "墙壁(全身)"),
-    Terrain.DIFFICULT: (5,  "灌木(半身)"),
-    # Terrain.XXX:    (8,  "矮墙(3/4)"),  # 预留扩展
+    Terrain.TREE:      (30, "树(全身)"),
+    Terrain.BUSH:      (5,  "灌木(半身)"),
+    Terrain.STONE:     (5,  "石头(半身)"),
+    Terrain.LOW_WALL:  (8,  "矮墙(3/4)"),
+    # 打开的门视为门口通道，不提供掩体（关闭的门以 WALL 表示，提供全身掩体）
+    Terrain.DOOR:      None,
+    Terrain.CAMPFIRE:  None,
+    # 以下无掩体
+    Terrain.GRASS:     None,
+    Terrain.BARREN:    None,
+    Terrain.PLAIN:     None,
+    Terrain.FLOOR:     None,
+    Terrain.BED:       None,
+    Terrain.WATER:     None,
+    Terrain.STAIRS_DOWN: None,
+    Terrain.STAIRS_UP: None,
 }
 
 
@@ -70,6 +84,7 @@ def resolve_cover_line(
     # 先移动再检查，避免检查起点自身。
     cx, cy = x0, y0
     steps = max(dx, dy)
+    first = True  # 攻击者相邻格豁免（阶段4.5）
 
     for _ in range(steps):
         # 计算下一个像素
@@ -85,11 +100,17 @@ def resolve_cover_line(
         if (cx, cy) == (x1, y1):
             return False, None
 
+        # 攻击者相邻格（弹道第一个格）默认不参与掩体判定，但全身掩体（AC≥30）不豁免
+        if first:
+            first = False
+            if not is_full_cover(grid[cx, cy]):
+                continue
+
         # 物品堆积格（space >= 10）-> 半身障碍，与灌木丛统一
         if ground_items:
             from core.item_actions import tile_space_used
             if tile_space_used(ground_items, cx, cy) >= 10:
-                if attack_roll < 5:  # 半身 AC 5，同 Terrain.DIFFICULT
+                if attack_roll < 5:  # 半身 AC 5，同灌木(BUSH)
                     return True, (cx, cy)
 
         # 检查当前格掩体

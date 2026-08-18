@@ -8,7 +8,8 @@
 
 import json
 import os
-from core.entity import Item, Weapon, Armor
+from dataclasses import replace
+from core.entity import Item
 
 
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
@@ -22,7 +23,7 @@ DEFAULT_STOCK_QTY = 99
 
 
 def _build_item_cache() -> dict:
-    """构建物品名 → 原始数据字典 的缓存。"""
+    """构建物品名 → 原始数据字典 的缓存。遍历 data/items/*.json（每对象一文件）。"""
     global _ITEM_CACHE
     if _ITEM_CACHE is not None:
         return _ITEM_CACHE
@@ -35,24 +36,38 @@ def _build_item_cache() -> dict:
             continue
         with open(os.path.join(items_dir, filename), "r", encoding="utf-8") as f:
             data = json.load(f)
-        for entry in data:
-            name = entry.get("name")
-            if name:
-                _ITEM_CACHE[name] = entry
+        name = data.get("name") if isinstance(data, dict) else None
+        if name:
+            _ITEM_CACHE[name] = data
     return _ITEM_CACHE
 
 
 def _load_item_by_key(item_key: str) -> Item | None:
-    """从 data/items/*.json 加载单个物品实例。"""
+    """从 data/items/*.json 加载单个物品实例（组件化，数据驱动挂组件）。"""
     cache = _build_item_cache()
     data = cache.get(item_key)
     if data is None:
         return None
-    if "weapon_type" in data:
-        return Weapon.from_dict(data)
-    if "armor_type" in data or "slot" in data:
-        return Armor.from_dict(data)
     return Item.from_dict(data)
+
+
+def resolve_items(refs: list[dict]) -> list[Item]:
+    """将名称引用列表解析为物品实例列表。
+
+    refs: [{"name": "火把", "count": 1}, {"name": "治疗药水", "count": 3}]
+    """
+    result = []
+    for ref in refs:
+        name = ref["name"]
+        count = ref.get("count", 1)
+        item = _load_item_by_key(name)
+        if item is None:
+            raise ValueError(f"resolve_items: 物品 '{name}' 未在 data/items/ 中定义")
+        item.count = count
+        if item.weight:
+            item.weight = item.weight * count
+        result.append(item)
+    return result
 
 
 # ── 货币换算 ──
@@ -123,36 +138,20 @@ def price_to_text(price: dict) -> str:
 # ── 物品副本创建 ──
 
 def _copy_item(item) -> Item:
-    """创建物品的独立副本（用于交易，避免引用同一对象）。"""
-    if isinstance(item, Weapon):
-        return Weapon.from_dict({
-            "name": item.name, "weapon_type": item.weapon_type,
-            "category": item.category, "damage": item.damage,
-            "damage_type": item.damage_type, "attack_stat": item.attack_stat,
-            "ap_cost": item.ap_cost, "range_normal": item.range_normal,
-            "range_max": item.range_max,
-            "properties": list(item.properties) if item.properties else [],
-            "weight": item.weight, "price": dict(item.price),
-            "description": item.description,
-            "melee": dict(item.melee) if getattr(item, 'melee', None) else None,
-        })
-    elif isinstance(item, Armor):
-        return Armor.from_dict({
-            "name": item.name, "armor_type": item.armor_type,
-            "slot": item.slot, "ac_bonus": item.ac_bonus,
-            "tenacity_bonus": item.tenacity_bonus,
-            "str_requirement": item.str_requirement,
-            "weight": item.weight, "price": dict(item.price),
-            "description": item.description,
-        })
-    else:
-        return Item.from_dict({
-            "name": item.name, "type": item.item_type,
-            "effect": item.effect, "amount": item.amount,
-            "ap_cost": item.ap_cost, "weight": item.weight,
-            "price": dict(item.price),
-            "description": item.description, "count": 1,
-        })
+    """创建物品的独立副本（用于交易，避免引用同一对象）。组件化复制。"""
+    return Item(
+        name=item.name, item_type=item.item_type, weight=item.weight,
+        price=dict(item.price), description=item.description, effect=item.effect,
+        amount=item.amount, count=1, space=item.space,
+        throw_range=item.throw_range, throw_str_req=item.throw_str_req,
+        throw_damage=item.throw_damage, throw_damage_type=item.throw_damage_type,
+        throw_effect=item.throw_effect, becomes=item.becomes,
+        dc_check=dict(item.dc_check) if item.dc_check else None,
+        render_char=item.render_char, render_color=item.render_color,
+        weapon=replace(item.weapon) if item.weapon else None,
+        armor=replace(item.armor) if item.armor else None,
+        light=replace(item.light) if item.light else None,
+    )
 
 
 # ── 商店加载与持久化 ──

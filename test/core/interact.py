@@ -11,18 +11,21 @@
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from core.grid import DIRS_8
 from core.movement import Terrain
 
 
 class InteractType(Enum):
     TALK = auto()        # 交谈
-    LOOT = auto()        # 搜刮尸体
+    LOOT = auto()        # 搜刮尸体（旧：直接搜刮，现尸体走 CORPSE 面板）
+    CORPSE = auto()      # 尸体面板（搜刮 / 捡起，尸体=每生物武器物品）
     PICK = auto()        # 采摘（灌木）
     REST = auto()        # 休息（床）
     OPEN = auto()        # 开门/关门
     ENTER = auto()       # 进入地城
     PICKUP = auto()      # 捡起地上物品
     CHEST = auto()       # 箱子
+    FETCH_WATER = auto() # 取水（空玻璃瓶 → 一瓶水）
 
 
 @dataclass
@@ -31,7 +34,7 @@ class InteractTarget:
     label: str                          # 中文显示名，如"商人""灌木丛""关闭的门"
     interact_type: InteractType
     pos: tuple[int, int]
-    creature: object | None = None      # Creature 或 None
+    creature: object | None = None      # Entity 或 None
     extra: dict = field(default_factory=dict)
 
 
@@ -49,7 +52,7 @@ CREATURE_TRAIT_FLAGS: dict[str, str] = {
 # ═══════════════════════════════════════════════════
 
 def _detect_creatures(state) -> list[InteractTarget]:
-    """检测相邻格生物：活着 → TALK，死亡 → LOOT。"""
+    """检测相邻格生物：活着 → TALK，死亡 → CORPSE（尸体面板：搜刮/捡起）。"""
     pc, pr = state.player_pos
     results = []
     for creature, (ec, er) in state.entities:
@@ -57,11 +60,18 @@ def _detect_creatures(state) -> list[InteractTarget]:
             continue
         if max(abs(ec - pc), abs(er - pr)) > 1:
             continue
-        if creature.hp <= 0:
+        if creature.is_dead:
             results.append(InteractTarget(
                 label=f"{creature.name}的尸体",
-                interact_type=InteractType.LOOT,
+                interact_type=InteractType.CORPSE,
                 pos=(ec, er), creature=creature,
+            ))
+        elif creature.has_status("濒死"):
+            results.append(InteractTarget(
+                label=f"{creature.name}（濒死）",
+                interact_type=InteractType.TALK,
+                pos=(ec, er), creature=creature,
+                extra={"dying": True},
             ))
         else:
             flags = {}
@@ -100,7 +110,7 @@ def _detect_beds(state) -> list[InteractTarget]:
     for dc in (-1, 0, 1):
         for dr in (-1, 0, 1):
             pos = (pc + dc, pr + dr)
-            if pos in state.bed_positions:
+            if state.map.within_bounds(*pos) and state.map[pos] == Terrain.BED:
                 results.append(InteractTarget(
                     label="床铺", interact_type=InteractType.REST, pos=pos,
                 ))
@@ -116,7 +126,7 @@ def _detect_bushes(state) -> list[InteractTarget]:
             nc, nr = pc + dc, pr + dr
             if not state.map.within_bounds(nc, nr):
                 continue
-            if state.map[nc, nr] == Terrain.DIFFICULT and (nc, nr) not in state.stone_positions:
+            if state.map[nc, nr] == Terrain.BUSH:
                 results.append(InteractTarget(
                     label="灌木丛", interact_type=InteractType.PICK, pos=(nc, nr),
                 ))
@@ -127,20 +137,24 @@ def _detect_entrances(state) -> list[InteractTarget]:
     """检测自身格及相邻格是否为地城入口/出口。"""
     pc, pr = state.player_pos
     results = []
-    if not state.in_dungeon and state.dungeon_entrance:
-        ex, ey = state.dungeon_entrance
-        if max(abs(ex - pc), abs(ey - pr)) <= 1:
-            results.append(InteractTarget(
-                label="洞口", interact_type=InteractType.ENTER,
-                pos=(ex, ey), extra={"direction": "enter"},
-            ))
-    if state.in_dungeon and state.dungeon_exit:
-        ex, ey = state.dungeon_exit
-        if max(abs(ex - pc), abs(ey - pr)) <= 1:
-            results.append(InteractTarget(
-                label="洞口（离开）", interact_type=InteractType.ENTER,
-                pos=(ex, ey), extra={"direction": "exit"},
-            ))
+    if not state.in_dungeon:
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                pos = (pc + dc, pr + dr)
+                if state.map.within_bounds(*pos) and state.map[pos] == Terrain.STAIRS_DOWN:
+                    results.append(InteractTarget(
+                        label="洞口", interact_type=InteractType.ENTER,
+                        pos=pos, extra={"direction": "enter"},
+                    ))
+    if state.in_dungeon:
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                pos = (pc + dc, pr + dr)
+                if state.map.within_bounds(*pos) and state.map[pos] == Terrain.STAIRS_UP:
+                    results.append(InteractTarget(
+                        label="洞口（离开）", interact_type=InteractType.ENTER,
+                        pos=pos, extra={"direction": "exit"},
+                    ))
     return results
 
 
@@ -187,6 +201,31 @@ def _detect_ground_items(state) -> list[InteractTarget]:
     return results
 
 
+def _detect_water(state) -> list[InteractTarget]:
+    """检测玩家相邻的水源地块（WATER 地形），需背包有空玻璃瓶。"""
+    targets = []
+    if not state.player:
+        return targets
+    pc, pr = state.player_pos
+    # 检查背包是否有空玻璃瓶
+    has_bottle = any(
+        item.name == "空玻璃瓶" and item.count > 0
+        for item in state.player.inventory
+    )
+    if not has_bottle:
+        return targets
+    # 扫描相邻 8 格
+    for dc, dr in DIRS_8:
+        pos = (pc + dc, pr + dr)
+        if state.map.within_bounds(*pos) and state.map[pos] == Terrain.WATER:
+            targets.append(InteractTarget(
+                label="取水",
+                interact_type=InteractType.FETCH_WATER,
+                pos=pos,
+            ))
+    return targets
+
+
 # 检测器注册列表（新增目标类型只需追加函数）
 _DETECTORS: list = [
     _detect_doors,
@@ -196,6 +235,7 @@ _DETECTORS: list = [
     _detect_creatures,
     _detect_bushes,
     _detect_ground_items,
+    _detect_water,
 ]
 
 

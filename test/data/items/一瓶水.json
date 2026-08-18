@@ -1,0 +1,13 @@
+{
+  "name": "一瓶水",
+  "effect": "restore_food",
+  "throw_effect": "water",
+  "amount": "200",
+  "ap_cost": 1,
+  "weight": 0.1,
+  "price": {
+    "sp": 35
+  },
+  "becomes": "空玻璃瓶",
+  "item_type": "consumable"
+}

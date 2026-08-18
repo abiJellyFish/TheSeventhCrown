@@ -1,0 +1,21 @@
+{
+  "name": "长杖",
+  "weight": 1.5,
+  "price": {
+    "gp": 1,
+    "sp": 5
+  },
+  "description": "长杖，可单手或双手持用",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "versatile(1d10)"
+    ]
+  }
+}

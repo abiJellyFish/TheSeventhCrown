@@ -15,6 +15,7 @@ _EFFECT_LABELS: dict[str, str] = {
     "heal":         "饮用(治疗)",
     "restore_mp":   "饮用(回蓝)",
     "restore_food": "食用",
+    "start_fire":   "点燃",
 }
 
 _TYPE_ACTIONS: dict[str, list[str]] = {
@@ -85,7 +86,7 @@ def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
         item: 待放置的物品（需要 space 和 count 属性）
         map_width, map_height: 地图边界
         map: 地形网格（Grid[Terrain]），用于排除墙壁
-        entities: 生物列表 [(Creature, (col, row))]，用于排除活物格
+        entities: 生物列表 [(Entity, (col, row))]，用于排除活物格
 
     Returns:
         (col, row) 或 None（无可用格子）
@@ -116,7 +117,7 @@ def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
         if map and is_full_cover(map[c, r]):
             pass
         # 跳过活物格
-        elif entities and any((ec, er) == (c, r) and c2.hp > 0 for c2, (ec, er) in entities):
+        elif entities and any((ec, er) == (c, r) and not c2.is_dead for c2, (ec, er) in entities):
             pass
         elif tile_space_used(ground_items, c, r) + needed <= MAX_TILE_SPACE:
             return (c, r)
@@ -154,7 +155,7 @@ def remove_from_inventory(player, item_index: int, quantity: int = 1):
     """从玩家背包扣除指定数量的物品。
 
     Args:
-        player: Creature 对象
+        player: Entity 对象
         item_index: 物品在 inventory 中的索引
         quantity: 要扣除的数量
 
@@ -184,49 +185,20 @@ def remove_from_inventory(player, item_index: int, quantity: int = 1):
 def copy_item_with_count(item, count: int, weight: float):
     """创建物品副本，指定 count 和 weight。
 
-    不依赖 isinstance，通过 item_type 和属性字典通用复制。
+    数据驱动：用 dataclasses.replace 复制 Item，组件（weapon/armor/light）深拷贝，
+    避免共享可变状态（loaded/properties/condition 等）。不依赖 isinstance 分派。
     """
-    from core.entity import Item, Weapon, Armor
+    import copy as _copy
+    from dataclasses import replace
 
-    item_type = getattr(item, 'item_type', 'misc')
-    if item_type == "weapon":
-        return Weapon(
-            name=item.name, weapon_type=getattr(item, 'weapon_type', 'melee'),
-            category=getattr(item, 'category', 'simple'),
-            damage=getattr(item, 'damage', '1d4'),
-            damage_type=getattr(item, 'damage_type', 'bludgeoning'),
-            attack_stat=getattr(item, 'attack_stat', 'str'),
-            ap_cost=getattr(item, 'ap_cost', 2),
-            range_normal=getattr(item, 'range_normal', 0),
-            range_max=getattr(item, 'range_max', 0),
-            properties=list(getattr(item, 'properties', []) or []),
-            weight=weight, price=dict(getattr(item, 'price', {}) or {}),
-            description=getattr(item, 'description', ''),
-            count=count, space=getattr(item, 'space', 1),
-            loaded=getattr(item, 'loaded', True),
-            light_source=dict(getattr(item, 'light_source', None) or {}),
-        )
-    elif item_type == "armor":
-        return Armor(
-            name=item.name, armor_type=getattr(item, 'armor_type', 'light'),
-            slot=getattr(item, 'slot', 'chest'),
-            ac_bonus=getattr(item, 'ac_bonus', 0),
-            tenacity_bonus=getattr(item, 'tenacity_bonus', 0),
-            str_requirement=getattr(item, 'str_requirement', 8),
-            weight=weight, price=dict(getattr(item, 'price', {}) or {}),
-            description=getattr(item, 'description', ''),
-            count=count, space=getattr(item, 'space', 1),
-        )
-    else:
-        return Item(
-            name=item.name, item_type=item_type,
-            weight=weight, price=dict(getattr(item, 'price', {}) or {}),
-            description=getattr(item, 'description', ''),
-            effect=getattr(item, 'effect', ''),
-            amount=getattr(item, 'amount', ''),
-            ap_cost=getattr(item, 'ap_cost', 0),
-            count=count, space=getattr(item, 'space', 1),
-        )
+    return replace(
+        item,
+        count=count,
+        weight=weight,
+        weapon=_copy.deepcopy(item.weapon) if item.weapon is not None else None,
+        armor=_copy.deepcopy(item.armor) if item.armor is not None else None,
+        light=_copy.deepcopy(item.light) if item.light is not None else None,
+    )
 
 
 # ═══════════════════════════════════════════════════
@@ -259,7 +231,12 @@ def get_ground_items_at(ground_items: list, col: int, row: int) -> list:
     result = []
     for item, (ic, ir) in ground_items:
         if (ic, ir) == (col, row):
-            render_info = GROUND_ITEM_RENDER.get(item.item_type, GROUND_ITEM_RENDER["misc"])
+            rc = getattr(item, 'render_char', '') or ""
+            rcol = getattr(item, 'render_color', '') or ""
+            if rc:
+                render_info = {"char": rc, "color": rcol or "white"}
+            else:
+                render_info = GROUND_ITEM_RENDER.get(item.item_type, GROUND_ITEM_RENDER["misc"])
             result.append({
                 "char": render_info["char"],
                 "color": render_info["color"],

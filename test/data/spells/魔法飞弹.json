@@ -1,0 +1,24 @@
+{
+  "name": "魔法飞弹",
+  "level": 1,
+  "domain": "evocation",
+  "cast_time_ap": 30,
+  "cast_time_pendulum": 3,
+  "mp_cost": 20,
+  "range": 8,
+  "components": [
+    "verbal",
+    "somatic"
+  ],
+  "auto_hit": true,
+  "target": "any",
+  "effect": {
+    "type": "damage",
+    "amount": "1d4",
+    "damage_type": "force",
+    "missiles": 3,
+    "per_missile": true
+  },
+  "upcast": "每高一阶多制造一支飞弹",
+  "description": "创造 3 颗必定命中的魔法飞弹，每颗对目标造成 1d4 力场伤害"
+}

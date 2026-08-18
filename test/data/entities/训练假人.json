@@ -1,0 +1,82 @@
+{
+  "temperature": {
+    "fire": {
+      "burn_mult": 2.0,
+      "avoid_dist": 0,
+      "auto_ignite_dist": 2
+    }
+  },
+  "name": "训练假人",
+  "body_type": "humanoid",
+  "size": "medium",
+  "faction": "中立",
+  "hp": 50,
+  "max_hp": 50,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 20,
+  "max_tenacity": 20,
+  "ap": 0,
+  "max_ap": 0,
+  "speed": 0,
+  "ac_base": 5,
+  "stats": {
+    "str": 0,
+    "dex": 0,
+    "con": 20,
+    "int": 0,
+    "wis": 0,
+    "cha": 0
+  },
+  "vision_range": 3,
+  "food_value": 0,
+  "food_locked": true,
+  "darkvision_range": 0,
+  "language": "",
+  "actions": [],
+  "traits": [
+    "piercing_resist",
+    "bludgeoning_vulnerable",
+    "sleep_immune",
+    "poison_immune"
+  ],
+  "statuses": [
+    {
+      "name": "不可移动",
+      "duration": null
+    }
+  ],
+  "loot": {},
+  "behavior": {
+    "components": [
+      "escape_fire",
+      "roll",
+      "pickup",
+      "open_door",
+      "close_door",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {}
+  },
+  "char": "D",
+  "corpse": {
+    "name": "训练假人的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 10.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "yellow",
+    "description": "一具训练假人的尸体，可以用作临时武器"
+  }
+}

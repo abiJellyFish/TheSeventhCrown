@@ -1,0 +1,12 @@
+{
+  "name": "烤兽肉",
+  "effect": "restore_food",
+  "amount": "2000",
+  "ap_cost": 1,
+  "weight": 0.5,
+  "price": {
+    "sp": 5
+  },
+  "description": "树枝穿起的烤兽肉散发浓郁的香气",
+  "item_type": "consumable"
+}

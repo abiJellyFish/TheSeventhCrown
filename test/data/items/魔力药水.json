@@ -1,0 +1,15 @@
+{
+  "name": "魔力药水",
+  "effect": "restore_mp",
+  "throw_effect": "restore_mp",
+  "amount": "50",
+  "ap_cost": 1,
+  "weight": 0.5,
+  "price": {
+    "gp": 2,
+    "sp": 5
+  },
+  "becomes": "空玻璃瓶",
+  "description": "喝掉这瓶清澈蓝色液体的生物恢复 50 点精神值",
+  "item_type": "consumable"
+}

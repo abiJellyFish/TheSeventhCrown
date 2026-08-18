@@ -1,0 +1,12 @@
+{
+  "name": "一包口粮",
+  "effect": "restore_food",
+  "amount": "15000",
+  "ap_cost": 1,
+  "weight": 1.0,
+  "price": {
+    "cp": 5
+  },
+  "description": "几块晒干的兽肉和浆果",
+  "item_type": "consumable"
+}

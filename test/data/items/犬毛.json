@@ -1,0 +1,10 @@
+{
+  "name": "犬毛",
+  "effect": "material",
+  "weight": 0.0,
+  "price": {
+    "sp": 2
+  },
+  "description": "细腻的绒毛，易燃",
+  "item_type": "material"
+}

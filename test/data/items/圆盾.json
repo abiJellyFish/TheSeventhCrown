@@ -1,0 +1,16 @@
+{
+  "name": "圆盾",
+  "weight": 2.0,
+  "price": {
+    "gp": 2
+  },
+  "description": "木制圆盾，提供全身格挡防护",
+  "item_type": "armor",
+  "armor": {
+    "armor_type": "shield",
+    "slot": "full_body",
+    "ac_bonus": 2,
+    "tenacity_bonus": 3,
+    "str_requirement": 8
+  }
+}

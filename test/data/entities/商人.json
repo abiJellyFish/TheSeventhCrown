@@ -1,0 +1,113 @@
+{
+  "name": "商人",
+  "body_type": "humanoid",
+  "size": "medium",
+  "faction": "守序",
+  "hp": 40,
+  "max_hp": 40,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 11,
+  "max_tenacity": 11,
+  "ap": 60,
+  "max_ap": 60,
+  "speed": 1,
+  "ac_base": 10,
+  "stats": {
+    "str": 12,
+    "dex": 12,
+    "con": 14,
+    "int": 13,
+    "wis": 10,
+    "cha": 14
+  },
+  "vision_range": 8,
+  "food_value": 15000,
+  "food_locked": false,
+  "darkvision_range": 0,
+  "language": "通用语",
+  "actions": [
+    {
+      "name": "长剑",
+      "type": "melee_attack",
+      "weapon": "长剑",
+      "two_hand": true,
+      "reach": 1
+    },
+    {
+      "name": "格挡",
+      "type": "reaction",
+      "ap_cost": 10,
+      "description": "全身 AC+1"
+    }
+  ],
+  "traits": [
+    "merchant"
+  ],
+  "loot": {
+    "always": [
+      {
+        "gp": 15
+      }
+    ],
+    "dc_8": [
+      {
+        "gp": 10
+      }
+    ],
+    "dc_10": [
+      {
+        "name": "长剑"
+      },
+      {
+        "name": "猪皮靴"
+      }
+    ]
+  },
+  "shop_id": "merchant",
+  "behavior": {
+    "components": [
+      "find_water",
+      "escape_fire",
+      "roll",
+      "wander",
+      "pickup",
+      "hunt",
+      "forage",
+      "eat_food",
+      "collect",
+      "eat_inventory",
+      "open_door",
+      "close_door",
+      "attack_enemy",
+      "approach_enemy",
+      "flee",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {
+      "hunt": 0.7,
+      "collect": 0.5
+    }
+  },
+  "char": "M",
+  "corpse": {
+    "name": "商人的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 10.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "green",
+    "description": "一具商人的尸体，可以用作临时武器"
+  }
+}

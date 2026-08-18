@@ -1,6 +1,6 @@
 """休息系统 —— 短休/长休 + 舒适加成。"""
 
-from core.entity import Creature
+from core.entity import Entity
 from core.grid import Grid
 from core.movement import Terrain
 from core.combat.cover import is_full_cover
@@ -10,8 +10,7 @@ SHORT_REST_PENDULUMS = 300
 LONG_REST_PENDULUMS = 1500
 
 
-def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
-                   bed_positions: set[tuple[int, int]] | None = None) -> bool:
+def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain]) -> bool:
     """判断位置是否舒适（室内/床上附近）。
 
     舒适条件（满足任一即可）：
@@ -20,12 +19,11 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
     """
     col, row = pos
 
-    # 检查床：自身或相邻格
-    if bed_positions:
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                if (col + dc, row + dr) in bed_positions:
-                    return True
+    # 检查床：自身或相邻格是否有 BED 地形
+    for dc in (-1, 0, 1):
+        for dr in (-1, 0, 1):
+            if terrain_map.within_bounds(col + dc, row + dr) and terrain_map[col + dc, row + dr] == Terrain.BED:
+                return True
 
     # 检查室内（周围墙壁）
     wall_count = 0
@@ -41,15 +39,14 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
     return wall_count >= 2
 
 
-def _rest(player: Creature, clock: PendulumClock, pendulums: int,
+def _rest(player: Entity, clock: PendulumClock, pendulums: int,
           hp_fraction: float, mp_fraction: float,
           terrain_map: Grid[Terrain] | None = None,
-          pos: tuple[int, int] | None = None,
-          bed_positions: set[tuple[int, int]] | None = None) -> dict:
+          pos: tuple[int, int] | None = None) -> dict:
     """休息通用逻辑：短休/长休差异仅钟摆数和恢复比例。"""
     comfort = False
     if terrain_map and pos:
-        comfort = is_comfortable(pos, terrain_map, bed_positions)
+        comfort = is_comfortable(pos, terrain_map)
 
     multiplier = 2 if comfort else 1
     hp_restore = int(player.max_hp * hp_fraction * multiplier)
@@ -61,26 +58,31 @@ def _rest(player: Creature, clock: PendulumClock, pendulums: int,
     # 休息期间锁定饮食值，防止饥饿致死
     was_locked = player.food_locked
     player.food_locked = True
+    interrupted = False
     for _ in range(pendulums):
         clock.tick_action(cost=1.0)
+        # 受到伤害 → 打断休息
+        if getattr(player, '_interrupted', False):
+            player._interrupted = False
+            interrupted = True
+            break
     player.food_locked = was_locked
 
-    return {"hp_restored": hp_restore, "mp_restored": mp_restore, "comfort": comfort}
+    return {"hp_restored": hp_restore, "mp_restored": mp_restore,
+            "comfort": comfort, "interrupted": interrupted}
 
 
-def short_rest(player: Creature, clock: PendulumClock,
+def short_rest(player: Entity, clock: PendulumClock,
                terrain_map: Grid[Terrain] | None = None,
-               pos: tuple[int, int] | None = None,
-               bed_positions: set[tuple[int, int]] | None = None) -> dict:
+               pos: tuple[int, int] | None = None) -> dict:
     """短休：300 钟摆，恢复 50% HP/MP。"""
     return _rest(player, clock, SHORT_REST_PENDULUMS, 0.5, 0.5,
-                 terrain_map=terrain_map, pos=pos, bed_positions=bed_positions)
+                 terrain_map=terrain_map, pos=pos)
 
 
-def long_rest(player: Creature, clock: PendulumClock,
+def long_rest(player: Entity, clock: PendulumClock,
               terrain_map: Grid[Terrain] | None = None,
-              pos: tuple[int, int] | None = None,
-              bed_positions: set[tuple[int, int]] | None = None) -> dict:
+              pos: tuple[int, int] | None = None) -> dict:
     """长休：1500 钟摆，恢复 100% HP/MP。"""
     return _rest(player, clock, LONG_REST_PENDULUMS, 1.0, 1.0,
-                 terrain_map=terrain_map, pos=pos, bed_positions=bed_positions)
+                 terrain_map=terrain_map, pos=pos)

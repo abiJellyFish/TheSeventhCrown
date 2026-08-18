@@ -1,0 +1,10 @@
+{
+  "name": "地精角",
+  "effect": "material",
+  "weight": 0.0,
+  "price": {
+    "sp": 1
+  },
+  "description": "形如弯刀的兽角，材料",
+  "item_type": "material"
+}

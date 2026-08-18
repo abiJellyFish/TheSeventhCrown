@@ -14,7 +14,7 @@
   "abilities": [
     {
       "name": "横扫",
-      "ap_cost": 4,
+      "ap_cost": 40,
       "hit_threshold": 14,
       "description": "发动近战攻击时，同时攻击到前方所有生物"
     }

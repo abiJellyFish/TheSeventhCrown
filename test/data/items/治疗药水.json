@@ -1,0 +1,14 @@
+{
+  "name": "治疗药水",
+  "effect": "heal",
+  "throw_effect": "heal",
+  "amount": "6d4",
+  "ap_cost": 1,
+  "weight": 0.5,
+  "price": {
+    "gp": 2
+  },
+  "becomes": "空玻璃瓶",
+  "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值",
+  "item_type": "consumable"
+}

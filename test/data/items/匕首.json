@@ -1,0 +1,23 @@
+{
+  "name": "匕首",
+  "weight": 0.5,
+  "price": {
+    "gp": 2
+  },
+  "description": "灵巧匕首，轻型，可投掷",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "piercing",
+    "attack_stat": "str_or_dex",
+    "ap_cost": 20,
+    "range_normal": 4,
+    "range_max": 6,
+    "properties": [
+      "light",
+      "thrown(4/6)"
+    ]
+  }
+}

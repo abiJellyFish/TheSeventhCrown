@@ -1,0 +1,109 @@
+{
+  "temperature": {
+    "fire": {
+      "burn_mult": 1.5,
+      "avoid_dist": 3,
+      "auto_ignite_dist": 1
+    }
+  },
+  "name": "长耳犬",
+  "body_type": "beast",
+  "size": "medium",
+  "faction": "混乱",
+  "hp": 14,
+  "max_hp": 14,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 5,
+  "max_tenacity": 5,
+  "ap": 60,
+  "max_ap": 60,
+  "speed": 2,
+  "ac_base": 11,
+  "stats": {
+    "str": 10,
+    "dex": 14,
+    "con": 10,
+    "int": 4,
+    "wis": 12,
+    "cha": 10
+  },
+  "vision_range": 10,
+  "food_value": 12000,
+  "food_locked": false,
+  "darkvision_range": 5,
+  "language": "",
+  "actions": [
+    {
+      "name": "啃咬",
+      "type": "melee_attack",
+      "weapon": "啃咬",
+      "damage": "1d6",
+      "damage_type": "piercing",
+      "attack_stat": "str",
+      "ap_cost": 30,
+      "reach": 1
+    },
+    {
+      "name": "扑倒",
+      "type": "special",
+      "ap_cost": 40,
+      "description": "目标 DC12 敏捷检定，失败则倒地"
+    }
+  ],
+  "traits": [
+    "darkvision(5)"
+  ],
+  "loot": {
+    "dc_6": [
+      {
+        "name": "犬牙"
+      }
+    ],
+    "dc_12": [
+      {
+        "name": "犬毛"
+      }
+    ]
+  },
+  "behavior": {
+    "components": [
+      "find_water",
+      "escape_fire",
+      "roll",
+      "avoid_fire",
+      "wander",
+      "forage",
+      "eat_food",
+      "eat_inventory",
+      "attack_enemy",
+      "approach_enemy",
+      "flee",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {
+      "forage": 0.6
+    }
+  },
+  "char": "d",
+  "corpse": {
+    "name": "长耳犬的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 10.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "red",
+    "description": "一具长耳犬的尸体，可以用作临时武器"
+  }
+}

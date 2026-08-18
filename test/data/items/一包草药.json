@@ -1,0 +1,12 @@
+{
+  "name": "一包草药",
+  "effect": "heal",
+  "amount": "1d4",
+  "ap_cost": 1,
+  "weight": 0.1,
+  "price": {
+    "sp": 10
+  },
+  "description": "涂抹伤口或捣碎吞下",
+  "item_type": "consumable"
+}

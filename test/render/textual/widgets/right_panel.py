@@ -4,7 +4,7 @@ from textual.widgets import Static
 
 from core.game_state import GameState
 from core.entity import get_attitude
-from core.movement import Terrain
+from core.movement import Terrain, facing_label
 
 
 class RightPanel(Static):
@@ -39,7 +39,7 @@ class RightPanel(Static):
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight:.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
             "",
-            "[[X]]观察 [[Q]]退出",
+            "[[X]]观察",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书 [[E]]思绪",
             "[[Z]]制作 [[K]]烹饪 [[Y]]炼药",
             "[[H]]高度 [[M]]地图",
@@ -225,9 +225,10 @@ class RightPanel(Static):
             lines.append(f"位置: ({cx}, {cy})")
 
         # 特征（地下城入口/出口）
-        if self.state.dungeon_entrance and (cx, cy) == self.state.dungeon_entrance:
+        t_here = self.state.map[cx, cy]
+        if t_here == Terrain.STAIRS_DOWN:
             lines.append("特征: 洞口")
-        elif self.state.in_dungeon and self.state.dungeon_exit and (cx, cy) == self.state.dungeon_exit:
+        elif t_here == Terrain.STAIRS_UP:
             lines.append("特征: 洞口（出口）")
 
         # 箱子
@@ -239,21 +240,48 @@ class RightPanel(Static):
 
         # 地形
         terrain = self.state.map[cx, cy]
-        t_names = {Terrain.WALL: "墙壁", Terrain.DIFFICULT: "灌木/困难地形", Terrain.PASSABLE: "草地/平地"}
+        t_names = {Terrain.GRASS: "草地", Terrain.BARREN: "荒地", Terrain.PLAIN: "平原", Terrain.FLOOR: "地面", Terrain.BED: "床铺", Terrain.STAIRS_DOWN: "楼梯下", Terrain.STAIRS_UP: "楼梯上", Terrain.WATER: "水", Terrain.BUSH: "灌木丛", Terrain.STONE: "石头", Terrain.LOW_WALL: "矮墙", Terrain.TREE: "树", Terrain.CAMPFIRE: "篝火", Terrain.DOOR: "门", Terrain.WALL: "墙壁"}
         lines.append(f"地表: {t_names.get(terrain, '未知')}")
 
         # 生物
         ent = self.state.get_entity_at(cx, cy)
-        if ent and ent is not self.state.player:
-            hp_pct = ent.hp / max(ent.max_hp, 1) * 100
-            attitude = get_attitude(ent, self.state.player)
-            att_color = {"敌对": "[red]敌对[/]", "友好": "[green]友好[/]", "冷漠": "[yellow]冷漠[/]"}.get(attitude, attitude)
-            lines.append(f"生物: {ent.name} Lv.{ent.class_level:.1f}  阵营:{ent.faction}  态度:{att_color}")
-            lines.append(f"  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
-            if ent.food_value > 0:
-                lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
-            if ent.statuses:
-                lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+        if ent:
+            if ent is self.state.player:
+                # 玩家自身：显示基础信息与状态（进水后的潮湿等），不显示态度/隐匿
+                lines.append(f"生物: {ent.name}(你) Lv.{ent.class_level:.1f}  阵营:{ent.faction}")
+                lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp}")
+                if ent.food_value > 0:
+                    lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
+                if ent.statuses:
+                    lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+            else:
+                hp_pct = ent.hp / max(ent.max_hp, 1) * 100
+                attitude = get_attitude(ent, self.state.player)
+                att_color = {"敌对": "[red]敌对[/]", "友好": "[green]友好[/]", "冷漠": "[yellow]冷漠[/]"}.get(attitude, attitude)
+                lines.append(f"生物: {ent.name} Lv.{ent.class_level:.1f}  阵营:{ent.faction}  态度:{att_color}")
+                lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
+                if ent.food_value > 0:
+                    lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
+                if ent.statuses:
+                    lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+                if self.state._is_hidden_to(self.state.player, ent, (cx, cy)):
+                    lines.append("  目标对你是隐匿的")
+
+        # 背景（地表状态，多状态并列；统一 is_burning/is_wet）
+        bg = []
+        if self.state.is_burning((cx, cy)):
+            bg.append("燃烧")
+        if self.state.is_wet((cx, cy)):
+            bg.append("潮湿")
+        if (cx, cy) in self.state.fog_surfaces:
+            bg.append("雾气")
+        if bg:
+            lines.append(f"背景: {'、'.join(bg)}")
+
+        # 可见度（仅轻度遮蔽——重度遮蔽看不到、不在视野内、观察模式选不到，无需其他档位）
+        player_pos = self.state.get_entity_pos(self.state.player)
+        if player_pos is not None and self.state._cover_level((cx, cy), player_pos) == "light":
+            lines.append("可见度: 轻度遮蔽")
 
         # 光照
         if cursor in self.state.fov_bright:
@@ -291,6 +319,10 @@ class RightPanel(Static):
                     props = getattr(item, 'properties', []) or []
                     if 'two_handed' in props:
                         name += "(双手)"
+                    # 火把等光源物品点燃后标注
+                    ls = item.light
+                    if ls and ls.condition == "lit":
+                        name += "（燃烧）"
                     parts.append(f"{label}:{name}")
                 elif slot in ("left_hand", "right_hand"):
                     # 空手但另一只手有双手武器 → 标注(双手)

@@ -1,0 +1,22 @@
+{
+  "name": "疗伤术",
+  "level": 1,
+  "domain": "abjuration",
+  "cast_time_ap": 20,
+  "cast_time_pendulum": 2,
+  "mp_cost": 15,
+  "range": 1,
+  "components": [
+    "verbal",
+    "somatic"
+  ],
+  "auto_hit": true,
+  "target": "any_creature",
+  "effect": {
+    "type": "heal",
+    "amount": "1d8",
+    "bonus": "domain_level"
+  },
+  "upcast": "每高一阶增加 1d8",
+  "description": "触碰的一名生物恢复 1d8 + 防护领域等级的生命值"
+}

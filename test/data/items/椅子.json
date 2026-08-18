@@ -1,0 +1,18 @@
+{
+  "name": "椅子",
+  "weight": 3.0,
+  "price": {},
+  "render_char": "L",
+  "render_color": "#FF8C00",
+  "description": "一把木椅，可以用作临时武器",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": []
+  }
+}

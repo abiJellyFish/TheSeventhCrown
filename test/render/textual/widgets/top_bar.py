@@ -42,7 +42,7 @@ class TopBar(Static):
 
         if s.in_combat and s.combat_initiative:
             # 存活参战者，当前回合生物前后各 2 个，超出用 +N 省略
-            alive = [e for e in s.combat_initiative if e.hp > 0 or e is s.player]
+            alive = [e for e in s.combat_initiative if not e.is_dead or e is s.player]
             if not alive:
                 pad = max(1, width - visible_len(left) - visible_len(right) - 2)
                 return f"{left}{' ' * pad}{right}"

@@ -8,9 +8,38 @@ from core.movement import Terrain
 from core.item_actions import GROUND_ITEM_RENDER, get_ground_items_at
 
 TERRAIN_COLORS = {
-    Terrain.PASSABLE: "rgb(80,80,80)",
-    Terrain.DIFFICULT: "green",
-    Terrain.WALL: "rgb(140,140,140)",
+    Terrain.GRASS:        "rgb(140,210,120)",
+    Terrain.BARREN:       "rgb(150,150,150)",
+    Terrain.PLAIN:        "rgb(200,200,100)",
+    Terrain.FLOOR:        "rgb(60,60,60)",
+    Terrain.WATER:        "rgb(100,160,255)",
+    Terrain.BUSH:         "green",
+    Terrain.STONE:        "rgb(128,128,128)",
+    Terrain.TREE:         "rgb(139,90,43)",
+    Terrain.LOW_WALL:     "rgb(180,180,180)",
+    Terrain.BED:          "cyan",
+    Terrain.CAMPFIRE:     "red",
+    Terrain.DOOR:         "yellow",
+    Terrain.STAIRS_DOWN:  "magenta",
+    Terrain.STAIRS_UP:    "magenta",
+    Terrain.WALL:         "rgb(140,140,140)",
+}
+TERRAIN_CHARS = {
+    Terrain.GRASS:        ".",
+    Terrain.BARREN:       ".",
+    Terrain.PLAIN:        ".",
+    Terrain.FLOOR:        ".",
+    Terrain.WATER:        "^",
+    Terrain.BUSH:         '"',
+    Terrain.STONE:        "o",
+    Terrain.TREE:         "T",
+    Terrain.LOW_WALL:     "=",
+    Terrain.BED:          "=",
+    Terrain.CAMPFIRE:     "=",
+    Terrain.DOOR:         "+",
+    Terrain.STAIRS_DOWN:  ">",
+    Terrain.STAIRS_UP:    "<",
+    Terrain.WALL:         "#",
 }
 FACTION_COLORS = {"守序": "green", "混乱": "red", "中立": "yellow"}
 
@@ -57,37 +86,60 @@ class MapView(Static):
                     continue
                 dim_style = " dim" if in_dim and not in_bright else ""
                 cur = " reverse" if (col, row) == obs_cur else ""
+                t = gmap[col, row]
+                # 地表叠加：燃烧 → 橙底；潮湿/水域 → 蓝底；雾气 → 白底（统一 is_burning/is_wet）
+                overlay = ""
+                if self.state.is_burning((col, row)):
+                    overlay = " on rgb(180,80,20)"
+                elif self.state.is_wet((col, row)):
+                    overlay = " on rgb(20,60,120)"
+                elif (col, row) in self.state.fog_surfaces:
+                    overlay = " on rgb(200,200,200)"
                 ent = self.state.get_entity_at(col, row)
+                # 隐匿过滤：对玩家隐匿的实体不渲染（阶段4）
+                if ent is not None and self.state.player is not None and ent is not self.state.player:
+                    if self.state._is_hidden_to(self.state.player, ent, (col, row)):
+                        ent = None
+                # 实体叠加：灼烧 → 橙底；潮湿 → 蓝底（与地表叠加对称）
+                ent_overlay = ""
+                if ent is not None:
+                    if ent.has_status("灼烧"):
+                        ent_overlay = " on rgb(180,80,20)"
+                    elif ent.has_status("潮湿"):
+                        ent_overlay = " on rgb(20,60,120)"
+                elif self.state.player is not None and self.state.player.has_status("灼烧"):
+                    ent_overlay = " on rgb(180,80,20)"
+                elif self.state.player is not None and self.state.player.has_status("潮湿"):
+                    ent_overlay = " on rgb(20,60,120)"
                 if ent is not None:
                     if ent.controlled:
                         ch, color = "@", "green"
-                    elif ent.hp <= 0:
+                    elif ent.is_dead:
                         ch, color = "%", FACTION_COLORS.get(ent.faction, "")
+                    elif ent.has_status("濒死"):
+                        ch, color = ent.char, "red"
                     else:
                         ch, color = ent.char, FACTION_COLORS.get(ent.faction, "")
-                    text.append(ch, style=f"bold {color}{cur}{dim_style}" if ent.faction == "混乱" else f"{color}{cur}{dim_style}")
+                    text.append(ch, style=f"bold {color}{cur}{dim_style}{ent_overlay}" if ent.faction == "混乱" else f"{color}{cur}{dim_style}{ent_overlay}")
                 elif (col, row) == (pc, pr):
-                    text.append("@", style=f"bold bright_cyan{cur}{dim_style}")
-                elif (col, row) in self.state.bed_positions:
-                    text.append("=", style=f"bold cyan{cur}{dim_style}")
-                elif (col, row) in self.state.stone_positions:
-                    text.append("o", style=f"bold rgb(180,180,180){cur}{dim_style}")
-                elif (col, row) in self.state.campfire_positions:
-                    text.append("~", style=f"bold red{cur}{dim_style}")
-                elif self.state.dungeon_entrance and (col, row) == self.state.dungeon_entrance:
-                    text.append(">", style=f"bold magenta{cur}{dim_style}")
+                    text.append("@", style=f"bold bright_cyan{cur}{dim_style}{ent_overlay}")
                 else:
-                    t = gmap[col, row]
-                    if (col, row) in self.state.door_states:
+                    # 陷阱/线索渲染（阶段5）：已发现/已触发的陷阱红 `;`，已发现的线索白 `:`（未发现不渲染）
+                    if self.state._is_trap_visible((col, row)):
+                        text.append(";", style=f"bold red{cur}{dim_style}{overlay}")
+                    elif self.state._is_clue_visible((col, row)):
+                        text.append(":", style=f"bold white{cur}{dim_style}{overlay}")
+                    # 门：检查 door_states 区分开/关
+                    elif (col, row) in self.state.door_states:
                         is_open = self.state.door_states[(col, row)]
                         ch = "_" if is_open else "]"
-                        text.append(ch, style=f"bold yellow{cur}{dim_style}")
+                        text.append(ch, style=f"bold yellow{cur}{dim_style}{overlay}")
                     else:
                         # 检查地上物品（提前计算供后续判断）
                         ground_at = get_ground_items_at(self.state.ground_items, col, row)
                         # 检查箱子
                         if (col, row) in self.state.chests:
-                            text.append("$", style=f"bold yellow{cur}{dim_style}")
+                            text.append("$", style=f"bold yellow{cur}{dim_style}{overlay}")
                         # 检查地上物品
                         elif ground_at:
                             # 统计不重复的 item_type
@@ -104,11 +156,14 @@ class MapView(Static):
                                 ch = str(len(types_seen))
                                 color = "white"
 
-                            text.append(ch, style=f"{color}{cur}{dim_style}")
+                            text.append(ch, style=f"{color}{cur}{dim_style}{overlay}")
                         else:
-                            ch = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}[t]
-                            color = TERRAIN_COLORS.get(t, '')
-                            text.append(ch, style=f"{color}{cur}{dim_style}")
+                            # TERRAIN_CHARS/COLORS 统一渲染
+                            ch = TERRAIN_CHARS.get(t, "?")
+                            color = TERRAIN_COLORS.get(t, "")
+                            if t == Terrain.CAMPFIRE and not self.state.is_burning((col, row)):
+                                color = "dark_red"  # 未燃篝火：暗灰/暗红显示结构，无橙底
+                            text.append(ch, style=f"{color}{cur}{dim_style}{overlay}")
             if row < min(oy + vh, gmap.height) - 1:
                 text.append("\n")
         return text

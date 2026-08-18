@@ -1,0 +1,93 @@
+{
+  "name": "伊芙琳",
+  "body_type": "humanoid",
+  "size": "medium",
+  "faction": "守序",
+  "hp": 30,
+  "max_hp": 30,
+  "mp": 100,
+  "max_mp": 100,
+  "tenacity": 10,
+  "max_tenacity": 10,
+  "ap": 60,
+  "max_ap": 60,
+  "speed": 1,
+  "ac_base": 9,
+  "char": "e",
+  "stats": {
+    "str": 8,
+    "dex": 8,
+    "con": 8,
+    "int": 10,
+    "wis": 8,
+    "cha": 8
+  },
+  "vision_range": 12,
+  "food_value": 15000,
+  "food_locked": false,
+  "darkvision_range": 0,
+  "language": "通用语",
+  "actions": [],
+  "traits": [],
+  "loot": {},
+  "char_class": "mage",
+  "class_level": 0.0,
+  "class_exp": 0.0,
+  "spell_domains": [
+    "evocation"
+  ],
+  "memorized_spells": [
+    "魔法飞弹"
+  ],
+  "spell_slots": {
+    "1": 2
+  },
+  "equipment": {
+    "right_hand": "长杖"
+  },
+  "inventory": [
+    {
+      "name": "法术残页",
+      "count": 1
+    },
+    {
+      "name": "一包口粮",
+      "count": 1
+    },
+    {
+      "name": "火把",
+      "count": 1
+    }
+  ],
+  "gp": 3,
+  "behavior": {
+    "components": [
+      "wander",
+      "forage",
+      "eat_food",
+      "eat_inventory",
+      "flee",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {}
+  },
+  "corpse": {
+    "name": "伊芙琳的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 10.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "green",
+    "description": "一具伊芙琳的尸体，可以用作临时武器"
+  }
+}

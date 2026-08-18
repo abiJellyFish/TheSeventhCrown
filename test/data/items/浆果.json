@@ -1,0 +1,12 @@
+{
+  "name": "浆果",
+  "effect": "restore_food",
+  "amount": "750",
+  "ap_cost": 1,
+  "weight": 0.1,
+  "price": {
+    "cp": 2
+  },
+  "description": "多汁的浆果，可以在灌木丛中找到",
+  "item_type": "consumable"
+}

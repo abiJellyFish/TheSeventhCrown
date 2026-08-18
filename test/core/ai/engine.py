@@ -1,14 +1,14 @@
 """AI 行为引擎 —— 组件匹配打分。"""
 from core.ai.discretize import discretize_state
 from core.ai.components import COMPONENTS
-from core.entity import Creature
+from core.entity import Entity
 
 
 class BehaviorEngine:
     def __init__(self):
         pass
 
-    def decide(self, npc: Creature, extra_keys: set = None) -> list[tuple[str, float]]:
+    def decide(self, npc: Entity, extra_keys: set = None) -> list[tuple[str, float]]:
         state_keys = set(discretize_state(npc))
         if extra_keys:
             state_keys |= extra_keys

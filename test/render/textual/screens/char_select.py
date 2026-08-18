@@ -1,31 +1,24 @@
 """角色选择画面 —— 唤醒后选择战士或魔法使，魔法使需选领域，确认后进入游戏。"""
-import json
-import os
 
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Static
 
-from core.entity import create_fighter, create_mage
-
-_DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
-
-# 角色元数据：name / key / class_label / file / factory
+# 角色元数据：name / key / class_key / class_label
+# key = 实体 key（build_world 匹配 template_name）；class_key = 职业 key（职业信息/领域判定）
 CHARACTERS = [
     {
         "name": "凯恩",
-        "key": "fighter",
+        "key": "凯恩",
+        "class_key": "fighter",
         "class_label": "战士",
-        "file": "player_start.json",
-        "factory": create_fighter,
     },
     {
         "name": "伊芙琳",
-        "key": "mage",
+        "key": "伊芙琳",
+        "class_key": "mage",
         "class_label": "魔法使",
-        "file": "player_start_mage.json",
-        "factory": create_mage,
     },
 ]
 
@@ -42,16 +35,9 @@ _CLASS_INFO = {
 }
 
 
-def _load_start_data(file: str) -> dict:
-    """从 data/ 加载角色初始 JSON。"""
-    path = os.path.join(_DATA_DIR, file)
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-
 def _build_desc(char: dict) -> str:
     """根据 JSON + 职业信息实时构建属性描述。"""
-    info = _CLASS_INFO[char["key"]]
+    info = _CLASS_INFO[char["class_key"]]
     parts = [f"{char['class_label']} | HP {info['hp']}"]
     if info["mp"] is not None:
         parts.append(f"MP {info['mp']}")
@@ -78,6 +64,7 @@ class CharSelectScreen(Screen):
         super().__init__()
         self._selected = 0
         self._phase = "char_select"  # "char_select" | "domain_select"
+        self._pending_char_key = ""   # 进入领域选择前暂存角色实体 key
 
     def compose(self) -> ComposeResult:
         yield Static(self._build_text(), id="char-choices")
@@ -126,10 +113,11 @@ class CharSelectScreen(Screen):
     def action_select(self) -> None:
         if self._phase == "domain_select":
             domain = DOMAINS[self._selected]
-            self.app.start_game_with("mage", domain=domain["key"])
+            self.app.start_game_with(self._pending_char_key, domain=domain["key"])
             return
         char = CHARACTERS[self._selected]
-        if char["key"] == "mage":
+        if char["class_key"] == "mage":
+            self._pending_char_key = char["key"]
             self._phase = "domain_select"
             self._selected = 0
             self.query_one("#char-choices", Static).update(self._build_text())

@@ -1,0 +1,11 @@
+[
+  {"key": "hide",       "name": "躲藏",       "cost_ap": 20, "cost_pendulum": 2, "target": "self"},
+  {"key": "stand",      "name": "起身",       "cost_ap": 0, "cost_pendulum": 0, "target": "self", "note": "倒地30/躲藏20"},
+  {"key": "search",     "name": "探查",       "cost_ap": 60, "cost_pendulum": 6, "target": "self"},
+  {"key": "jump",       "name": "跳跃",       "cost_ap": 0, "cost_pendulum": 0, "target": "aim", "note": "按距离计费"},
+  {"key": "disengage",  "name": "撤离",       "cost_ap": 20, "cost_pendulum": 2, "target": "self"},
+  {"key": "dodge",      "name": "回避",       "cost_ap": 20, "cost_pendulum": 2, "target": "self"},
+  {"key": "shove",      "name": "推撞",       "cost_ap": 30, "cost_pendulum": 3, "target": "aim", "max_range": 1},
+  {"key": "help",       "name": "协助",       "cost_ap": 20, "cost_pendulum": 2, "target": "aim", "max_range": 1},
+  {"key": "roll",       "name": "打滚",       "cost_ap": 20, "cost_pendulum": 2, "target": "self"}
+]

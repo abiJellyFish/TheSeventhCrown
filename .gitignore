@@ -8,6 +8,7 @@ build/
 
 # Claude Code
 .claude/
+.agent/
 
 # 设计草稿
 1/
@@ -15,6 +16,7 @@ build/
 
 # 文档 & 笔记
 test/docs/
+test/ascii.md
 test/修改方案*.md
 test/修改日志.md
 test/待定计划*.md
@@ -30,6 +32,8 @@ test/重构*.md
 方案*.md
 游戏设计.md
 灵感.md
+灵感_内容参考*.md
+区分本地和远程*.txt
 补充*.md
 速度机制*.md
 内容参考_修改.md
@@ -49,7 +53,10 @@ MVP2.md
 .idea/
 *.swp
 *.swo
-MVP.md MVP2.md
+.trae/
+
+# 工具技能文档
+ascii-merge/
 
 # 调试 & 临时文件
 *.log

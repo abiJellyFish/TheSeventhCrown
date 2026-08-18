@@ -13,7 +13,6 @@ def build_dungeon(state: GameState, loader) -> None:
     state.in_dungeon = True
     state.map = Grid[Terrain](w, h, Terrain.WALL)
     state.entities = []
-    state.bed_positions = set()
     state.door_states = {}
     state.map_exits = []
     state.location_map = {}  # 地下城全部标记为地下城1层
@@ -27,7 +26,7 @@ def build_dungeon(state: GameState, loader) -> None:
         rooms.append((rx, ry, rw, rh))
         for x in range(rx, rx + rw):
             for y in range(ry, ry + rh):
-                state.map[x, y] = Terrain.PASSABLE
+                state.map[x, y] = Terrain.FLOOR
 
     # 连接走廊
     for i in range(len(rooms) - 1):
@@ -36,20 +35,18 @@ def build_dungeon(state: GameState, loader) -> None:
         x2 = rooms[i + 1][0] + rooms[i + 1][2] // 2
         y2 = rooms[i + 1][1] + rooms[i + 1][3] // 2
         for x in range(min(x1, x2), max(x1, x2) + 1):
-            state.map[x, y1] = Terrain.PASSABLE
+            state.map[x, y1] = Terrain.FLOOR
         for y in range(min(y1, y2), max(y1, y2) + 1):
-            state.map[x2, y] = Terrain.PASSABLE
+            state.map[x2, y] = Terrain.FLOOR
 
-    # 入口和出口
+    # 入口和出口（返回地面的楼梯）
     first_room = rooms[0]
-    state.map[first_room[0] + 1, first_room[1]] = Terrain.PASSABLE  # 入口标记
-    state.dungeon_entrance = (first_room[0] + 1, first_room[1])
-    state.dungeon_exit = (first_room[0] + 1, first_room[1])
+    state.map[first_room[0] + 1, first_room[1]] = Terrain.STAIRS_UP  # 出口
     state.player_pos = (first_room[0] + 2, first_room[1] + 1)
 
     # 红宝石在最后一个房间
     last_room = rooms[-1]
-    state.map[last_room[0] + last_room[2] // 2, last_room[1] + last_room[3] // 2] = Terrain.DIFFICULT
+    state.map[last_room[0] + last_room[2] // 2, last_room[1] + last_room[3] // 2] = Terrain.FLOOR
 
     # 骷髅兵
     skeleton_positions = []
@@ -59,7 +56,9 @@ def build_dungeon(state: GameState, loader) -> None:
         sy = r[1] + random.randint(1, r[3] - 1)
         if (sx, sy) not in skeleton_positions:
             skeleton_positions.append((sx, sy))
-            sk = loader.load_creature("skeleton")
+            sk = loader.load_entity("骷髅")
             if sk:
-                sk.template_name = "skeleton"
+                sk.template_name = "骷髅"
                 state.add_entity(sk, (sx, sy))
+
+    state.seed_campfires()

@@ -1,0 +1,12 @@
+{
+  "name": "烤熟的浆果",
+  "effect": "restore_food",
+  "amount": "800",
+  "ap_cost": 1,
+  "weight": 0.1,
+  "price": {
+    "cp": 5
+  },
+  "description": "烤熟的浆果，甜味更浓了",
+  "item_type": "consumable"
+}

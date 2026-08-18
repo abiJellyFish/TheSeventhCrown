@@ -6,6 +6,9 @@
 import json
 import os
 
+from core.trade import _load_item_by_key
+from core.element import BurningSurface
+
 
 class SaveManager:
     """存档管理器。使用 JSON 文件持久化完整游戏状态。"""
@@ -30,10 +33,14 @@ class SaveManager:
             },
             "in_combat": state.in_combat,
             "in_dungeon": state.in_dungeon,
-            "dungeon_entrance": list(state.dungeon_entrance) if state.dungeon_entrance else None,
-            "dungeon_exit": list(state.dungeon_exit) if state.dungeon_exit else None,
             "door_states": {f"{c},{r}": v for (c, r), v in state.door_states.items()},
-            "bed_positions": [[c, r] for c, r in state.bed_positions],
+            "burning_surfaces": {
+                f"{c},{r}": [bs.tier, bs.fuel, bs.tick]
+                for (c, r), bs in state.burning_surfaces.items()
+            },
+            "wet_surfaces": {
+                f"{c},{r}": v for (c, r), v in state.wet_surfaces.items()
+            },
             "world_state": self._serialize_world_state(state.world_state),
         }
         path = os.path.join(self._dir, f"{slot}.json")
@@ -65,17 +72,22 @@ class SaveManager:
         # 恢复战斗状态
         state.in_combat = data.get("in_combat", False)
         state.in_dungeon = data.get("in_dungeon", False)
-        if data.get("dungeon_entrance"):
-            state.dungeon_entrance = tuple(data["dungeon_entrance"])
-        if data.get("dungeon_exit"):
-            state.dungeon_exit = tuple(data["dungeon_exit"])
 
-        # 恢复门和床
+        # 恢复门
         state.door_states = {
             tuple(map(int, k.split(","))): v
             for k, v in data.get("door_states", {}).items()
         }
-        state.bed_positions = {tuple(p) for p in data.get("bed_positions", [])}
+
+        # 恢复元素地表状态
+        state.burning_surfaces = {
+            tuple(map(int, k.split(","))): BurningSurface(tier=v[0], fuel=v[1], tick=v[2])
+            for k, v in data.get("burning_surfaces", {}).items()
+        }
+        state.wet_surfaces = {
+            tuple(map(int, k.split(","))): v
+            for k, v in data.get("wet_surfaces", {}).items()
+        }
 
         # 恢复实体（NPC/生物）
         if loader:
@@ -91,7 +103,14 @@ class SaveManager:
                     tuple(map(int, k.split(","))): v
                     for k, v in ws.get("door_states", {}).items()
                 },
-                "bed_positions": {tuple(p) for p in ws.get("bed_positions", [])},
+                "burning_surfaces": {
+                    tuple(map(int, k.split(","))): BurningSurface(tier=v[0], fuel=v[1], tick=v[2])
+                    for k, v in ws.get("burning_surfaces", {}).items()
+                },
+                "wet_surfaces": {
+                    tuple(map(int, k.split(","))): v
+                    for k, v in ws.get("wet_surfaces", {}).items()
+                },
             }
 
         return True
@@ -99,8 +118,8 @@ class SaveManager:
     # ── 序列化辅助 ──
 
     @staticmethod
-    def _serialize_player(player: "Creature") -> dict:
-        """将生物序列化为可 JSON 存储的 dict。（Phase 3: Player → Creature）"""
+    def _serialize_player(player: "Entity") -> dict:
+        """将生物序列化为可 JSON 存储的 dict。（Phase 3: Player → Entity）"""
         return {
             "name": player.name,
             "char_class": player.char_class,
@@ -128,6 +147,7 @@ class SaveManager:
             "memorized_spells": list(player.memorized_spells),
             "spell_slots": dict(player.spell_slots),
             "spell_domains": list(player.spell_domains),
+            "temp_traits": player.temp_traits,
         }
 
     @staticmethod
@@ -135,6 +155,7 @@ class SaveManager:
         """序列化地图上的 NPC/生物。只保存非玩家实体。"""
         result = []
         for creature, (col, row) in entities:
+            ds = getattr(creature, "death_saves", None)
             result.append({
                 "key": creature.template_name,
                 "pos": [col, row],
@@ -147,6 +168,15 @@ class SaveManager:
                 "statuses": [{"name": s.name, "duration": s.duration} for s in creature.statuses],
                 "food_value": creature.food_value,
                 "_looted": getattr(creature, "_looted", False),
+                "_is_dead": getattr(creature, "_is_dead", False),
+                "comatose_pendulums": getattr(creature, "_comatose_pendulums", 0.0),
+                "death_saves": None if ds is None else {
+                    "successes": ds.successes,
+                    "failures": ds.failures,
+                    "death_injury": ds.death_injury,
+                    "max_hp": ds.max_hp,
+                },
+                "temp_traits": creature.temp_traits,
             })
         return result
 
@@ -159,14 +189,20 @@ class SaveManager:
             "player_pos": list(ws.get("player_pos", (0, 0))),
             "current_map": ws.get("current_map", ""),
             "door_states": {f"{c},{r}": v for (c, r), v in ws.get("door_states", {}).items()},
-            "bed_positions": [[c, r] for c, r in ws.get("bed_positions", set())],
+            "burning_surfaces": {
+                f"{c},{r}": [bs.tier, bs.fuel, bs.tick]
+                for (c, r), bs in ws.get("burning_surfaces", {}).items()
+            },
+            "wet_surfaces": {
+                f"{c},{r}": v for (c, r), v in ws.get("wet_surfaces", {}).items()
+            },
             "entities": SaveManager._serialize_entities(ws.get("entities", [])),
         }
 
     # ── 恢复辅助 ──
 
     @staticmethod
-    def _restore_player(player: "Creature", data: dict,
+    def _restore_player(player: "Entity", data: dict,
                         loader: "DataLoader | None") -> None:
         """从存档数据恢复玩家状态。"""
         player.hp = data["hp"]
@@ -188,21 +224,24 @@ class SaveManager:
         player.memorized_spells = data.get("memorized_spells", [])
         player.spell_slots = data.get("spell_slots", {})
         player.spell_domains = data.get("spell_domains", [])
+        player.temp_traits = data.get("temp_traits", {})
 
         # 装备重建
         if loader:
             for slot, item_name in data.get("equipment", {}).items():
                 if item_name and slot in player.equipment:
-                    item = SaveManager._load_item_by_name(item_name, loader)
+                    item = _load_item_by_key(item_name)
                     if item:
                         player.equipment[slot] = item
 
             # 背包重建
             player.inventory = []
             for entry in data.get("inventory", []):
-                item = SaveManager._load_item_by_name(entry["name"], loader)
+                item = _load_item_by_key(entry["name"])
                 if item:
                     item.count = entry.get("count", 1)
+                    if item.weight:
+                        item.weight = item.weight * item.count
                     player.inventory.append(item)
 
     @staticmethod
@@ -211,7 +250,7 @@ class SaveManager:
         """从存档数据恢复地图实体。"""
         state.entities = []
         for entry in data:
-            c = loader.load_creature(entry["key"])
+            c = loader.load_entity(entry["key"])
             if c:
                 c.hp = entry.get("hp", c.max_hp)
                 c.mp = entry.get("mp", 0)
@@ -221,24 +260,16 @@ class SaveManager:
                 c.food_value = entry.get("food_value", c.food_value)
                 c.faction = entry.get("faction", c.faction)
                 c._looted = entry.get("_looted", False)
+                c._is_dead = entry.get("_is_dead", False)
+                c._comatose_pendulums = entry.get("comatose_pendulums", 0.0)
+                ds_data = entry.get("death_saves")
+                if ds_data:
+                    from core.combat.death import DeathSaves
+                    ds = DeathSaves()
+                    ds.successes = ds_data.get("successes", 0)
+                    ds.failures = ds_data.get("failures", 0)
+                    ds.death_injury = ds_data.get("death_injury", 0)
+                    ds.max_hp = ds_data.get("max_hp", c.max_hp)
+                    c.death_saves = ds
+                c.temp_traits = entry.get("temp_traits", {})
                 state.add_entity(c, tuple(entry["pos"]))
-
-    @staticmethod
-    def _load_item_by_name(name: str, loader: "DataLoader") -> "Item | None":
-        """按名称从数据文件加载物品。依次搜索武器/护甲/消耗品。"""
-        from core.entity import Weapon, Armor, Item, StatusEffect
-        for category in ["items/weapons", "items/armors", "items/consumables"]:
-            try:
-                items = loader.load_all(category)
-                for entry in items:
-                    if entry.get("name") == name:
-                        item_type = entry.get("type", "misc")
-                        if item_type == "weapon":
-                            return Weapon.from_dict(entry)
-                        elif item_type == "armor":
-                            return Armor.from_dict(entry)
-                        else:
-                            return Item.from_dict(entry)
-            except Exception:
-                continue
-        return None

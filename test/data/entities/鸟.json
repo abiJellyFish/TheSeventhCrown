@@ -1,0 +1,82 @@
+{
+  "name": "鸟",
+  "body_type": "beast",
+  "size": "tiny",
+  "faction": "守序",
+  "hp": 7,
+  "max_hp": 7,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 2,
+  "max_tenacity": 2,
+  "ap": 40,
+  "max_ap": 40,
+  "speed": 1,
+  "ac_base": 3,
+  "stats": {
+    "str": 3,
+    "dex": 7,
+    "con": 5,
+    "int": 4,
+    "wis": 10,
+    "cha": 8
+  },
+  "vision_range": 8,
+  "food_value": 4000,
+  "food_locked": false,
+  "darkvision_range": 0,
+  "language": "",
+  "actions": [
+    {
+      "name": "啄击",
+      "type": "melee_attack",
+      "weapon": "啄击",
+      "damage": "1",
+      "damage_type": "piercing",
+      "attack_stat": "str",
+      "ap_cost": 20,
+      "reach": 1
+    }
+  ],
+  "traits": [
+    "flying(speed=2)"
+  ],
+  "loot": {},
+  "behavior": {
+    "components": [
+      "find_water",
+      "escape_fire",
+      "roll",
+      "wander",
+      "forage",
+      "eat_food",
+      "eat_inventory",
+      "flee",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {
+      "forage": 0.7
+    }
+  },
+  "char": "b",
+  "corpse": {
+    "name": "鸟的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 5.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "green",
+    "description": "一具鸟的尸体，可以用作临时武器"
+  }
+}

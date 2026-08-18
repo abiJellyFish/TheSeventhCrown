@@ -1,10 +1,10 @@
 """先攻排序。"""
 
-from core.entity import Creature
+from core.entity import Entity
 from core.dice import roll_d20
 
 
-def roll_initiative(entities: list[Creature]) -> list[Creature]:
+def roll_initiative(entities: list[Entity]) -> list[Entity]:
     """投先攻并排序。返回先攻从高到低的生物列表。"""
     FACTION_ORDER = {"守序": 0, "中立": 1, "混乱": 2}
     scored = []

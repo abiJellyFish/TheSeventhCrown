@@ -3,11 +3,11 @@
 整个 AI 系统唯一使用 if-else 的函数。
 """
 
-from core.entity import Creature
+from core.entity import Entity
 
 
 def discretize_state(
-    npc: Creature,
+    npc: Entity,
     enemy_count: int = 0,
     ally_count: int = 0,
     power_ratio: float = 1.0,
@@ -61,10 +61,16 @@ def discretize_state(
         keys.add("threat:visible")
 
     # 状态标记
+    if npc.has_status("灼烧"):
+        keys.add("灼烧")
     if npc.has_status("on_fire"):
         keys.add("status:on_fire")
     if npc.has_status("poisoned"):
         keys.add("status:poisoned")
+    if npc.has_status("prone"):
+        keys.add("status:prone")
+    if npc.has_status("hiding"):
+        keys.add("status:hiding")
     # 用 food_locked 判断
     if not getattr(npc, "food_locked", True):
         ratio = npc.food_value / 15000

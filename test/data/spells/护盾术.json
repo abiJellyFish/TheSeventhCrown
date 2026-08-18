@@ -1,0 +1,23 @@
+{
+  "name": "护盾术",
+  "level": 1,
+  "domain": "abjuration",
+  "cast_time_ap": 20,
+  "cast_time_pendulum": 2,
+  "mp_cost": 35,
+  "range": 0,
+  "components": [
+    "verbal"
+  ],
+  "auto_hit": false,
+  "target": "self",
+  "effect": {
+    "type": "buff",
+    "ac_bonus": 5,
+    "duration": "until_hit",
+    "slot": "full_body"
+  },
+  "reaction": true,
+  "upcast": "无",
+  "description": "创建一道透明的力场护盾浮现在你身旁，AC +5（全身），直到承受一次攻击"
+}

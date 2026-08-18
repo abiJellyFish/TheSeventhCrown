@@ -6,6 +6,21 @@ from core.game_state import GameState
 from core.movement import Terrain
 from core.item_actions import GROUND_ITEM_RENDER, _ITEM_TYPE_LABELS
 
+TERRAIN_CHARS = {
+    Terrain.WALL: "#", Terrain.TREE: "T", Terrain.BUSH: '"',
+    Terrain.GRASS: ".", Terrain.BARREN: ".", Terrain.PLAIN: ".",
+    Terrain.FLOOR: ".", Terrain.WATER: "^", Terrain.STONE: "o",
+    Terrain.LOW_WALL: "=", Terrain.BED: "=", Terrain.CAMPFIRE: "=",
+    Terrain.DOOR: "+", Terrain.STAIRS_DOWN: ">", Terrain.STAIRS_UP: "<",
+}
+TERRAIN_LABELS = {
+    Terrain.WALL: "墙壁", Terrain.TREE: "树", Terrain.BUSH: "灌木",
+    Terrain.GRASS: "草地", Terrain.BARREN: "荒地", Terrain.PLAIN: "平原",
+    Terrain.FLOOR: "地面", Terrain.WATER: "水", Terrain.STONE: "石头",
+    Terrain.LOW_WALL: "矮墙", Terrain.BED: "床", Terrain.CAMPFIRE: "篝火",
+    Terrain.DOOR: "门", Terrain.STAIRS_DOWN: "入口", Terrain.STAIRS_UP: "出口",
+}
+
 
 class MapLegend(Static):
     """地图图例，固定 3 行高度，超出的条目合并为 +N。"""
@@ -20,26 +35,17 @@ class MapLegend(Static):
 
         legend_seen: dict[str, str] = {"@": "玩家"}
         for creature, (ec, er) in self.state.entities:
-            if (ec, er) in fov and creature.hp > 0:
+            if (ec, er) in fov and not creature.is_dead:
                 legend_seen[creature.char] = creature.name
 
-        terrain_map = {Terrain.WALL: "#", Terrain.DIFFICULT: '"', Terrain.PASSABLE: "."}
-        terrain_labels = {"#": "墙壁", '"': "灌木", ".": "草地"}
         for pos in fov:
             t = gmap[pos]
-            ch = terrain_map.get(t)
-            if ch:
-                legend_seen.setdefault(ch, terrain_labels[ch])
-            if pos in self.state.bed_positions:
-                legend_seen["="] = "床"
-            if pos in self.state.stone_positions:
-                legend_seen["o"] = "石头"
-            if pos in self.state.campfire_positions:
-                legend_seen["~"] = "篝火"
+            ch = TERRAIN_CHARS.get(t)
+            label = TERRAIN_LABELS.get(t)
+            if ch and label:
+                legend_seen.setdefault(ch, label)
             if pos in self.state.door_states:
                 legend_seen["]"] = "门"
-            if self.state.dungeon_entrance and pos == self.state.dungeon_entrance:
-                legend_seen[">"] = "入口"
 
         for item, (ec, er) in self.state.ground_items:
             if (ec, er) in fov:

@@ -11,10 +11,57 @@ T = TypeVar("T")
 
 
 class Terrain(Enum):
-    """地形类型。"""
-    PASSABLE = auto()
-    DIFFICULT = auto()
-    WALL = auto()
+    """地块类型。每种地块直接携带元素属性。"""
+    # 可通行（地块材质）
+    GRASS = auto()       # 草地：可燃
+    BARREN = auto()      # 荒地：不可燃，永不自然改变
+    PLAIN = auto()       # 平原：烧尽后，可再生
+    FLOOR = auto()       # 石材地面：地下城/建筑内
+    BED = auto()         # 床铺：交互休息
+    STAIRS_DOWN = auto() # 楼梯下：交互进入地下城
+    STAIRS_UP = auto()   # 楼梯上：交互返回地面（预留）
+    # 困难地形（地图元素）
+    WATER = auto()       # 水：潮湿，灭火
+    BUSH = auto()        # 灌木丛：可燃，半身掩体，交互采摘
+    STONE = auto()       # 石头：半身掩体
+    LOW_WALL = auto()    # 矮墙：3/4掩体
+    TREE = auto()        # 树：全身掩体，可燃，阻塞
+    # 阻塞
+    CAMPFIRE = auto()    # 篝火结构：加载时 seed_campfires 注入燃烧条目（fuel=None），熄灭后保留结构可再点燃，可通行
+    DOOR = auto()        # 门：开关切换，关闭时阻塞（关闭时以 WALL 表示）
+    WALL = auto()        # 墙壁：全身掩体
+
+
+# 通行分类
+PASSABLE_TERRAINS = {Terrain.GRASS, Terrain.BARREN, Terrain.PLAIN, Terrain.FLOOR,
+                     Terrain.BED, Terrain.STAIRS_DOWN, Terrain.STAIRS_UP}
+DIFFICULT_TERRAINS = {Terrain.WATER, Terrain.BUSH, Terrain.STONE, Terrain.LOW_WALL}
+BLOCKING_TERRAINS = {Terrain.WALL, Terrain.TREE}
+
+# 元素属性
+FLAMMABLE: dict[Terrain, int] = {
+    Terrain.GRASS: 40,   # 草地蔓延概率 40%
+    Terrain.BUSH: 30,    # 灌木蔓延概率 30%
+    Terrain.TREE: 3,     # 树蔓延概率 3%（灌木的1/10）
+}
+FUEL: dict[Terrain, int] = {
+    Terrain.GRASS: 8,    # 草地燃烧 8 钟摆
+    Terrain.BUSH: 18,    # 灌木燃烧 18 钟摆
+    Terrain.TREE: 30,    # 树燃烧 30 钟摆（更持久）
+}
+# 烧尽后变成的地块
+BURN_OUT_RESULT = {
+    Terrain.GRASS: Terrain.PLAIN,
+    Terrain.BUSH: Terrain.PLAIN,
+    Terrain.TREE: Terrain.PLAIN,  # 树烧尽后变平原
+}
+# 可再生为的目标（平原 → 草地/灌木）
+REGENERABLE_FROM = Terrain.PLAIN
+# 永久火源（不熄灭，持续点燃相邻可燃物）
+FIRE_SOURCES = {Terrain.CAMPFIRE}
+# 交互地块
+INTERACTIVE_TERRAINS = {Terrain.BUSH, Terrain.BED, Terrain.DOOR,
+                        Terrain.STAIRS_DOWN, Terrain.STAIRS_UP}
 
 # 4 方向偏移：(dc, dr)
 DIRS_4 = [          (0, -1),

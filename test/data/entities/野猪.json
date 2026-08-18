@@ -1,0 +1,109 @@
+{
+  "temperature": {
+    "fire": {
+      "burn_mult": 1.0,
+      "avoid_dist": 0,
+      "auto_ignite_dist": 0
+    }
+  },
+  "name": "野猪",
+  "body_type": "beast",
+  "size": "medium",
+  "faction": "中立",
+  "hp": 18,
+  "max_hp": 18,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 5,
+  "max_tenacity": 5,
+  "ap": 60,
+  "max_ap": 60,
+  "speed": 1,
+  "ac_base": 10,
+  "stats": {
+    "str": 13,
+    "dex": 12,
+    "con": 15,
+    "int": 4,
+    "wis": 10,
+    "cha": 7
+  },
+  "vision_range": 8,
+  "food_value": 12000,
+  "food_locked": false,
+  "darkvision_range": 0,
+  "language": "",
+  "actions": [
+    {
+      "name": "顶撞",
+      "type": "melee_attack",
+      "weapon": "顶撞",
+      "damage": "1d6",
+      "damage_type": "bludgeoning",
+      "attack_stat": "str",
+      "ap_cost": 20,
+      "reach": 1,
+      "charge_bonus": "1d6"
+    }
+  ],
+  "traits": [
+    "rage_speed_boost"
+  ],
+  "loot": {
+    "always": [
+      {
+        "name": "一磅野猪肉",
+        "amount": 3,
+        "effect": "restore_food"
+      }
+    ],
+    "dc_6": [
+      {
+        "name": "猪牙"
+      }
+    ],
+    "dc_10": [
+      {
+        "name": "猪皮"
+      }
+    ]
+  },
+  "behavior": {
+    "components": [
+      "find_water",
+      "escape_fire",
+      "roll",
+      "wander",
+      "forage",
+      "eat_food",
+      "eat_inventory",
+      "flee",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {
+      "forage": 0.9,
+      "eat_food": 0.95
+    }
+  },
+  "char": "w",
+  "corpse": {
+    "name": "野猪的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 10.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "yellow",
+    "description": "一具野猪的尸体，可以用作临时武器"
+  }
+}

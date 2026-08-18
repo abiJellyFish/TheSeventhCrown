@@ -1,33 +1,167 @@
 {
   "name": "地精营地",
-  "offset": [68, 10],
-  "walls": [
-    [0,0],[1,0],[2,0],[3,0],[4,0],           [6,0],[7,0],
-    [7,1],[7,2],
-    [0,1],[0,2],[0,3],
-    [4,5],[5,5],[7,5],
-    [0,4],[1,4]
+  "offset": [
+    68,
+    10
   ],
-  "difficult": [[3, 3]],
+  "walls": [
+    [
+      0,
+      0
+    ],
+    [
+      1,
+      0
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      3,
+      0
+    ],
+    [
+      4,
+      0
+    ],
+    [
+      6,
+      0
+    ],
+    [
+      7,
+      0
+    ],
+    [
+      7,
+      1
+    ],
+    [
+      7,
+      2
+    ],
+    [
+      0,
+      1
+    ],
+    [
+      0,
+      2
+    ],
+    [
+      0,
+      3
+    ],
+    [
+      4,
+      5
+    ],
+    [
+      5,
+      5
+    ],
+    [
+      7,
+      5
+    ],
+    [
+      0,
+      4
+    ],
+    [
+      1,
+      4
+    ]
+  ],
+  "difficult": [
+    [
+      3,
+      3
+    ]
+  ],
   "entities": [
-    {"key": "goblin_brawler", "pos": [2, 2]},
-    {"key": "goblin_brawler", "pos": [5, 1]},
-    {"key": "goblin_brawler", "pos": [6, 3]},
-    {"key": "goblin_brawler", "pos": [1, 4]},
-    {"key": "long_ear_dog", "pos": [4, 1]},
-    {"key": "long_ear_dog", "pos": [5, 4]},
-    {"key": "long_ear_dog", "pos": [2, 3]}
+    {
+      "key": "地精打手",
+      "pos": [
+        2,
+        2
+      ]
+    },
+    {
+      "key": "地精打手",
+      "pos": [
+        5,
+        1
+      ]
+    },
+    {
+      "key": "地精打手",
+      "pos": [
+        6,
+        3
+      ]
+    },
+    {
+      "key": "地精打手",
+      "pos": [
+        1,
+        4
+      ]
+    },
+    {
+      "key": "长耳犬",
+      "pos": [
+        4,
+        1
+      ]
+    },
+    {
+      "key": "长耳犬",
+      "pos": [
+        5,
+        4
+      ]
+    },
+    {
+      "key": "长耳犬",
+      "pos": [
+        2,
+        3
+      ]
+    }
+  ],
+  "traps": [
+    {
+      "pos": [
+        4,
+        2
+      ],
+      "damage": "1d4"
+    }
   ],
   "location_name": "营地",
   "chests": [
     {
-      "pos": [4, 3],
+      "pos": [
+        4,
+        3
+      ],
       "label": "地精的储藏室",
       "gp": 4,
       "inventory": [
-        {"name": "一包口粮", "item_type": "consumable", "effect": "restore_food", "amount": "15000", "ap_cost": 1, "weight": 1.0, "count": 6, "description": "几块晒干的兽肉和浆果"},
-        {"name": "圆盾", "item_type": "armor", "armor_type": "shield", "slot": "full_body", "ac_bonus": 2, "tenacity_bonus": 3, "str_requirement": 8, "weight": 2.0},
-        {"name": "铁质头盔", "item_type": "armor", "armor_type": "heavy", "slot": "head", "ac_bonus": 2, "tenacity_bonus": 1, "str_requirement": 10, "weight": 1.5}
+        {
+          "name": "一包口粮",
+          "count": 6
+        },
+        {
+          "name": "圆盾",
+          "count": 1
+        },
+        {
+          "name": "铁质头盔",
+          "count": 1
+        }
       ]
     }
   ],
