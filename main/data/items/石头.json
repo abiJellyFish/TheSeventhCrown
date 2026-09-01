@@ -1,0 +1,23 @@
+{
+  "name": "石头",
+  "weight": 5.0,
+  "space": 10,
+  "price": {},
+  "render_char": "o",
+  "render_color": "#888888",
+  "description": "一块石头，可以投掷或用作临时武器",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "range_normal": 4,
+    "range_max": 6,
+    "properties": [
+      "thrown(4/6)"
+    ]
+  }
+}

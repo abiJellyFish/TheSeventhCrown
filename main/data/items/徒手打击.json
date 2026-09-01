@@ -1,0 +1,17 @@
+{
+  "name": "徒手打击",
+  "weight": 0.0,
+  "description": "出拳、踢腿、头锤",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 10,
+    "properties": [
+      "light"
+    ]
+  }
+}

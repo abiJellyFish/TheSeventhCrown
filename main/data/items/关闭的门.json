@@ -1,0 +1,15 @@
+{
+  "name": "关闭的门",
+  "item_type": "obstacle",
+  "weight": 0,
+  "description": "关闭的门，全身障碍。",
+  "durability": 80,
+  "max_durability": 80,
+  "obstacle_type": "full",
+  "block_value": 30,
+  "stack_limit": 1,
+  "can_pickup": false,
+  "render_char": "]",
+  "render_color": "yellow",
+  "becomes": "打开的门"
+}

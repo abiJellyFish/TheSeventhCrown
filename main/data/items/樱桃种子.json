@@ -1,0 +1,20 @@
+{
+  "name": "樱桃种子",
+  "item_type": "seed",
+  "weight": 0.01,
+  "price": {
+    "cp": 1
+  },
+  "description": "樱桃树的种子，适宜在平原或草地种植",
+  "render_char": ",",
+  "render_color": "rgb(255,160,160)",
+  "crop": {
+    "suitable_terrain": ["plain", "grass"],
+    "growth_days": 3,
+    "water_need": 1,
+    "wither_limit": 5,
+    "harvest_item": "樱桃",
+    "mature_char": ";",
+    "mature_color": "#FF3333"
+  }
+}

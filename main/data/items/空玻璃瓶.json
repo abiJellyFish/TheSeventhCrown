@@ -1,0 +1,12 @@
+{
+  "name": "空玻璃瓶",
+  "effect": "start_fire",
+  "throw_effect": "break",
+  "ap_cost": 2,
+  "weight": 0.1,
+  "price": {
+    "sp": 30
+  },
+  "description": "透明瓶身可聚焦阳光生火",
+  "item_type": "misc"
+}

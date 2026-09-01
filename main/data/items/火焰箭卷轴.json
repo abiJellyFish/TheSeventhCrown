@@ -1,0 +1,19 @@
+{
+  "name": "火焰箭卷轴",
+  "item_type": "spell_scroll",
+  "weight": 0.1,
+  "description": "一簇火焰疾驰飞出，对目标造成 1d10 火焰伤害。点燃目标位置。",
+  "spell": "火焰箭",
+  "level": 1,
+  "cast_time_pendulum": 2,
+  "range": 10,
+  "needs_hit": true,
+  "target_mode": "target",
+  "effect": {
+    "type": "damage",
+    "amount": "1d10",
+    "damage_type": "fire",
+    "ignite": true
+  },
+  "components": []
+}

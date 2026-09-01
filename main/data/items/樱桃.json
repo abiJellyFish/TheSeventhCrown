@@ -1,0 +1,12 @@
+{
+  "name": "樱桃",
+  "effect": "restore_food",
+  "amount": "300",
+  "ap_cost": 1,
+  "weight": 0.01,
+  "price": {
+    "cp": 1
+  },
+  "description": "颜色鲜艳的小颗浆果，食用恢复饮食值",
+  "item_type": "consumable"
+}

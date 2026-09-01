@@ -1,0 +1,82 @@
+{
+  "name": "松鼠",
+  "body_type": "beast",
+  "size": "tiny",
+  "faction": "中立",
+  "hp": 8,
+  "max_hp": 8,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 2,
+  "max_tenacity": 2,
+  "ap": 40,
+  "max_ap": 40,
+  "speed": 1,
+  "ac_base": 4,
+  "stats": {
+    "str": 3,
+    "dex": 7,
+    "con": 6,
+    "int": 4,
+    "wis": 9,
+    "cha": 9
+  },
+  "vision_range": 8,
+  "food_value": 4000,
+  "food_locked": false,
+  "darkvision_range": 0,
+  "language": "",
+  "actions": [
+    {
+      "name": "啃咬",
+      "type": "melee_attack",
+      "weapon": "啃咬",
+      "damage": "1",
+      "damage_type": "bludgeoning",
+      "attack_stat": "str",
+      "ap_cost": 20,
+      "reach": 1
+    }
+  ],
+  "traits": [
+    "climbing(speed=2)"
+  ],
+  "loot": {},
+  "behavior": {
+    "components": [
+      "find_water",
+      "escape_fire",
+      "roll",
+      "wander",
+      "forage",
+      "eat_food",
+      "eat_inventory",
+      "flee",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {
+      "forage": 0.7
+    }
+  },
+  "char": "s",
+  "corpse": {
+    "name": "松鼠的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 5.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "yellow",
+    "description": "一具松鼠的尸体，可以用作临时武器"
+  }
+}

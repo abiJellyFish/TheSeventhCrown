@@ -1,0 +1,21 @@
+{
+  "name": "战士",
+  "description": "力量属性+2，体质属性+2，生命上限+5",
+  "bonuses": {
+    "str": 2,
+    "con": 2,
+    "max_hp": 5
+  },
+  "proficiencies": {
+    "weapons": ["martial_melee"],
+    "skills": []
+  },
+  "starting_equipment": [],
+  "levels": {
+    "0": {"abilities": ["削韧"]},
+    "1": {"abilities": ["重整旗鼓"], "title": "见习战士"},
+    "2": {"abilities": ["横扫"]},
+    "3": {"abilities": ["缴械", "扫腿"]},
+    "4": {"abilities": []}
+  }
+}

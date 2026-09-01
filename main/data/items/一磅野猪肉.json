@@ -1,0 +1,17 @@
+{
+  "name": "一磅野猪肉",
+  "effect": "restore_food",
+  "amount": "1200",
+  "ap_cost": 1,
+  "weight": 0.5,
+  "price": {
+    "cp": 5
+  },
+  "description": "鲜红的兽肉，需要烤熟才能食用",
+  "dc_check": {
+    "stat": "con",
+    "dc": 15,
+    "on_fail": "中毒(2000钟摆)"
+  },
+  "item_type": "consumable"
+}

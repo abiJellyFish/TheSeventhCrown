@@ -1,0 +1,10 @@
+{
+  "name": "猪牙",
+  "effect": "material",
+  "weight": 0.0,
+  "price": {
+    "cp": 20
+  },
+  "description": "坚硬的兽牙，材料",
+  "item_type": "material"
+}

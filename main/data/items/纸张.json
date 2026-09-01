@@ -1,0 +1,10 @@
+{
+  "name": "纸张",
+  "item_type": "material",
+  "weight": 0.0,
+  "price": {
+    "sp": 5
+  },
+  "description": "易燃，可作为法术书或制作卷轴的材料",
+  "effect": "material"
+}

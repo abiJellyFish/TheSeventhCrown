@@ -1,0 +1,24 @@
+{
+  "name": "力场切割",
+  "level": 1,
+  "domain": "evocation",
+  "attribute": "int",
+  "cast_time_ap": 20,
+  "cast_time_pendulum": 2,
+  "mp_cost": 20,
+  "range": 10,
+  "target_mode": "target",
+  "components": [
+    "verbal",
+    "somatic"
+  ],
+  "target": "single",
+  "needs_hit": true,
+  "effect": {
+    "type": "damage",
+    "amount": "2d6",
+    "damage_type": "slashing"
+  },
+  "upcast": "记忆的法术位每高一阶，该法术伤害增加 1d6",
+  "description": "力场在空间中划开一道剑锋。需要命中。对目标造成 2d6 挥砍伤害。"
+}

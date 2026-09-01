@@ -1,0 +1,10 @@
+{
+  "name": "红宝石",
+  "effect": "quest_item",
+  "weight": 1.0,
+  "price": {
+    "gp": 120
+  },
+  "description": "透亮的血色宝石，散发着火焰元素的气息",
+  "item_type": "misc"
+}

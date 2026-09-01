@@ -1,0 +1,15 @@
+{
+  "name": "打开的门",
+  "item_type": "structure",
+  "weight": 0,
+  "description": "打开的门，不阻挡移动和视线。",
+  "durability": 80,
+  "max_durability": 80,
+  "obstacle_type": "none",
+  "block_value": 0,
+  "stack_limit": 1,
+  "can_pickup": false,
+  "render_char": "_",
+  "render_color": "yellow",
+  "becomes": "关闭的门"
+}

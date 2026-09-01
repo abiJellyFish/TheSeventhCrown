@@ -1,0 +1,28 @@
+{
+  "name": "火球术",
+  "level": 3,
+  "domain": "evocation",
+  "attribute": "int",
+  "cast_time_ap": 40,
+  "cast_time_pendulum": 4,
+  "mp_cost": 50,
+  "range": 10,
+  "target_shape": "3x4",
+  "target_mode": "area",
+  "components": [
+    "verbal",
+    "somatic"
+  ],
+  "target": "area",
+  "effect": {
+    "type": "damage",
+    "amount": "5d6",
+    "damage_type": "fire",
+    "save": "dex",
+    "save_half": true,
+    "area": "3x4",
+    "ignite": true
+  },
+  "upcast": "记忆的法术位每高一阶，该法术伤害增加 1d6",
+  "description": "明亮的闪光在你的指尖跃动，伴随着一阵低语凝聚成一团烈焰。3*4 范围内的目标受到 5d6 火焰伤害，敏捷豁免成功则伤害减半。影响范围内的空间被点燃。"
+}

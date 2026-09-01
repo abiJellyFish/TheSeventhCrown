@@ -1,0 +1,14 @@
+{
+  "name": "木箱",
+  "item_type": "container",
+  "weight": 0,
+  "description": "可以存放物品的木箱。",
+  "durability": 40,
+  "max_durability": 40,
+  "obstacle_type": "half",
+  "block_value": 5,
+  "stack_limit": 1,
+  "can_pickup": true,
+  "render_char": "$",
+  "render_color": "yellow"
+}

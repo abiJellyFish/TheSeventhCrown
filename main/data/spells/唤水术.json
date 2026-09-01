@@ -1,0 +1,19 @@
+{
+  "name": "唤水术",
+  "level": 1,
+  "domain": "evocation",
+  "attribute": "int",
+  "cast_time_ap": 10,
+  "cast_time_pendulum": 1,
+  "mp_cost": 5,
+  "range": 8,
+  "components": [
+    "verbal",
+    "somatic"
+  ],
+  "target": "tile",
+  "effect": {
+    "type": "wet_tile"
+  },
+  "description": "为一格地表附加潮湿，可用于浇灌作物"
+}

@@ -1,0 +1,13 @@
+{
+  "name": "游荡者",
+  "description": "擅长从目标身后发动致命攻击",
+  "bonuses": {},
+  "proficiencies": {
+    "weapons": ["simple_melee"],
+    "skills": []
+  },
+  "starting_equipment": [],
+  "levels": {
+    "0": {"abilities": ["刺杀"]}
+  }
+}

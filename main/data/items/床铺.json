@@ -1,0 +1,10 @@
+{
+  "name": "床铺",
+  "item_type": "structure",
+  "weight": 0,
+  "description": "舒适的床铺。",
+  "stack_limit": 1,
+  "can_pickup": false,
+  "render_char": "=",
+  "render_color": "cyan"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "长老的提示",
+  "effect": "quest_item",
+  "weight": 0.1,
+  "price": {
+    "gp": 0
+  },
+  "read_text": "村庄地处偏僻，只能通过送信鸟向领地卫兵求助，不过文书员在树林对岸的高塔上，而高塔周围现在被一群地精占为了营地。",
+  "description": "长老写下的提示纸条",
+  "item_type": "misc"
+}

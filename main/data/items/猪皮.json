@@ -1,0 +1,10 @@
+{
+  "name": "猪皮",
+  "effect": "material",
+  "weight": 0.0,
+  "price": {
+    "sp": 4
+  },
+  "description": "粗糙的野兽皮，易燃",
+  "item_type": "material"
+}

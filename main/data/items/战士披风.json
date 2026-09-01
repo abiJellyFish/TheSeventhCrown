@@ -1,0 +1,15 @@
+{
+  "name": "战士披风",
+  "item_type": "accessory",
+  "accessory": true,
+  "weight": 1.0,
+  "price": {
+    "gp": 2
+  },
+  "description": "穿戴时勇气上限增加20。",
+  "equip_effect": {
+    "max_courage": 20
+  },
+  "render_char": "~",
+  "render_color": "red"
+}

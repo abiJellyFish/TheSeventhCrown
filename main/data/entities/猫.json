@@ -1,0 +1,81 @@
+{
+  "name": "猫",
+  "body_type": "beast",
+  "size": "small",
+  "faction": "守序",
+  "hp": 11,
+  "max_hp": 11,
+  "mp": 0,
+  "max_mp": 0,
+  "tenacity": 2,
+  "max_tenacity": 2,
+  "ap": 40,
+  "max_ap": 40,
+  "speed": 1,
+  "ac_base": 4,
+  "stats": {
+    "str": 5,
+    "dex": 9,
+    "con": 6,
+    "int": 4,
+    "wis": 12,
+    "cha": 11
+  },
+  "vision_range": 8,
+  "food_value": 6000,
+  "food_locked": false,
+  "darkvision_range": 0,
+  "language": "",
+  "actions": [
+    {
+      "name": "抓挠",
+      "type": "melee_attack",
+      "weapon": "抓挠",
+      "damage": "1",
+      "damage_type": "piercing",
+      "attack_stat": "str",
+      "ap_cost": 20,
+      "reach": 1
+    }
+  ],
+  "traits": [
+    "keen_smell"
+  ],
+  "loot": {},
+  "behavior": {
+    "components": [
+      "find_water",
+      "escape_fire",
+      "roll",
+      "wander",
+      "eat_food",
+      "eat_inventory",
+      "flee",
+      "rest",
+      "idle",
+      "stand_prone",
+      "stand_hiding"
+    ],
+    "overrides": {
+      "wander": 0.4
+    }
+  },
+  "char": "c",
+  "corpse": {
+    "name": "猫的尸体",
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d6",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "two_handed"
+    ],
+    "weight": 5.0,
+    "price": {},
+    "render_char": "%",
+    "render_color": "green",
+    "description": "一具猫的尸体，可以用作临时武器"
+  }
+}

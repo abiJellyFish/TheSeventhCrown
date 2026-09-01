@@ -1,0 +1,40 @@
+"""法术规则与工厂公开接口。"""
+from domain.spell.factory import SpellFactory
+from domain.spell.spell import (
+    load_spells,
+    load_class_data,
+    get_known_spells,
+    get_spellbook_spells,
+    get_memorized_spells,
+    get_spell_slots,
+    get_available_slots,
+    memorize_spell,
+    unmemorize_spell,
+    replace_spell,
+    spell_attributes,
+    spell_cast_adjust,
+    spell_mp_cost,
+    spell_save_dc,
+    spell_saving_throw,
+    resolve_spell,
+)
+
+__all__ = [
+    "load_spells",
+    "load_class_data",
+    "get_known_spells",
+    "get_spellbook_spells",
+    "get_memorized_spells",
+    "get_spell_slots",
+    "get_available_slots",
+    "memorize_spell",
+    "unmemorize_spell",
+    "replace_spell",
+    "spell_attributes",
+    "spell_cast_adjust",
+    "spell_mp_cost",
+    "spell_save_dc",
+    "spell_saving_throw",
+    "resolve_spell",
+    "SpellFactory",
+]

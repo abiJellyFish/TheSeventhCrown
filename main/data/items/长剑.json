@@ -1,0 +1,21 @@
+{
+  "name": "长剑",
+  "weight": 2.0,
+  "price": {
+    "gp": 3,
+    "sp": 5
+  },
+  "description": "长剑，可单手或双手持用，制式武器",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "martial",
+    "damage": "1d8",
+    "damage_type": "slashing",
+    "attack_stat": "str",
+    "ap_cost": 30,
+    "properties": [
+      "versatile(1d10)"
+    ]
+  }
+}

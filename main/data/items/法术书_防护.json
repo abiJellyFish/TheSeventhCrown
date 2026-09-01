@@ -1,0 +1,10 @@
+{
+  "name": "法术书_防护",
+  "item_type": "spellbook",
+  "weight": 1.0,
+  "price": {"gp": 10},
+  "spellbook": {"spells": ["护盾术", "疗伤术"]},
+  "description": "记载防护法术的魔法书。持有后可装备到法术书栏，从中记忆法术",
+  "render_char": "b",
+  "render_color": "magenta"
+}

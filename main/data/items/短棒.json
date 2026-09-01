@@ -1,0 +1,20 @@
+{
+  "name": "短棒",
+  "weight": 1.0,
+  "price": {
+    "sp": 30
+  },
+  "description": "短棒，可单手或双手持用",
+  "item_type": "weapon",
+  "weapon": {
+    "weapon_type": "melee",
+    "category": "simple",
+    "damage": "1d4",
+    "damage_type": "bludgeoning",
+    "attack_stat": "str",
+    "ap_cost": 20,
+    "properties": [
+      "versatile(1d6)"
+    ]
+  }
+}
