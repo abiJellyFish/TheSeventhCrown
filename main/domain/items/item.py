@@ -67,6 +67,8 @@ class Item:
             self.durability = self.max_durability
         if self.stack_limit <= 0:
             self.stack_limit = 1 if self.is_obstacle else 99
+        if self.obstacle_type is ObstacleType.FULL:
+            self.can_pickup = False
 
     @property
     def is_obstacle(self) -> bool:

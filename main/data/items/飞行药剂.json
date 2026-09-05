@@ -1,0 +1,10 @@
+{
+  "name": "飞行药剂",
+  "item_type": "consumable",
+  "effect": "fly_speed",
+  "amount": "1000",
+  "weight": 0.5,
+  "price": {"gp": 8},
+  "becomes": "空玻璃瓶",
+  "description": "饮用后获得飞行速度2，持续1000钟摆"
+}

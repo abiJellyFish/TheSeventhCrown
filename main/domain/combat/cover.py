@@ -66,9 +66,9 @@ def resolve_cover_line(
     if weapon_type == "melee":
         return False, None
 
-    # Bresenham 线
-    x0, y0 = attacker
-    x1, y1 = target
+    # Bresenham 线（掩体弹道当前按二维地表结算）
+    x0, y0 = attacker[:2]
+    x1, y1 = target[:2]
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
     sx = 1 if x0 < x1 else -1
@@ -105,13 +105,13 @@ def resolve_cover_line(
         # 物品障碍按物品自身覆盖能力结算
         if ground_items:
             for item, item_pos in ground_items:
-                if item_pos == (cx, cy) and getattr(item, "is_obstacle", False):
+                if item_pos[:2] == (cx, cy) and getattr(item, "is_obstacle", False):
                     if attack_roll <= getattr(item, "block_value", 0):
                         return True, (cx, cy)
 
         if entities:
             for entity, entity_pos in entities:
-                if entity_pos == (cx, cy) and not getattr(entity, "is_dead", False):
+                if entity_pos[:2] == (cx, cy) and not getattr(entity, "is_dead", False):
                     info = obstacle_info(entity)
                     if info is not None and attack_roll <= info[0]:
                         return True, (cx, cy)
@@ -133,7 +133,7 @@ def is_full_cover(terrain: Terrain) -> bool:
 def _has_full_obstacle(pos, entities=None, ground_items=None) -> bool:
     for collection in (entities or (), ground_items or ()):
         for obstacle, obstacle_pos in collection:
-            if obstacle_pos == pos:
+            if obstacle_pos[:2] == pos:
                 from domain.obstacle import is_full_obstacle
                 if is_full_obstacle(obstacle):
                     return True
@@ -145,6 +145,7 @@ def is_light_cover(state, pos: tuple[int, int], excluded=None) -> bool:
     半身/四分之三掩体（灌木/石头/矮墙）、雾气格、或微光（DIM）光照格。
     统一供隐匿条件与远程命中劣势判定复用。
     """
+    pos = tuple(pos[:2])
     info = COVER_TABLE.get(state.map[pos[0], pos[1]])
     if info is not None and 5 <= info[0] <= 8:
         return True
@@ -152,7 +153,7 @@ def is_light_cover(state, pos: tuple[int, int], excluded=None) -> bool:
         for obstacle, obstacle_pos in collection:
             if obstacle is excluded:
                 continue
-            if obstacle_pos == pos and not getattr(obstacle, "is_dead", False):
+            if obstacle_pos[:2] == pos and not getattr(obstacle, "is_dead", False):
                 obstacle_data = obstacle_info(obstacle)
                 if obstacle_data is not None and 5 <= obstacle_data[0] <= 10:
                     return True

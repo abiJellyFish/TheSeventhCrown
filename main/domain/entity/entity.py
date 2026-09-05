@@ -19,7 +19,7 @@ from domain.faction import (
 from domain.entity.rules import size_rank, SIZE_RANK, stat_adjust, normalize_damage_type, BLUNT_CONVERT
 from domain.entity_components import (
     ControlComponent, AIComponent, CasterComponent,
-    ClassComponent, InventoryComponent, ObstacleComponent,
+    AllyComponent, ClassComponent, InventoryComponent, ObstacleComponent,
 )
 from domain.obstacle import ObstacleType, normalize_obstacle_type, obstacle_defaults
 from domain.entity.status import StatusEffect
@@ -46,6 +46,7 @@ STATUS_PRONE = "prone"                # 倒地：移动速度减半、攻击劣�
 STATUS_INCAPACITATED = "incapacitated"  # 失能（韧性归零）
 STATUS_DYING = "濒死"                  # 濒死：HP=0，进行死亡豁免
 STATUS_COMATOSE = "昏迷"               # 昏迷（击晕产物，HP≥1 也可能昏迷）
+STATUS_STUNNED = "震慑"               # 震慑：检定最终点数减半，长休解除
 STATUS_HIDING = "hiding"              # 躲藏：携带锁定对抗值 hide_dc
 STATUS_DISENGAGED = "disengaged"      # 已撤离：本回合移动不触发借机攻击
 STATUS_DODGE = "dodge"                # 回避中：可见敌人对其攻击劣势、敏捷豁免优势
@@ -99,6 +100,10 @@ class Entity:
     size: str = "medium"                  # "tiny" | "small" | "medium" | "large"（以 MVP2.md 生物定义为准）
     reach: int | None = None              # 固有触及范围；未指定时按体型提供默认值
     facing: tuple[int, int] = (0, 1)      # 朝向 = DIRS_8 方向向量，默认 (0,1) 东；移动自动转向，手动转向模式可改
+    z: int = 0                            # 绝对高度层
+    climb_speed: float = 0                # 显式攀爬速度；0 表示使用普通速度的一半
+    fly_speed: float = 0                  # 显式飞行速度；0 表示不能飞行
+    is_hovering: bool = False             # 是否处于悬浮状态
 
     # 核心数值（所有生物共有）
     max_hp: int = 30
@@ -143,6 +148,7 @@ class Entity:
 
     # ── 组件容器（按需挂载，None=未挂载）──
     _control: ControlComponent | None = None
+    _ally: AllyComponent | None = None
     _ai: AIComponent | None = None
     _caster: CasterComponent | None = None
     _class: ClassComponent | None = None
@@ -154,7 +160,11 @@ class Entity:
 
     # ── 相对好感度表（P1 3.1）：{目标实体 uid → 好感度数值}，顶层字段不受 AI 组件摘除影响
     _favor: dict[int, int] = field(default_factory=dict, repr=False)
+    _attitude: dict[int, str] = field(default_factory=dict, repr=False)
+    party_member: bool = False
     _bleeding_pendulums: int = field(default=0, repr=False)
+    _death_callback: Any = field(default=None, compare=False, repr=False)
+    _death_save_callback: Any = field(default=None, compare=False, repr=False)
 
     # ── HP 属性（死亡系统，D24）──
     # HP 增加（恢复生命）→ 自动清除濒死/昏迷并重置死亡豁免。
@@ -229,6 +239,15 @@ class Entity:
                 self._control.controlled = True
         else:
             self._control = None
+
+    @property
+    def ally(self) -> bool:
+        """是否挂载盟友组件。实体本身不因盟友身份改变。"""
+        return self._ally is not None and self._ally.active
+
+    @ally.setter
+    def ally(self, value: bool) -> None:
+        self._ally = AllyComponent() if value else None
 
     # 物品栏组件
     @property
@@ -739,8 +758,16 @@ class Entity:
         if self._is_dead:
             return False
         if getattr(self, 'controlled', False):
-            # 临时：被控生物 HP 保底 1（玩家暂不可死亡，接入完整死亡流程后移除）
-            self.hp = max(1, self.hp - amount)
+            if self.hp <= 0:
+                ds = self._get_death_saves()
+                ds.take_damage_at_zero(amount, self.max_hp, critical=critical)
+                if ds.death_injury >= self.max_hp:
+                    self._die()
+            elif self.hp - amount <= 0:
+                self.hp = 0
+                self._enter_dying()
+            else:
+                self.hp -= amount
             self._interrupted = True
             return True
         if self.hp <= 0:
@@ -762,7 +789,7 @@ class Entity:
 
     def _get_death_saves(self):
         """懒初始化死亡豁免记录。"""
-        from domain.combat.death import DeathSaves
+        from domain.death import DeathSaves
         if self.death_saves is None:
             self.death_saves = DeathSaves()
             self.death_saves.max_hp = self.max_hp
@@ -773,6 +800,8 @@ class Entity:
         self.add_status(STATUS_DYING)
         self.remove_status(STATUS_COMATOSE)
         self._get_death_saves().reset()
+        if self._death_save_callback is not None:
+            self._death_save_callback(self)
 
     def accumulate_comatose(self, delta: float) -> None:
         """昏迷自然清醒累积（1500 钟摆）。仅在持续昏迷时累计；达到阈值自动清除。
@@ -787,9 +816,13 @@ class Entity:
 
     def _die(self):
         """真正死亡：置死亡标记，移除濒死/昏迷状态。"""
+        if self._is_dead:
+            return
         self._is_dead = True
         self.remove_status(STATUS_DYING)
         self.remove_status(STATUS_COMATOSE)
+        if self._death_callback is not None:
+            self._death_callback(self)
 
     def heal(self, amount: int) -> None:
         """恢复生命。恢复后自动清除濒死/昏迷（由 hp setter 统一处理）。"""
@@ -797,15 +830,19 @@ class Entity:
             return
         self.hp = min(self.max_hp, self.hp + amount)
 
-    def revive(self, hp: int = 1) -> None:
-        """复活：清死亡/濒死、HP 置给定值、昏迷、重置死亡豁免。"""
+    def revive(self, hp: int | None = None) -> None:
+        """复活：恢复半血，清死亡豁免并施加震慑。"""
         self._is_dead = False
         self.remove_status(STATUS_DYING)
         self._get_death_saves().reset()
         self._reviving = True
         try:
-            self.hp = hp
-            self.add_status(STATUS_COMATOSE)
+            self.hp = max(1, self.max_hp // 2) if hp is None else hp
+            self.remove_status(STATUS_COMATOSE)
+            self.remove_status(STATUS_INCAPACITATED)
+            self.remove_status(STATUS_PRONE)
+            self.remove_status(STATUS_IMMOBILE)
+            self.add_status(STATUS_STUNNED)
         finally:
             self._reviving = False
 
@@ -813,6 +850,7 @@ class Entity:
         """推进状态；流血按完整 6 钟摆结算一次。"""
         from domain.combat.attack import roll_dice
         expired = []
+        full = int(delta)
         if self.has_status(STATUS_BLEEDING):
             self._bleeding_pendulums += delta
             while self._bleeding_pendulums >= 6:
@@ -822,16 +860,25 @@ class Entity:
         for s in self.statuses:
             if s.duration is not None:
                 # 灼烧：本钟摆仍燃烧 → 先结算火焰伤害，再扣计时
-                if s.name == "灼烧" and s.duration > 0:
+                if s.name == "灼烧" and s.duration > 0 and full > 0:
                     fire_traits = self.temp_traits.get("fire", {})
                     burn_mult = fire_traits.get("burn_mult", 1.0)
-                    dmg = max(1, int(roll_dice(1, 4) * burn_mult))
-                    self.take_damage(dmg, "fire")
-                s.duration -= 1
+                    ticks = min(s.duration, full)
+                    total_dmg = 0
+                    for _ in range(ticks):
+                        total_dmg += max(1, int(roll_dice(1, 4) * burn_mult))
+                    self.take_damage(total_dmg, "fire")
+                s.duration -= full
                 if s.duration <= 0:
                     expired.append(s.name)
         for name in expired:
             self.remove_status(name)
+            if name == "攀爬药效":
+                self.climb_speed = 0
+            elif name == "飞行药效":
+                self.fly_speed = 0
+            elif name == "悬浮药效":
+                self.is_hovering = False
         return expired
 
     # ---- AI 字段 ----
@@ -954,6 +1001,10 @@ class Entity:
         _favor: dict | None = None,
         uid: int | None = None,
         temp_traits: dict | None = None,
+        z: int = 0,
+        climb_speed: float = 0,
+        fly_speed: float = 0,
+        is_hovering: bool = False,
     ):
         # 固有字段（所有生物共有）
         self.name = name
@@ -962,6 +1013,10 @@ class Entity:
         self.size = size
         self.reach = reach
         self.facing = tuple(facing) if facing is not None else (0, 1)
+        self.z = int(z)
+        self.climb_speed = max(0.0, float(climb_speed))
+        self.fly_speed = max(0.0, float(fly_speed))
+        self.is_hovering = bool(is_hovering)
         self._is_dead = False
         self.death_saves = None
         self._comatose_pendulums = 0.0
@@ -1009,7 +1064,9 @@ class Entity:
         self._reviving = False
         # 组件容器初始化为未挂载
         self._control = None
+        self._ally = None
         self._ai = None
+        self.party_member = False
         self._caster = None
         self._class = None
         self._inventory = None

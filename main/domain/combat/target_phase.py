@@ -6,7 +6,21 @@ from domain.dice import roll_d20, roll_adv_dice, resolve_adv_auto
 from domain.combat.attack import hit_check, reduce_tenacity, resolve_attack, miss_message, cover_message, compute_attack_adv
 from domain.combat.cover import resolve_cover_line, terrain_cover_info
 from domain.movement import Terrain
-from domain.combat.shape import weapon_melee_reach
+from domain.combat.shape import weapon_melee_reach, shape_cells, shape_from_pending_attack
+
+
+def aim_position_allowed(state, anchor, shape, max_range):
+    """瞄准光标位置的统一校验：全部格在射程与地图内、全部格可瞄准、非整体在高度墙。"""
+    pc, pr = state.controlled_entity_pos[:2]
+    cells = shape_cells(anchor, shape)
+    for c, r, _ in cells:
+        if not (0 <= c < state.map.width and 0 <= r < state.map.height):
+            return False
+        if max(abs(c - pc), abs(r - pr)) > max_range:
+            return False
+    if not all(state.is_targetable_cell(cell) for cell in cells):
+        return False
+    return not all(state.is_height_wall(cell[:2], cell[2]) for cell in cells)
 
 
 @dataclass(frozen=True)
@@ -16,6 +30,26 @@ class TargetRef:
     position: tuple[int, int]
     target: object
     target_kind: str
+
+
+@dataclass(frozen=True)
+class SurfaceTarget:
+    """目标模式伤害法术选中的地表目标。"""
+
+    position: tuple[int, int, int]
+
+    @property
+    def name(self) -> str:
+        return "地表"
+
+
+def damage_target_candidates(state, col: int, row: int, z: int) -> list:
+    """构造目标型伤害的候选：空气、地表、实体和可伤害物品。"""
+    candidates = [None]
+    if state.surface_at((col, row), z, create=False).exists:
+        candidates.append(SurfaceTarget((col, row, z)))
+    candidates.extend(state.get_damageables_at(col, row, z=z))
+    return candidates
 
 
 class TargetPhaseMixin:
@@ -37,7 +71,7 @@ class TargetPhaseMixin:
 
     def _target_can_see_attacker(self, target_pos, target) -> bool:
         """目标能否看到攻击者？（欧几里得距离 ≤ 目标视野范围，圆形）"""
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         vr = getattr(target, 'vision_range', 0)
         return (target_pos[0] - pc) ** 2 + (target_pos[1] - pr) ** 2 <= vr * vr
 
@@ -58,17 +92,20 @@ class TargetPhaseMixin:
         reach = self._weapon_max_range(weapon, self._state.controlled_entity)
         self._state.observe_mode = False
         self._state.combat_phase = "ranged_target"
-        self._state.observe_cursor = self._state.controlled_entity_pos
+        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._state.pending_attack["max_range"] = reach
+        self._state.pending_attack["target_z"] = self._state.controlled_entity.z
         # 多格形状（武器 target_shape，如 "1x3"；缺省单格）
         shape_spec = self._state.pending_attack.get(
             "target_shape", getattr(weapon, 'target_shape', '') or ""
         )
         self._state.pending_attack["target_shape"] = shape_spec
+        self._state.pending_attack.setdefault("target_rotation_plane", "XY")
+        self._state.pending_attack.setdefault("target_rotation", 0)
         self._state.pending_attack["target_mode"] = (
             "area" if self._state.pending_attack.get("sweep_selected") else "target"
         )
-        tip = " [<[/>旋转]" if shape_spec else ""
+        tip = " [1]XY水平 [2]XZ横向 [3]YZ纵向旋转" if shape_spec else ""
         self._log(
             f"选择目标 — 范围:{reach}格{tip} [方向键]移动光标 [Enter]确认 [']取消")
         self._refresh()
@@ -77,38 +114,37 @@ class TargetPhaseMixin:
     # ── 阶段二B：光标选目标（近战/远程/法术/投掷/点火通用）──
 
     def confirm_ranged_target(self) -> None:
-        """确认光标目标选择（以格子为单位），进入攻击检定。只看范围，不看视野。
-        多格形状：所有光标格须在射程内，不检查视野。"""
+        """确认光标目标选择（以格子为单位），进入攻击检定。"""
         pa = self._state.pending_attack
         if pa is None:
             return
         cursor = self._state.observe_cursor
         weapon = pa.get("weapon")
         max_range = pa.get("max_range") or self._weapon_max_range(weapon)
-        pc, pr = self._state.controlled_entity_pos
-        # 多格形状：光标 = 锚格 + 形状偏移
-        from domain.combat.shape import shape_cells, shape_from_pending_attack
+        target_z = int(pa.get("target_z", self._state.active_z))
         shape = shape_from_pending_attack(pa)
-        cells = shape_cells(cursor, shape)
-        if shape.is_single:
-            if max(abs(cursor[0] - pc), abs(cursor[1] - pr)) > max_range:
-                self._log("目标超出了攻击范围")
-                self._refresh()
-                return
-        else:
-            for (c, r) in cells:
-                if not (0 <= c < self._state.map.width and 0 <= r < self._state.map.height):
-                    self._log("目标范围超出地图边界")
-                    self._refresh()
-                    return
-                if max(abs(c - pc), abs(r - pr)) > max_range:
-                    self._log("目标超出了攻击范围")
-                    self._refresh()
-                    return
-            pa["multi_cells"] = cells
+        anchor = (*cursor[:2], target_z)
+        if not aim_position_allowed(self._state, anchor, shape, max_range):
+            self._log("目标范围不可选择")
+            self._refresh()
+            return
+        if not shape.is_single:
+            pa["multi_cells"] = shape_cells(anchor, shape)
         # 目标模式默认选择一个；范围模式保留同格全部对象。
-        candidates = self._state.get_damageables_at(cursor[0], cursor[1])
         target_mode = pa.get("target_mode", "target")
+        if target_mode == "target" and weapon is not None and "target_mode" in pa:
+            candidates = damage_target_candidates(
+                self._state, cursor[0], cursor[1], target_z
+            )
+            if len(candidates) > 1:
+                self._begin_target_choice(candidates, cursor, "ranged")
+                return
+            self._continue_ranged_target(candidates[0], cursor)
+            return
+
+        candidates = self._state.get_damageables_at(
+            cursor[0], cursor[1], z=target_z
+        )
         if target_mode == "target" and len(candidates) > 1:
             self._begin_target_choice(candidates, cursor, "ranged")
             return
@@ -118,14 +154,18 @@ class TargetPhaseMixin:
             else (candidates[0] if candidates else None)
         )
         if target_mode == "area":
-            pa["multi_cells"] = cells
+            pa["multi_cells"] = shape_cells(anchor, shape)
             target = None
         self._continue_ranged_target(target, cursor)
 
     def _continue_ranged_target(self, target, target_pos) -> None:
         """完成目标选择后，继续原有攻击判定链。"""
         pa = self._state.pending_attack
+        target_z = int(pa.get("target_z", self._state.active_z))
+        if target_pos is not None and len(target_pos) == 2:
+            target_pos = (*target_pos, target_z)
         pa["target_pos"] = target_pos
+        pa["target_z"] = target_z
         pa["target"] = target
         if isinstance(target, Entity) and target.has_status("shield"):
             event = {
@@ -194,4 +234,3 @@ class TargetPhaseMixin:
         else:
             self._finish_single_attack(roll)
         self._refresh()
-

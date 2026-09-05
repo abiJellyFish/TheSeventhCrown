@@ -1,0 +1,15 @@
+{
+  "name": "死者复生卷轴",
+  "item_type": "spell_scroll",
+  "weight": 0.1,
+  "description": "将死者的魂魄拉回物质位面，使其半血复生并陷入震慑直到长休。",
+  "spell": "死者复生",
+  "effect": {
+    "type": "revive"
+  },
+  "level": 5,
+  "cast_time_pendulum": 6,
+  "range": 1,
+  "target": "corpse",
+  "components": []
+}

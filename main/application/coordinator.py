@@ -84,7 +84,8 @@ class ApplicationCoordinator:
         if self.game.controlled_entity is None:
             return True
         player_position = self.game.controlled_entity_pos
-        return position == player_position or position in self.game.fov_cache
+        pos3 = (*position[:2], position[2]) if len(position) == 3 else (*position, self.game.active_z)
+        return pos3[:2] == player_position[:2] or self.game.is_in_fov(pos3)
 
     def _entity_position_by_id(self, entity_id: int):
         """按稳定的运行时实体 ID 查找事件位置。"""
@@ -155,6 +156,13 @@ class ApplicationCoordinator:
         try:
             result = self.game.execute_next_action()
         except ActionConflict:
+            # 若受控者已死，说明小队已全灭，应让结束页流程接管，不再提示
+            actor = next(
+                (c for c, _ in self.game.entities if id(c) == action.actor_id), None
+            )
+            if actor is None or actor.is_dead:
+                if self.game.is_game_over():
+                    return False
             self.log("行动已失效，请重新操作")
             return False
         self.consume_events(notify=False)

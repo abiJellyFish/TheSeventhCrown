@@ -1,0 +1,10 @@
+{
+  "name": "风之药剂",
+  "item_type": "consumable",
+  "effect": "hover",
+  "amount": "15000",
+  "weight": 0.5,
+  "price": {"gp": 5},
+  "becomes": "空玻璃瓶",
+  "description": "饮用后获得悬浮，持续1天（15000钟摆）"
+}

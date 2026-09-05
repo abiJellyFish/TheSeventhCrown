@@ -24,7 +24,7 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
     for dc in (-1, 0, 1):
         for dr in (-1, 0, 1):
             if terrain_map.within_bounds(col + dc, row + dr) and any(
-                item_pos == (col + dc, row + dr) and item.name == "床铺"
+                item_pos[:2] == (col + dc, row + dr) and item.name == "床铺"
                 for item, item_pos in (ground_items or ())
             ):
                 return True
@@ -39,7 +39,7 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
             if nc < 0 or nr < 0 or nc >= terrain_map.width or nr >= terrain_map.height:
                 continue
             if any(
-                item_pos == (nc, nr) and is_full_obstacle(item)
+                item_pos[:2] == (nc, nr) and is_full_obstacle(item)
                 for item, item_pos in (ground_items or ())
             ):
                 wall_count += 1
@@ -49,12 +49,13 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
 def _rest(player: Entity, clock: PendulumClock, pendulums: int,
           hp_fraction: float, mp_fraction: float,
           terrain_map: Grid[Terrain] | None = None,
-          pos: tuple[int, int] | None = None,
+          pos: tuple[int, int] | tuple[int, int, int] | None = None,
           ground_items=None) -> dict:
     """休息通用逻辑：短休/长休差异仅钟摆数和恢复比例。"""
     comfort = False
+    was_stunned = player.has_status("震慑")
     if terrain_map and pos:
-        comfort = is_comfortable(pos, terrain_map, ground_items=ground_items)
+        comfort = is_comfortable(pos[:2], terrain_map, ground_items=ground_items)
 
     multiplier = 2 if comfort else 1
     hp_restore = int(player.max_hp * hp_fraction * multiplier)
@@ -63,19 +64,22 @@ def _rest(player: Entity, clock: PendulumClock, pendulums: int,
     player.hp = min(player.max_hp, player.hp + hp_restore)
     player.mp = min(player.max_mp, player.mp + mp_restore)
 
-    # 休息期间锁定饮食值，防止饥饿致死
-    was_locked = player.food_locked
-    player.food_locked = True
     # 清除上一次行动残留的打断标记（倒地/受伤等），仅休息期间的新伤害才打断
     player._interrupted = False
     interrupted = False
-    for _ in range(pendulums):
-        clock.tick_action(cost=1.0)
+    # 批量推进钟摆，减少每钟摆的调度开销，同时保留中断检查
+    remaining = pendulums
+    batch = 10
+    while remaining > 0:
+        step = min(batch, remaining)
+        clock.tick_action(cost=float(step))
         if player._interrupted:
             player._interrupted = False
             interrupted = True
             break
-    player.food_locked = was_locked
+        remaining -= step
+    if was_stunned and not interrupted and pendulums == LONG_REST_PENDULUMS:
+        player.remove_status("震慑")
 
     return {"hp_restored": hp_restore, "mp_restored": mp_restore,
             "comfort": comfort, "interrupted": interrupted}

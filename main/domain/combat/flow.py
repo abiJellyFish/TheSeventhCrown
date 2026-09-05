@@ -47,12 +47,12 @@ class CombatFlow(TargetPhaseMixin, DualWieldMixin, AttackRollMixin, ActionMenuMi
 
     def _on_two_hand(self, weapon, hand: str) -> None:
         self._state.emit_event(DomainEvent("TwoHandRequested", {
-            "item_name": weapon.name, "hand": hand,
+            "item": weapon, "hand": hand,
         }))
 
     def _on_torch_action(self, weapon, mode: str) -> None:
         self._state.emit_event(DomainEvent("TorchActionRequested", {
-            "item_name": weapon.name, "mode": mode,
+            "item": weapon, "mode": mode,
         }))
     def start_action_phase(self, from_reaction: bool = False) -> None:
         """按 A 键 → 进入攻击方式选择阶段。"""

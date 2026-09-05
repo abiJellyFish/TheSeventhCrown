@@ -3,7 +3,7 @@
 import random
 from domain.entity import Entity, Item, normalize_damage_type
 from domain.ports import RepositoryPort, get_repository
-from domain.dice import roll_adv_dice, resolve_adv_auto
+from domain.dice import roll_adv_dice, resolve_adv_auto, check_total
 from domain.grid import Grid
 from domain.movement import Terrain
 from domain.combat.cover import resolve_cover_line
@@ -125,7 +125,8 @@ def hit_check(attacker: Entity, defender: Entity, weapon: Item | None = None,
         return True, natural_roll  # 天然20必定命中且重击
     if natural_roll == 1 and not guaranteed:
         return False, natural_roll  # 天然1必定未命中
-    if roll + mod >= ac:
+    final_points = check_total(attacker, natural_roll, mod + expertise_adjust)
+    if final_points >= ac:
         return True, natural_roll
     if guaranteed:
         # 必定命中：未通过 → 改为刚好成功的点数（最低非天然1的成功骰面）
@@ -168,6 +169,13 @@ def compute_attack_adv(attacker: Entity, defender: Entity, weapon: Item,
                 adv -= 1
     if attacker.has_status("prone"):
         adv -= 1
+    if attacker_pos is not None and defender_pos is not None:
+        attacker_z = attacker_pos[2] if len(attacker_pos) > 2 else getattr(attacker, "z", 0)
+        defender_z = defender_pos[2] if len(defender_pos) > 2 else getattr(defender, "z", 0)
+        if attacker_z > defender_z:
+            adv += 1
+        elif attacker_z < defender_z:
+            adv -= 1
     if defender.has_status("dodge"):
         # 回避劣势仅对回避者可见的敌人有效（攻击者不在身后扇区）
         if attacker_pos is not None and defender_pos is not None:
@@ -210,6 +218,11 @@ def compute_attack_adv(attacker: Entity, defender: Entity, weapon: Item,
     # 协助攻击优势（被协助 → 本次攻击优势，命中后由调用方消耗）
     if attacker.has_status("assisted"):
         adv += 1
+    height_delta = getattr(attacker, "z", 0) - getattr(defender, "z", 0)
+    if height_delta > 0:
+        adv += 1
+    elif height_delta < 0:
+        adv -= 1
     return adv
 
 
@@ -238,7 +251,7 @@ def stat_check(creature: Entity, stat: str, adv: int = 0,
     if stat == "dex" and armor_penalty["dex_disadvantage"]:
         adv -= 1
     roll = chosen_roll if chosen_roll is not None else _roll_auto(adv)
-    return roll + creature.stat_adjust(stat)
+    return check_total(creature, roll, creature.stat_adjust(stat))
 
 
 # ═══════════════════════════════════════════════════

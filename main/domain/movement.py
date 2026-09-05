@@ -9,12 +9,9 @@ import math
 
 from domain.grid import Grid, DIRS_4, DIRS_8, Terrain, DIFFICULT_TERRAINS
 from domain.combat.cover import is_full_cover
-from domain.obstacle import ObstacleType, is_full_obstacle
-
-
 def _blocks_movement(item) -> bool:
-    """只有全身障碍物品阻挡移动，其他物品可与实体同格停留。"""
-    return is_full_obstacle(item)
+    """地面障碍物只提供掩体和隐匿，不阻挡移动。"""
+    return False
 
 
 # ═══════════════════════════════════════════════════
@@ -101,56 +98,68 @@ _init_back_sector_cache()
 def can_enter(
     col: int, row: int,
     grid: Grid[Terrain],
-    entities: list[tuple["Entity", tuple[int, int]]],
+    entities: list[tuple["Entity", tuple[int, int, int]]],
     from_col: int | None = None,
     from_row: int | None = None,
     allow_pass_through: bool = False,
     allow_non_adjacent: bool = False,
     ground_items: list | None = None,
     tile_space_prebuilt: dict | None = None,
+    surface_layers: dict | None = None,
+    actor_z: int = 0,
+    can_fly: bool = False,
 ) -> bool:
     """判断是否可以进入 (col, row)。
 
     Args:
         col, row: 目标坐标
         grid: 地形网格
-        entities: [(creature, (col, row)), ...]
+        entities: [(creature, (col, row, z)), ...]
         from_col, from_row: 来源坐标，用于验证四方向移动
         allow_pass_through: True=允许穿越非敌对生物（但不停止）
     """
     if not grid.within_bounds(col, row):
         return False
+    if surface_layers is not None:
+        layer = surface_layers.get(actor_z)
+        if layer is None and not can_fly:
+            return False
+        if layer is not None and not layer.surface((col, row)).exists:
+            lower_surface = any(
+                z < actor_z and layer_map.surface((col, row)).exists
+                for z, layer_map in surface_layers.items()
+            )
+            if not can_fly and not lower_surface:
+                return False
+        if actor_z >= 0:
+            higher_surface = any(
+                z > actor_z and layer_map.surface((col, row)).exists
+                for z, layer_map in surface_layers.items()
+            )
+            if higher_surface:
+                return False
     if not allow_non_adjacent and from_col is not None and from_row is not None:
         if (abs(col - from_col), abs(row - from_row)) not in {(0, 1), (1, 0)}:
             return False
 
     terrain = grid[col, row]
     # 实体阻挡（尸体不阻挡，濒死仍阻挡）
-    if tile_space_prebuilt is not None:
-        occupied = tile_space_prebuilt.setdefault(
-            "occupied_by_position",
-            {pos: c for c, pos in entities if not c.is_dead},
-        )
-        creature = occupied.get((col, row))
-        if creature is not None and (
-            creature.faction == "混乱" or not allow_pass_through
-        ):
-            return False
-    else:
-        for creature, (ec, er) in entities:
-            if (ec, er) == (col, row) and not creature.is_dead:
-                if creature.faction == "混乱" or not allow_pass_through:
-                    return False
+    for creature, (ec, er, ez) in entities:
+        if ez != actor_z:
+            continue
+        if (ec, er) == (col, row) and not creature.is_dead:
+            if creature.faction == "混乱" or not allow_pass_through:
+                return False
 
     if tile_space_prebuilt is not None:
         if (col, row) in tile_space_prebuilt.setdefault(
             "blocking_positions",
-            {position for item, position in (ground_items or [])
-             if _blocks_movement(item)},
+            {position[:2] for item, position in (ground_items or [])
+             if _blocks_movement(item) and position[2] == actor_z},
         ):
             return False
     elif ground_items:
-        if any(position == (col, row) and _blocks_movement(item)
+        if any(position[:2] == (col, row) and position[2] == actor_z and _blocks_movement(item)
                for item, position in ground_items):
             return False
 
@@ -166,7 +175,7 @@ def _terrain_cost(terrain: Terrain) -> int:
 
 def _step_cost(
     grid: Grid[Terrain],
-    entities: list[tuple["Entity", tuple[int, int]]],
+    entities: list[tuple["Entity", tuple[int, int, int]]],
     pos: tuple[int, int],
     player_pos: tuple[int, int] | None = None,
     ground_items: list | None = None,
@@ -174,6 +183,9 @@ def _step_cost(
     dead_positions: set | None = None,
     tile_space_prebuilt: dict | None = None,
     door_positions: set | None = None,
+    surface_layers: dict | None = None,
+    actor_z: int = 0,
+    can_fly: bool = False,
 ) -> int | None:
     """返回经过该格的代价，None 表示不可达。
 
@@ -183,6 +195,10 @@ def _step_cost(
     可通行（代价 1），使 A* 能规划穿门路线（走到关闭的门时被自然打断）。
     """
     t = grid[pos[0], pos[1]]
+    if surface_layers is not None and not can_fly:
+        layer = surface_layers.get(actor_z)
+        if layer is None or not layer.surface(pos).exists:
+            return None
     # 结构物品统一由 ground_items 的全身障碍能力判定。
     is_door = door_positions is not None and pos in door_positions
     if player_pos and pos == player_pos:
@@ -193,7 +209,9 @@ def _step_cost(
         if pos in dead_positions:
             return 3  # 尸体：可通过，代价 3
     else:
-        for c, (ec, er) in entities:
+        for c, (ec, er, ez) in entities:
+            if ez != actor_z:
+                continue
             if (ec, er) == pos:
                 if c.is_dead:
                     return 3  # 尸体：可通过，代价 3
@@ -203,13 +221,13 @@ def _step_cost(
         blocking_positions = tile_space_prebuilt.get("blocking_positions")
         if blocking_positions is None:
             blocking_positions = {
-                position for item, position in (ground_items or [])
-                if _blocks_movement(item)
+                position[:2] for item, position in (ground_items or [])
+                if _blocks_movement(item) and position[2] == actor_z
             }
             tile_space_prebuilt["blocking_positions"] = blocking_positions
         if pos in blocking_positions:
             return None
-    elif ground_items and any(position == pos and _blocks_movement(item)
+    elif ground_items and any(position[:2] == pos and position[2] == actor_z and _blocks_movement(item)
                               for item, position in ground_items):
         return None
     if t in DIFFICULT_TERRAINS:
@@ -223,7 +241,7 @@ def _step_cost(
 
 def find_path(
     grid: Grid[Terrain],
-    entities: list[tuple["Entity", tuple[int, int]]],
+    entities: list[tuple["Entity", tuple[int, int, int]]],
     start: tuple[int, int],
     goal: tuple[int, int],
     player_pos: tuple[int, int] | None = None,
@@ -231,6 +249,9 @@ def find_path(
     ground_items: list | None = None,
     max_radius: int | None = None,
     door_positions: set | None = None,
+    surface_layers: dict | None = None,
+    actor_z: int = 0,
+    can_fly: bool = False,
 ) -> list[tuple[int, int]] | None:
     """A* 寻路。
 
@@ -254,18 +275,24 @@ def find_path(
 
     _INF = float("inf")
 
+    # 起点/终点允许三维，路径统一按二维平面规划
+    start = tuple(start[:2])
+    goal = tuple(goal[:2])
+    if player_pos is not None:
+        player_pos = tuple(player_pos[:2])
+
     if start == goal:
         return [start]
 
     # 预建占据集合，A* 每步 O(1) 判断（O(N) → O(1)）
-    occupied_alive = {pos for c, pos in entities if not c.is_dead}
-    dead_positions = {pos for c, pos in entities if c.is_dead}
+    occupied_alive = {pos[:2] for c, pos in entities if not c.is_dead and pos[2] == actor_z}
+    dead_positions = {pos[:2] for c, pos in entities if c.is_dead and pos[2] == actor_z}
     tile_space_prebuilt: dict | None = {}
 
     def _cost(npos: tuple[int, int]):
         return _step_cost(grid, entities, npos, player_pos, ground_items,
                           occupied_alive, dead_positions, tile_space_prebuilt,
-                          door_positions)
+                          door_positions, surface_layers, actor_z, can_fly)
 
     if _cost(goal) is None:
         return None
@@ -277,7 +304,8 @@ def find_path(
     if max_radius is not None:
         if not _reachable(grid, entities, start, goal, max_radius, player_pos,
                           dirs, ground_items, occupied_alive, dead_positions,
-                          tile_space_prebuilt, door_positions):
+                          tile_space_prebuilt, door_positions,
+                          surface_layers, actor_z, can_fly):
             return None
 
     open_set = []
@@ -293,7 +321,7 @@ def find_path(
             return cost_cache[npos]
         c = _step_cost(grid, entities, npos, player_pos, ground_items,
                        occupied_alive, dead_positions, tile_space_prebuilt,
-                       door_positions)
+                       door_positions, surface_layers, actor_z, can_fly)
         cost_cache[npos] = c
         return c
 
@@ -349,6 +377,9 @@ def _reachable(
     dead_positions: set,
     tile_space_prebuilt: dict | None,
     door_positions: set | None = None,
+    surface_layers: dict | None = None,
+    actor_z: int = 0,
+    can_fly: bool = False,
 ) -> bool:
     """连通性预检：从 start 出发，在 max_radius（切比雪夫）内的 BFS 能否到达 goal。
 
@@ -380,7 +411,7 @@ def _reachable(
                 continue
             if _step_cost(grid, entities, npos, player_pos, ground_items,
                           occupied_alive, dead_positions, tile_space_prebuilt,
-                          door_positions) is None:
+                          door_positions, surface_layers, actor_z, can_fly) is None:
                 continue
             seen.add(npos)
             q.append(npos)

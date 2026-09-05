@@ -3,6 +3,7 @@ import unicodedata
 
 from textual.app import App, ComposeResult
 from textual.widgets import Static
+from textual.containers import Vertical
 from textual.screen import Screen
 from textual.binding import Binding
 
@@ -332,9 +333,134 @@ class TitleScreen(Screen):
             if start:
                 start()
         elif label == "回忆":
-            self.app.notify("存档功能开发中")
+            open_slots = getattr(self.app, "open_load_slots", None)
+            if open_slots:
+                open_slots()
+            else:
+                self.app.notify("可用存档：slot_1、slot_2、slot_3、quicksave")
         elif label == "入眠":
             self.app.exit()
+
+
+class SaveSlotScreen(Screen):
+    """方向键选择的存档或读档槽界面。"""
+
+    CSS = """
+    SaveSlotScreen { align: center middle; }
+    #save-slots { text-align: center; }
+    """
+
+    BINDINGS = [
+        Binding("left", "move_left", "", priority=True),
+        Binding("right", "move_right", "", priority=True),
+        Binding("up", "move_left", "", priority=True),
+        Binding("down", "move_right", "", priority=True),
+        Binding("enter", "confirm", "", priority=True),
+        Binding("escape", "back", "返回", priority=True),
+    ]
+
+    def __init__(self, mode: str = "load", **kwargs) -> None:
+        super().__init__(**kwargs)
+        if mode not in {"save", "load"}:
+            raise ValueError(f"无效存档页面模式: {mode}")
+        self.mode = mode
+        self.selected = 0
+        self._slots = []
+        self._message = ""
+
+    def action_back(self) -> None:
+        self.app.pop_screen()
+
+    def action_move_left(self) -> None:
+        self.selected = (self.selected - 1) % 4
+        self._render_slots()
+
+    def action_move_right(self) -> None:
+        self.selected = (self.selected + 1) % 4
+        self._render_slots()
+
+    def action_confirm(self) -> None:
+        slot = self._slots[self.selected]["slot"]
+        if self.mode == "save":
+            self.app.save_to_slot(slot)
+        else:
+            self.app.load_from_slot(slot)
+
+    def compose(self) -> ComposeResult:
+        self._content = Static("")
+        yield Vertical(self._content, id="save-slots")
+
+    def on_mount(self) -> None:
+        self._render_slots()
+
+    def show_message(self, message: str) -> None:
+        self._message = message
+        self._render_slots()
+
+    def _render_slots(self) -> None:
+        from infrastructure.save.database import SaveManager
+        self._slots = SaveManager().list_slots()
+        title = "存档" if self.mode == "save" else "读档"
+        lines = [f"[bold]── {title} ──[/]", ""]
+        for index, slot in enumerate(self._slots):
+            if slot["updated_at"] is None:
+                details = "空"
+            else:
+                details = f'{slot["location"]} Lv.{slot["player_level"]}'
+            marker = ">" if index == self.selected else " "
+            if index == self.selected:
+                lines.append(f"[reverse]{marker} {slot['slot']}[/]")
+            else:
+                lines.append(f"{marker} {slot['slot']}")
+            lines.append(f"  [dim]{details}[/]")
+            lines.append("")
+        if self._message:
+            lines.extend(["", f"[yellow]{self._message}[/]"])
+        lines.append("[dim]方向键选择  Enter确认  Esc返回[/]")
+        self._content.update("\n".join(lines))
+
+
+class JourneyEndScreen(Screen):
+    """小队全灭后的旅途结束页面。"""
+
+    BINDINGS = [
+        Binding("up", "move_up", "", priority=True),
+        Binding("down", "move_down", "", priority=True),
+        Binding("enter", "confirm", "", priority=True),
+    ]
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.selected = 0
+        self.options = ("回想记忆", "回到主菜单")
+
+    def compose(self) -> ComposeResult:
+        self._content = Static("")
+        yield Vertical(self._content)
+
+    def on_mount(self) -> None:
+        self._render_content()
+
+    def action_move_up(self) -> None:
+        self.selected = (self.selected - 1) % len(self.options)
+        self._render_content()
+
+    def action_move_down(self) -> None:
+        self.selected = (self.selected + 1) % len(self.options)
+        self._render_content()
+
+    def action_confirm(self) -> None:
+        if self.selected == 0:
+            self.app.push_screen(SaveSlotScreen(mode="load"))
+        else:
+            self.app.back_to_title()
+
+    def _render_content(self) -> None:
+        lines = ["── 旅途结束 ──", ""]
+        for index, option in enumerate(self.options):
+            marker = "▶" if index == self.selected else " "
+            lines.append(f"{marker} {option}")
+        self._content.update("\n".join(lines))
 
 
 class MergedApp(App):

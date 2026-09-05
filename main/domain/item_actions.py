@@ -108,7 +108,7 @@ def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
         if map is not None and map[col, row] not in PASSABLE_TERRAINS:
             return False
         if any(
-            position == (col, row)
+            position[:2] == (col, row)
             and getattr(
                 getattr(item, "obstacle_type", None), "value",
                 getattr(item, "obstacle_type", None),
@@ -116,10 +116,10 @@ def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
             for item, position in ground_items
         ):
             return False
-        if entities and any(position == (col, row) for _, position in entities):
+        if entities and any(position[:2] == (col, row) for _, position in entities):
             return False
         items = [existing for existing, position in ground_items
-                 if position == (col, row)]
+                 if position[:2] == (col, row)]
         if not items:
             return True
         return all(existing.name == item.name
@@ -157,7 +157,70 @@ def find_placeable_tile(ground_items: list, start_col: int, start_row: int,
     return None
 
 
-def place_on_ground(ground_items: list, item, col: int, row: int) -> None:
+def find_placeable_position(
+    ground_items: list,
+    start: tuple[int, int, int],
+    item,
+    surface_layers: dict,
+    entities=None,
+) -> tuple[int, int, int] | None:
+    """在三维地表上查找可放置物品的位置。"""
+    if not surface_layers:
+        return None
+    first_layer = next(iter(surface_layers.values()))
+    width, height = first_layer.width, first_layer.height
+
+    def can_place_at(position: tuple[int, int, int]) -> bool:
+        col, row, z = position
+        layer = surface_layers.get(z)
+        if layer is None:
+            return False
+        cell = layer.surface((col, row))
+        if not cell.exists or cell.terrain not in PASSABLE_TERRAINS:
+            return False
+        if any(
+            pos == position
+            and getattr(getattr(existing, "obstacle_type", None), "value", "") == "full"
+            for existing, pos in ground_items
+        ):
+            return False
+        if entities and any(pos == position for _, pos in entities):
+            return False
+        items = [existing for existing, pos in ground_items if pos == position]
+        return not items or all(
+            existing.name == item.name
+            and existing.item_type == item.item_type
+            and getattr(existing, "stack_limit", 99) > existing.count
+            for existing in items
+        )
+
+    if not (0 <= start[0] < width and 0 <= start[1] < height):
+        return None
+    visited = {start}
+    queue: deque[tuple[int, int, int]] = deque([start])
+    while queue:
+        position = queue.popleft()
+        if can_place_at(position):
+            return position
+        col, row, z = position
+        neighbors = [
+            (col + dc, row + dr, z)
+            for dc, dr in DIRS_8
+            if 0 <= col + dc < width and 0 <= row + dr < height
+        ]
+        neighbors.extend(
+            (col, row, layer_z)
+            for layer_z, layer in surface_layers.items()
+            if layer_z != z and layer.surface((col, row)).exists
+        )
+        for neighbor in neighbors:
+            if neighbor not in visited:
+                visited.add(neighbor)
+                queue.append(neighbor)
+    return None
+
+
+def place_on_ground(ground_items: list, item, col: int, row: int, z: int = 0) -> None:
     """将物品放置到地上指定格子。同名称同类型物品堆叠。
 
     Args:
@@ -169,15 +232,18 @@ def place_on_ground(ground_items: list, item, col: int, row: int) -> None:
     occupied = {
         (existing.name, existing.item_type)
         for existing, position in ground_items
-        if position == (col, row)
+        if position[:2] == (col, row)
+        and (len(position) < 3 or position[2] == z)
     }
     if occupied and (item.name, item.item_type) not in occupied:
         raise ValueError(f"地面物品不能同格：({col}, {row})")
 
     remaining = item.count
     unit_weight = item.weight / remaining if remaining else 0
-    for existing, (ec, er) in ground_items:
-        if ((ec, er) == (col, row) and existing.name == item.name
+    for existing, position in ground_items:
+        if (position[:2] == (col, row)
+                and (len(position) < 3 or position[2] == z)
+                and existing.name == item.name
                 and existing.item_type == item.item_type):
             capacity = max(0, getattr(existing, "stack_limit", 99) - existing.count)
             added = min(capacity, remaining)
@@ -191,7 +257,7 @@ def place_on_ground(ground_items: list, item, col: int, row: int) -> None:
         placed = copy.copy(item)
         placed.count = count
         placed.weight = unit_weight * count
-        ground_items.append((placed, (col, row)))
+        ground_items.append((placed, (col, row, z)))
         remaining -= count
 
 
@@ -277,8 +343,8 @@ def get_ground_items_at(ground_items: list, col: int, row: int) -> list:
         list[dict]: [{"char": str, "color": str, "count": int, "item": Item}, ...]
     """
     result = []
-    for item, (ic, ir) in ground_items:
-        if (ic, ir) == (col, row):
+    for item, position in ground_items:
+        if position[:2] == (col, row):
             if (
                 hasattr(item, "durability")
                 and int(getattr(item, "durability", 0)) <= 0
@@ -343,3 +409,27 @@ def get_throw_max_range(item, normal_range: int) -> int:
             if len(parts) >= 2:
                 return int(parts[1])
     return normal_range
+
+
+def trace_throw_3d(
+    origin: tuple[int, int, int],
+    target: tuple[int, int, int],
+    blocking_surfaces: set[tuple[int, int, int]],
+) -> list[tuple[int, int, int]]:
+    """沿三维投掷轨迹前进，首次撞击地表时停止并包含撞击格。"""
+    steps = max(abs(target[index] - origin[index]) for index in range(3))
+    if steps == 0:
+        return [origin]
+    path = []
+    for step in range(1, steps + 1):
+        # 使用半格向上取整，避免 Python round 的 bankers rounding
+        # 把 .5 的高度落回起点，漏掉真实经过的离散体素。
+        point = tuple(
+            int(origin[index] + (target[index] - origin[index]) * step / steps
+                + 0.5)
+            for index in range(3)
+        )
+        path.append(point)
+        if point in blocking_surfaces:
+            break
+    return path

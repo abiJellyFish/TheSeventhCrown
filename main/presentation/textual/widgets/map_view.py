@@ -7,6 +7,19 @@ from domain.movement import Terrain
 from domain.item_actions import GROUND_ITEM_RENDER, get_ground_items_at
 from presentation.textual.view_models import GameViewModel
 
+
+def _ground_items_for_display_z(state, spatial_cache, col: int, row: int,
+                                display_z: int) -> list[tuple[object, tuple[int, int, int]]]:
+    """读取地图当前显示高度的地面物品，避免观察模式串用活动层缓存。"""
+    if display_z == state.active_z:
+        return spatial_cache["ground_items_by_position"].get((col, row), [])
+    return [
+        (item, position)
+        for item, position in state.ground_items
+        if position[:2] == (col, row) and position[2] == display_z
+    ]
+
+
 TERRAIN_COLORS = {
     Terrain.GRASS:        "rgb(140,210,120)",
     Terrain.BARREN:       "rgb(150,150,150)",
@@ -45,7 +58,10 @@ class MapView(Static):
         if self.state is None:
             return "Loading..."
         gmap = self.state.map
-        pc, pr = self.state.controlled_entity_pos
+        player_position = self.state.controlled_entity_pos
+        if player_position is None or self.state.controlled_entity is None:
+            return ""
+        pc, pr = player_position[:2]
         r = self.state.controlled_entity.vision_range
 
         # 视口尺寸：基于视野范围对称计算（宽不再 ×2 避免晃动）
@@ -63,7 +79,13 @@ class MapView(Static):
             from domain.combat.shape import shape_cells, shape_from_pending_attack
             pa = self.state.pending_attack or {}
             shp = shape_from_pending_attack(pa)
-            cursor_cells = set(shape_cells(self.state.observe_cursor, shp))
+            target_z = int(pa.get("target_z", self.state.active_z))
+            cursor_cells = {
+                (col, row)
+                for col, row, z in shape_cells(
+                    (*self.state.observe_cursor, target_z), shp
+                )
+            }
         if cursor_cells:
             oc, oro = self.state.observe_cursor
             ox = min(ox, oc)
@@ -78,14 +100,32 @@ class MapView(Static):
         ground_items_by_position = spatial_cache["ground_items_by_position"]
         for row in range(oy, min(oy + vh, gmap.height)):
             for col in range(ox, min(ox + vw, gmap.width)):
-                in_bright = (col, row) in self.state.fov_bright
+                exposed = self.state.exposed_surface((col, row))
+                in_bright = (
+                    exposed is not None
+                    and (col, row, exposed[0]) in self.state.fov_cache
+                )
                 in_dim = (col, row) in self.state.fov_dim
-                if not in_bright and not in_dim:
+                in_view = (col, row) in self.state.fov_bright | self.state.fov_dim
+                if not in_view:
                     text.append(" ")
                     continue
                 dim_style = " dim" if in_dim and not in_bright else ""
                 cur = " reverse" if (col, row) in cursor_cells else ""
-                t = gmap[col, row]
+                display_z = (
+                    self.state.observe_z
+                    if self.state.observe_mode and self.state.observe_z is not None
+                    else (exposed[0] if exposed is not None else self.state.controlled_entity.z)
+                )
+                if self.state.is_height_wall((col, row), display_z):
+                    text.append("/", style=f"white{cur}{dim_style}")
+                    continue
+                surface = self.state.surface_at((col, row), display_z)
+                t = surface.terrain
+                if (not surface.exists or exposed is None
+                        or display_z != exposed[0]):
+                    text.append(" ", style=f"{cur}{dim_style}")
+                    continue
                 # 地表叠加：燃烧 → 橙底；潮湿/水域 → 蓝底；雾气 → 白底（统一 is_burning/is_wet）
                 overlay = ""
                 if self.state.is_burning((col, row)):
@@ -94,7 +134,14 @@ class MapView(Static):
                     overlay = " on rgb(20,60,120)"
                 elif (col, row) in self.state.fog_surfaces:
                     overlay = " on rgb(200,200,200)"
-                ent = self.state.get_entity_at(col, row)
+                ent = next(
+                    (
+                        entity for entity, position in self.state.entities
+                        if position[:2] == (col, row)
+                        and position[2] == display_z
+                    ),
+                    None,
+                )
                 # 隐匿过滤：对玩家隐匿的实体不渲染（阶段4）
                 if ent is not None and self.state.controlled_entity is not None and ent is not self.state.controlled_entity:
                     if self.state._is_hidden_to(self.state.controlled_entity, ent, (col, row)):
@@ -113,6 +160,8 @@ class MapView(Static):
                 if ent is not None:
                     if ent.controlled:
                         ch, color = "@", "green"
+                    elif getattr(ent, "party_member", False):
+                        ch, color = "@", "rgb(80,160,255)"
                     elif ent.is_dead:
                         ch, color = "%", FACTION_COLORS.get(ent.faction, "")
                     elif ent.has_status("濒死"):
@@ -134,7 +183,16 @@ class MapView(Static):
                         text.append(ch, style=f"bold {color}{cur}{dim_style}{overlay}")
                     else:
                         ground_at = get_ground_items_at(
-                            ground_items_by_position.get((col, row), []), col, row
+                            [
+                                (item, position)
+                                for item, position in _ground_items_for_display_z(
+                                    self.state, spatial_cache, col, row, display_z
+                                )
+                                if self.state.observe_mode
+                                or (col, row, position[2]) in self.state.fov_cache
+                            ],
+                            col,
+                            row,
                         )
                         if ground_at:
                             # 统计不重复的 item_type
@@ -154,7 +212,12 @@ class MapView(Static):
                             text.append(ch, style=f"{color}{cur}{dim_style}{overlay}")
                         else:
                             # TERRAIN_CHARS/COLORS 统一渲染
-                            ch = TERRAIN_CHARS.get(t, "?")
+                            if self.state.is_surface_edge((col, row), display_z):
+                                ch = "/"
+                            elif getattr(self.state, "height_view", False):
+                                ch = str(display_z)
+                            else:
+                                ch = TERRAIN_CHARS.get(t, "?")
                             color = TERRAIN_COLORS.get(t, "")
                             text.append(ch, style=f"{color}{cur}{dim_style}{overlay}")
             if row < min(oy + vh, gmap.height) - 1:

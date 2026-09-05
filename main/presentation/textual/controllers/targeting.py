@@ -7,11 +7,14 @@ from domain.entity import Entity, Weapon, are_hostile, adjust_favor
 import domain.entity as ent
 from domain.movement import Terrain, find_path
 from domain.fov import LightLevel, compute_fov
+from domain.lighting import effect_light_pos
 from domain.combat.initiative import roll_initiative
 from domain.combat.attack import (hit_check, roll_damage, reduce_tenacity,
     apply_damage_type_modifiers, apply_final_damage, parse_dice, roll_dice, resolve_attack,
     miss_message, cover_message, normalize_damage_type)
 from domain.combat.flow import CombatFlow
+from domain.combat.target_phase import SurfaceTarget
+from domain.combat.target_phase import damage_target_candidates
 from domain.map.generation import build_world, build_dungeon
 from domain.dice import roll_d20, check_dc, roll_2d6
 from domain.ai.engine import BehaviorEngine
@@ -40,6 +43,18 @@ _THROW_EFFECT_HANDLERS = {
 
 class TargetingMixin:
 
+    def _is_single_damage_target_spell(self, pa: dict) -> bool:
+        spell = pa.get("spell", {})
+        effect = spell.get("effect", {})
+        target_mode = pa.get("target_mode") or spell.get("target_mode")
+        if target_mode not in ("target", "area"):
+            target_mode = "area" if effect.get("area") else "target"
+        return effect.get("type") == "damage" and target_mode == "target"
+
+    def _damage_target_candidates(self, col: int, row: int, z: int) -> list:
+        """构造目标型伤害的统一候选：空气、地表、实体和可伤害物品。"""
+        return damage_target_candidates(self._state, col, row, z)
+
     def _begin_target_choice(self, candidates, position, resume: str) -> None:
         """同格存在多个目标时，切换到左栏目标选择面板。"""
         pa = self._state.pending_attack
@@ -66,9 +81,11 @@ class TargetingMixin:
             self._act_log.add("目标序号无效")
             return
         position = pa.get("target_choice_position")
-        current = self._state.get_damageables_at(*position)
+        is_revive = pa.get("spell", {}).get("effect", {}).get("type") == "revive"
+        current = self._state.get_damageables_at(*position, include_dead=is_revive)
         target = candidates[index]
-        if target not in current:
+        is_special_target = target is None or isinstance(target, SurfaceTarget)
+        if not is_special_target and target not in current:
             self._act_log.add("目标已不可选，请重新选择")
             self.refresh_all()
             return
@@ -87,7 +104,7 @@ class TargetingMixin:
             pa["targets"].append((position[0], position[1], target))
             if len(pa["targets"]) < pa["target_count"]:
                 self._state.combat_phase = "ranged_target"
-                self._state.observe_cursor = self._state.controlled_entity_pos
+                self._state.observe_cursor = self._state.controlled_entity_pos[:2]
                 self.refresh_all()
             else:
                 self._cast_spell(
@@ -99,17 +116,30 @@ class TargetingMixin:
             self._continue_shape_targeting()
 
     def _continue_shape_targeting(self) -> None:
-        """继续收集 target 模式范围形状内的逐格目标。"""
+        """继续收集 target 模式范围形状内的逐格目标。
+
+        空格且存在地表时提供 [空气 / 地表] 二选一。
+        """
         pa = self._state.pending_attack
         cells = pa["shape_target_cells"]
         while pa["shape_target_index"] < len(cells):
             position = cells[pa["shape_target_index"]]
-            candidates = self._state.get_damageables_at(*position)
+            if self._is_single_damage_target_spell(pa):
+                candidates = self._damage_target_candidates(*position)
+            else:
+                candidates = list(self._state.get_damageables_at(*position))
             if len(candidates) > 1:
                 self._begin_target_choice(candidates, position, "spell_shape")
                 return
             if candidates:
                 pa["shape_targets"].append(candidates[0])
+                pa["shape_target_index"] += 1
+                continue
+            surface = self._state.surface_at(position, create=False)
+            if surface.exists:
+                candidates = [None, SurfaceTarget(position)]
+                self._begin_target_choice(candidates, position, "spell_shape")
+                return
             pa["shape_target_index"] += 1
         pa["affected_cells"] = cells
         self._cast_spell(
@@ -133,7 +163,7 @@ class TargetingMixin:
         pa = self._state.pending_attack
         # ── 多目标模式 ──
         if pa.get("target_count", 1) > 1:
-            pc, pr = self._state.controlled_entity_pos
+            pc, pr = self._state.controlled_entity_pos[:2][:2]
             oc, orow = self._state.observe_cursor
             rng = pa.get("max_range", 1)
             if max(abs(oc - pc), abs(orow - pr)) > rng:
@@ -148,7 +178,7 @@ class TargetingMixin:
             pa["targets"].append((oc, orow, target))
             target_count = pa["target_count"]
             if len(pa["targets"]) < target_count:
-                self._state.observe_cursor = self._state.controlled_entity_pos
+                self._state.observe_cursor = self._state.controlled_entity_pos[:2]
                 spell = pa.get("spell", {})
                 self._act_log.add(
                     f"选择 {spell.get('name', '法术')} 目标 "
@@ -204,19 +234,51 @@ class TargetingMixin:
             self.refresh_all()
             return
         oc, orow = self._state.observe_cursor
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         rng = pa.get("max_range", 1)
         if max(abs(oc - pc), abs(orow - pr)) > rng:
             self._act_log.add("目标超出了射程")
             self.refresh_all()
             return
+        effect = spell.get("effect", {})
+        if effect.get("type") == "revive":
+            target_z = int(pa.get("target_z", self._state.active_z))
+            if max(abs(oc - pc), abs(orow - pr)) != 1:
+                self._act_log.add("死者复生只能选择相邻尸体")
+                self.refresh_all()
+                return
+            candidates = [
+                entity for entity, position in self._state.entities
+                if position[:2] == (oc, orow) and position[2] == target_z
+                and entity.is_dead and entity.body_type != "undead"
+            ]
+            if not candidates:
+                self._act_log.add("只能选择相邻的非亡灵尸体")
+                self.refresh_all()
+                return
+            if len(candidates) > 1:
+                self._begin_target_choice(candidates, (oc, orow), "spell")
+                return
+            target = candidates[0]
+            try:
+                self._state._first_free_adjacent(self._state.get_entity_pos(target))
+            except RuntimeError:
+                self._act_log.add("相邻格没有空位")
+                self.refresh_all()
+                return
+            self._cast_spell(spell, target, target_pos=(oc, orow))
+            return
         from domain.combat.shape import shape_cells, shape_from_pending_attack
         shape = shape_from_pending_attack(pa)
-        cells = shape_cells((oc, orow), shape)
+        target_z = int(pa["target_z"]) if "target_z" in pa else (
+            self._state.surface_height_at((oc, orow))
+        )
+        anchor = (oc, orow, target_z)
+        cells = shape_cells(anchor, shape)
         if any(
             not (0 <= col < self._state.map.width and 0 <= row < self._state.map.height)
             or max(abs(col - pc), abs(row - pr)) > rng
-            for col, row in cells
+            for col, row, *_ in cells
         ):
             self._act_log.add("法术影响范围超出射程或地图边界")
             self.refresh_all()
@@ -225,6 +287,24 @@ class TargetingMixin:
             target_mode = spell.get("target_mode")
             if target_mode not in ("target", "area"):
                 target_mode = "area" if spell.get("effect", {}).get("area") else "target"
+            if target_mode == "target" and self._state.fov_cache and any(
+                not self._state.is_in_fov(cell)
+                or not self._state.is_exposed_surface(cell)
+                for cell in cells
+            ):
+                self._act_log.add("目标不在当前视野或被遮挡")
+                self.refresh_all()
+                return
+            if target_mode == "area":
+                cells = [
+                    cell for cell in cells
+                    if self._state.is_in_fov(cell)
+                    and self._state.is_exposed_surface(cell)
+                ]
+                if not cells:
+                    self._act_log.add("范围内没有当前视野可见的地表")
+                    self.refresh_all()
+                    return
             targets = []
             if target_mode == "target":
                 pa["shape_target_cells"] = cells
@@ -233,16 +313,38 @@ class TargetingMixin:
                 pa["target_pos"] = (oc, orow)
                 self._continue_shape_targeting()
                 return
-            for col, row in cells:
-                targets.extend(self._state.get_damageables_at(col, row))
+            for cell in cells:
+                col, row, *height = cell
+                cell_z = height[0] if height else target_z
+                targets.extend(self._state.get_damageables_at(col, row, z=cell_z))
             pa["affected_cells"] = cells
             self._cast_spell(spell, targets, target_pos=(oc, orow))
             return
-        candidates = self._state.get_damageables_at(oc, orow)
+        if not self._state.is_targetable_cell((oc, orow, target_z)):
+            self._act_log.add("目标不在当前视野或被遮挡")
+            self.refresh_all()
+            return
+        if self._is_single_damage_target_spell(pa):
+            candidates = self._damage_target_candidates(oc, orow, target_z)
+            if len(candidates) > 1:
+                self._begin_target_choice(candidates, (oc, orow), "spell")
+                return
+            self._cast_spell(spell, candidates[0], target_pos=(oc, orow))
+            return
+
+        candidates = list(self._state.get_damageables_at(oc, orow, z=target_z))
         if len(candidates) > 1:
             self._begin_target_choice(candidates, (oc, orow), "spell")
             return
-        target = candidates[0] if candidates else None
+        if not candidates:
+            surface = self._state.surface_at((oc, orow), target_z, create=False)
+            if surface.exists:
+                candidates = [None, SurfaceTarget((oc, orow, target_z))]
+                self._begin_target_choice(candidates, (oc, orow), "spell")
+                return
+            target = None
+        else:
+            target = candidates[0]
         self._cast_spell(spell, target, target_pos=(oc, orow))
 
     def _confirm_plant(self, pa: dict) -> None:
@@ -251,7 +353,7 @@ class TargetingMixin:
         from domain.item_actions import remove_from_inventory
 
         oc, orow = self._state.observe_cursor
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         if max(abs(oc - pc), abs(orow - pr)) > 1:
             self._act_log.add("种植只能在相邻格")
             self.refresh_all()
@@ -286,7 +388,7 @@ class TargetingMixin:
         from domain.item_actions import remove_from_inventory
 
         oc, orow = self._state.observe_cursor
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         if max(abs(oc - pc), abs(orow - pr)) > 1:
             self._act_log.add("倒水只能在相邻格")
             self.refresh_all()
@@ -306,6 +408,13 @@ class TargetingMixin:
             self._state.pending_attack = {}
             self.refresh_all()
             return
+        cost = max(1, getattr(item, "ap_cost", 1))
+        if self._state.in_combat and player.ap < cost:
+            self._act_log.add("AP 不足")
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            self.refresh_all()
+            return
         if remove_from_inventory(player, inv_index, 1) is None:
             self._act_log.add("无法倒出水瓶")
             self.refresh_all()
@@ -315,7 +424,7 @@ class TargetingMixin:
             _add_to_inventory(player, empty)
         apply_wet_to_tile(self._state, (oc, orow))
         if self._state.in_combat:
-            player.ap -= max(1, getattr(item, "ap_cost", 1))
+            player.ap -= cost
         else:
             self._state.clock.tick_action(1)
         self._begin_input_interval()
@@ -329,7 +438,7 @@ class TargetingMixin:
         from domain.item_actions import remove_from_inventory
 
         oc, orow = self._state.observe_cursor
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         if max(abs(oc - pc), abs(orow - pr)) > 1:
             self._act_log.add("取水只能在相邻格")
             self.refresh_all()
@@ -353,6 +462,13 @@ class TargetingMixin:
             self._state.pending_attack = {}
             self.refresh_all()
             return
+        cost = max(1, getattr(item, "ap_cost", 1))
+        if self._state.in_combat and player.ap < cost:
+            self._act_log.add("AP 不足")
+            self._state.combat_phase = "idle"
+            self._state.pending_attack = {}
+            self.refresh_all()
+            return
         if remove_from_inventory(player, inv_index, 1) is None:
             self._act_log.add("无法取水")
             self.refresh_all()
@@ -361,7 +477,7 @@ class TargetingMixin:
         if water:
             _add_to_inventory(player, water)
         if self._state.in_combat:
-            player.ap -= max(1, getattr(item, "ap_cost", 1))
+            player.ap -= cost
         else:
             self._state.clock.tick_action(1)
         self._begin_input_interval()
@@ -382,7 +498,7 @@ class TargetingMixin:
         from domain.combat.attack import roll_hit_location, _apply_burn_effect
         from domain.element import BurningSurface
 
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         oc, orow = self._state.observe_cursor
         # 必须相邻
         if max(abs(oc - pc), abs(orow - pr)) > 1:
@@ -392,29 +508,39 @@ class TargetingMixin:
 
         terrain = self._state.map[oc, orow]
         mode = pa.get("mode", "")
+        from domain.pendulum import spend_ap_or_pendulum
+
         if mode == "torch_ignite_surface":
-            # 火把点火地表 — 消耗 AP
-            if self._state.in_combat:
-                self._state.controlled_entity.ap -= 10
-            self._state.clock.tick_action(1.0)
+            if not spend_ap_or_pendulum(self._state, self._state.controlled_entity, 10):
+                self._act_log.add("AP 不足")
+                self.refresh_all()
+                return
         elif mode == "ignite_surface":
-            # 空玻璃瓶生火 — 不消耗物品，只消耗 AP
             item = pa.get("item")
-            if self._state.in_combat:
-                self._state.controlled_entity.ap -= item.ap_cost
+            cost = getattr(item, "ap_cost", 0)
+            if not spend_ap_or_pendulum(self._state, self._state.controlled_entity, cost):
+                self._act_log.add("AP 不足")
+                self.refresh_all()
+                return
             self._act_log.add(f"{self._pn} 用 {item.name} 聚焦阳光")
 
         # 1) 点燃地表（若可燃或为篝火结构——篝火无论是否在烧，点燃即恢复为永久火源）
         if terrain in FLAMMABLE:
             fuel = FUEL.get(terrain, 8)
             self._state.burning_surfaces[(oc, orow)] = BurningSurface(fuel=fuel)
-            self._state.register_light((oc, orow), 1, LightLevel.BRIGHT)
+            self._state.register_light(
+                effect_light_pos(self._state, (oc, orow, pa.get("target_z", self._state.active_z))),
+                1, LightLevel.BRIGHT,
+            )
         elif any(
             item_pos == (oc, orow) and item.name == "篝火"
             for item, item_pos in self._state.ground_items
         ):
             self._state.burning_surfaces[(oc, orow)] = BurningSurface(fuel=None, tier=3)
-            self._state.register_light((oc, orow), 3, LightLevel.BRIGHT)
+            self._state.register_light(
+                effect_light_pos(self._state, (oc, orow, pa.get("target_z", self._state.active_z))),
+                3, LightLevel.BRIGHT,
+            )
         else:
             self._act_log.add("这里无法点燃")
 
@@ -433,7 +559,7 @@ class TargetingMixin:
 
     def _is_bright_or_near_light(self) -> bool:
         """检查玩家是否在明亮区域或有强光源在附近（用于空玻璃瓶生火判定）。"""
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         # 玩家所在格在明亮视野中
         if (pc, pr) in self._state.fov_bright:
             return True
@@ -443,7 +569,7 @@ class TargetingMixin:
                 if dc == 0 and dr == 0:
                     continue
                 pos = (pc + dc, pr + dr)
-                if pos in self._state.light_sources:
+                if any(src[:2] == pos for src in self._state.light_sources):
                     return True
         return False
 
@@ -489,7 +615,33 @@ class TargetingMixin:
         inv_index = pa["throw_inv_index"]
         cursor = self._state.observe_cursor
         attacker = self._state.controlled_entity
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
+        target_z = int(pa.get("target_z", self._state.active_z))
+        from domain.item_actions import trace_throw_3d
+        from domain.obstacle import is_full_obstacle
+        blocking = set()
+        blocking.update(
+            (*position, self._state.active_z)
+            for item_at, position in self._state.ground_items
+            if is_full_obstacle(item_at) and position != cursor
+        )
+        for z, layer in self._state.world_layers.items():
+            if z == self._state.active_z:
+                continue
+            for col in range(layer.width):
+                for row in range(layer.height):
+                    if layer.surface((col, row)).exists:
+                        blocking.add((col, row, z))
+                        if z > getattr(attacker, "z", self._state.active_z):
+                            blocking.add(
+                                (col, row, getattr(attacker, "z", self._state.active_z))
+                            )
+        trajectory = trace_throw_3d(
+            (pc, pr, getattr(attacker, "z", self._state.active_z)),
+            (*cursor, target_z),
+            blocking,
+        )
+        trajectory_cursor = trajectory[-1][:2]
 
         # 从背包扣除
         single = item_remove_from_inventory(attacker, inv_index, 1)
@@ -504,7 +656,9 @@ class TargetingMixin:
         if "target" in pa:
             target = pa["target"]
         else:
-            candidates = self._state.get_damageables_at(cursor[0], cursor[1])
+            candidates = self._state.get_damageables_at(
+                trajectory_cursor[0], trajectory_cursor[1]
+            )
             target = candidates[0] if candidates else None
         # 投掷 → 破坏隐匿
         self._state._break_stealth_in_view(attacker)
@@ -524,8 +678,9 @@ class TargetingMixin:
         if getattr(single, 'weapon_type', '') or getattr(single, 'damage', ''):
             # 空地：武器落地（沿轨迹回溯合法格）
             if target is None:
-                landing = self._find_throw_landing(cursor, single)
-                place_on_ground(self._state.ground_items, single, landing[0], landing[1])
+                landing = self._find_throw_landing(trajectory_cursor, single)
+                place_on_ground(self._state.ground_items, single, landing[0], landing[1],
+                                self._state.surface_height_at(landing))
                 self._state.invalidate_spatial_cache()
                 self._act_log.add(f"{self._pn} 投掷了{single.name}")
                 self._state.combat_phase = "idle"
@@ -561,8 +716,9 @@ class TargetingMixin:
             if roll == 1 or (roll + mod < target_ac and roll != 20):
                 # 未命中：沿轨迹回溯合法落点
                 self._act_log.add(f"{self._pn} 投掷{single.name}未命中目标")
-                landing = self._find_throw_landing(cursor, single)
-                place_on_ground(self._state.ground_items, single, landing[0], landing[1])
+                landing = self._find_throw_landing(trajectory_cursor, single)
+                place_on_ground(self._state.ground_items, single, landing[0], landing[1],
+                                self._state.surface_height_at(landing))
                 self._state.invalidate_spatial_cache()
             else:
                 # 命中
@@ -584,8 +740,9 @@ class TargetingMixin:
                 if target_pos:
                     landing = self._find_throw_landing(target_pos, single)
                 else:
-                    landing = self._find_throw_landing(cursor, single)
-                place_on_ground(self._state.ground_items, single, landing[0], landing[1])
+                    landing = self._find_throw_landing(trajectory_cursor, single)
+                place_on_ground(self._state.ground_items, single, landing[0], landing[1],
+                                self._state.surface_height_at(landing))
                 self._state.invalidate_spatial_cache()
                 self._state.combat_phase = "idle"
                 self._state.pending_attack = {}
@@ -593,8 +750,9 @@ class TargetingMixin:
                 return
         else:
             # 普通物品：沿轨迹回溯合法落点
-            landing = self._find_throw_landing(cursor, single)
-            place_on_ground(self._state.ground_items, single, landing[0], landing[1])
+            landing = self._find_throw_landing(trajectory_cursor, single)
+            place_on_ground(self._state.ground_items, single, landing[0], landing[1],
+                            self._state.surface_height_at(landing))
             self._state.invalidate_spatial_cache()
             self._act_log.add(f"{self._pn} 投掷了{single.name}")
 
@@ -641,7 +799,7 @@ class TargetingMixin:
         apply_wet_to_tile(self._state, cursor)
         if self._state.is_burning(cursor):
             del self._state.burning_surfaces[cursor]
-            self._state.unregister_light(cursor)
+            self._state.unregister_light(effect_light_pos(self._state, cursor))
             self._act_log.add("水花四溅，火被浇灭了！")
         else:
             self._act_log.add("水瓶砸碎了，水花四溅")
@@ -649,4 +807,3 @@ class TargetingMixin:
     def _throw_effect_break(self, item, cursor, target) -> None:
         """空玻璃瓶投掷：摔碎。"""
         self._act_log.add("空玻璃瓶砸碎了")
-

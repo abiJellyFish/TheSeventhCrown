@@ -1,0 +1,10 @@
+{
+  "name": "登山者药水",
+  "item_type": "consumable",
+  "effect": "climb_speed",
+  "amount": "30000",
+  "weight": 0.5,
+  "price": {"gp": 2},
+  "becomes": "空玻璃瓶",
+  "description": "饮用后获得攀爬速度2，持续2天（30000钟摆）"
+}

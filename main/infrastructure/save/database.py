@@ -4,6 +4,8 @@
 """
 
 import json
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from infrastructure.config import SAVE_DIR
@@ -11,24 +13,77 @@ from domain.trade import load_item
 from domain.element import BurningSurface
 from domain.items.item import Item
 from domain.obstacle import ObstacleType
+from domain.entity.status import StatusEffect
+from domain.entity import Entity
+from domain.grid import Grid, Terrain
+from domain.fov import LightLevel
+
+
+def _parse_light_source_key(key: str) -> tuple[int, int, int]:
+    parts = tuple(map(int, key.split(",")))
+    if len(parts) == 3:
+        return parts
+    raise ValueError("光源坐标必须是三维")
 
 
 class SaveManager:
-    """存档管理器。使用 JSON 文件持久化完整游戏状态。"""
+    SLOT_NAMES = ("slot_1", "slot_2", "slot_3", "quicksave")
+
+    """存档管理器。使用 SQLite 持久化结构化游戏快照。"""
 
     def __init__(self, save_dir: str | Path = SAVE_DIR):
         self._dir = save_dir
         Path(save_dir).mkdir(parents=True, exist_ok=True)
+        self._db_path = Path(save_dir) / "saves.sqlite3"
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS saves (
+                slot TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL, location TEXT, player_level REAL,
+                version INTEGER NOT NULL, snapshot TEXT NOT NULL)"""
+            )
+            conn.execute("DELETE FROM saves WHERE version < 4")
 
     # ── 保存 ──
 
     def save(self, state: "GameState", slot: str = "quicksave") -> None:
-        """保存完整游戏状态到 JSON 文件。"""
+        """在事务中保存完整游戏状态到指定槽位。"""
+        self._validate_slot(slot)
         data = {
-            "version": 2,
+            "version": 4,
+            "map": {
+                "width": state.map.width,
+                "height": state.map.height,
+                "terrain": [
+                    [state.map[col, row].name for col in range(state.map.width)]
+                    for row in range(state.map.height)
+                ],
+            },
+            "world_layers": {
+                str(z): {
+                    "width": layer.width,
+                    "height": layer.height,
+                    "cells": [
+                        [
+                            {
+                                "terrain": layer.surface((col, row)).terrain.name,
+                                "exists": layer.surface((col, row)).exists,
+                                "durability": layer.surface((col, row)).durability,
+                                "max_durability": layer.surface((col, row)).max_durability,
+                            }
+                            for col in range(layer.width)
+                        ]
+                        for row in range(layer.height)
+                    ],
+                }
+                for z, layer in state.world_layers.items()
+            },
             "current_map": state.current_map,
+            "active_z": state.active_z,
             "controlled_entity_pos": list(state.controlled_entity_pos),
             "controlled_entity": self._serialize_player(state.controlled_entity),
+            "controlled_uid": self._entity_ref(state.controlled_entity),
+            "party": [member.name for member in getattr(state, "party", [])],
             "entities": self._serialize_entities(
                 [(creature, pos) for creature, pos in state.entities
                  if creature is not state.controlled_entity]
@@ -38,6 +93,26 @@ class SaveManager:
                 "pendulum_acc_ticks": state.clock.pendulum_acc_ticks,
             },
             "in_combat": state.in_combat,
+            "combat_phase": state.combat_phase,
+            "current_turn_index": state.current_turn_index,
+            "combat_initiative": [self._entity_ref(entity)
+                                  for entity in state.combat_initiative],
+            "combat_turn_entity": self._entity_ref(state.combat_turn_entity),
+            "pending_attack": self._json_safe(state.pending_attack),
+            "state_version": state.state_version,
+            "slow_mode": state.slow_mode,
+            "knockout_mode": state.knockout_mode,
+            "observe_mode": state.observe_mode,
+            "observe_cursor": list(state.observe_cursor),
+            "height_view": getattr(state, "height_view", False),
+            "environment_light": (
+                state.environment_light.name
+                if state.environment_light is not None else None
+            ),
+            "light_sources": {
+                f"{col},{row},{z}": [radius, level.name]
+                for (col, row, z), (radius, level) in state.light_sources.items()
+            },
             "in_dungeon": state.in_dungeon,
             "ground_items": self._serialize_ground_items(state.ground_items),
             "burning_surfaces": {
@@ -48,21 +123,106 @@ class SaveManager:
                 f"{c},{r}": v for (c, r), v in state.wet_surfaces.items()
             },
             "world_state": self._serialize_world_state(state.world_state),
+            "map_exits": self._json_safe(state.map_exits),
+            "loot_spots": self._json_safe(state.loot_spots),
+            "harvested_bushes": self._json_safe(state.harvested_bushes),
+            "location_map": {
+                f"{col},{row}": value
+                for (col, row), value in state.location_map.items()
+            },
+            "fog_surfaces": [list(pos) for pos in state.fog_surfaces],
+            "regen_candidates": [list(pos) for pos in state.regen_candidates],
+            "active_quests": list(state.active_quests),
+            "completed_quests": list(state.completed_quests),
+            "steal_persuade_failures": state.steal_persuade_failures,
+            "steal_persuade_bonus": state.steal_persuade_bonus,
+            "hidden_from": [
+                {"target": target, "observers": list(observers)}
+                for target, observers in state.hidden_from.items()
+            ],
+            "spot_clock": [
+                {"observer": observer, "target": target, "clock": clock}
+                for (observer, target), clock in state.spot_clock.items()
+            ],
+            "seen_snap": [
+                {"observer": observer, "targets": list(targets)}
+                for observer, targets in state.seen_snap.items()
+            ],
+            "spot_memo": {
+                f"{col},{row}": value
+                for (col, row), value in state.spot_memo.items()
+            },
         }
-        path = Path(self._dir) / f"{slot}.json"
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        if not slot:
+            raise ValueError("无效存档槽")
+        now = datetime.now().isoformat(timespec="seconds")
+        snapshot = json.dumps(data, ensure_ascii=False)
+        with sqlite3.connect(self._db_path) as conn:
+            conn.execute(
+                """INSERT INTO saves(slot, created_at, updated_at, location,
+                player_level, version, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(slot) DO UPDATE SET updated_at=excluded.updated_at,
+                location=excluded.location, player_level=excluded.player_level,
+                version=excluded.version, snapshot=excluded.snapshot""",
+                (slot, now, now, state.current_map,
+                     getattr(state.controlled_entity, "class_level", 0), 4, snapshot),
+            )
+
+    def list_slots(self) -> list[dict]:
+        """返回四个存档槽的元数据。"""
+        with sqlite3.connect(self._db_path) as conn:
+            rows = conn.execute(
+                "SELECT slot, created_at, updated_at, location, player_level "
+                "FROM saves ORDER BY slot"
+            ).fetchall()
+        metadata = {
+            row[0]: {"slot": row[0], "created_at": row[1],
+                     "updated_at": row[2], "location": row[3],
+                     "player_level": row[4]}
+            for row in rows
+        }
+        return [
+            metadata.get(slot, {"slot": slot, "created_at": None,
+                                "updated_at": None, "location": None,
+                                "player_level": None})
+            for slot in self.SLOT_NAMES
+        ]
+
+    @classmethod
+    def _validate_slot(cls, slot: str) -> None:
+        if slot not in cls.SLOT_NAMES:
+            raise ValueError(f"无效存档槽: {slot}")
+
+    def delete_slot(self, slot: str, *, confirm: bool = False) -> bool:
+        """删除存档槽；必须显式确认，返回是否实际删除。"""
+        self._validate_slot(slot)
+        if not confirm:
+            return False
+        with sqlite3.connect(self._db_path) as conn:
+            cursor = conn.execute("DELETE FROM saves WHERE slot=?", (slot,))
+            return cursor.rowcount > 0
 
     # ── 读取 ──
 
     def load(self, state: "GameState", slot: str = "quicksave",
              loader: "DataLoader | None" = None) -> bool:
-        """从 JSON 文件读取存档并恢复到 GameState。返回是否成功。"""
-        path = Path(self._dir) / f"{slot}.json"
-        if not path.exists():
+        """读取 SQLite 快照并恢复到 GameState。返回是否成功。"""
+        self._validate_slot(slot)
+        with sqlite3.connect(self._db_path) as conn:
+            row = conn.execute(
+                "SELECT version, snapshot FROM saves WHERE slot=?", (slot,)
+            ).fetchone()
+        if row is None:
             return False
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
+        version, snapshot = row
+        if version != 4:
+            with sqlite3.connect(self._db_path) as conn:
+                conn.execute("DELETE FROM saves WHERE slot=?", (slot,))
+            return False
+        data = json.loads(snapshot)
+        if loader is None:
+            from infrastructure.loader import DataLoader
+            loader = DataLoader()
 
         controlled = state.controlled_entity
         if controlled is None:
@@ -71,16 +231,75 @@ class SaveManager:
         self._restore_player(controlled, controlled_data, loader)
 
         # 恢复位置和地图
-        state.controlled_entity_pos = tuple(data["controlled_entity_pos"])
-        state.current_map = data["current_map"]
+        loaded_controlled_pos = tuple(
+            data.get("controlled_entity_pos", state.controlled_entity_pos)
+        )
+        state.active_z = int(data.get("active_z", getattr(state, "active_z", 0)))
+        state.height_view = bool(data.get("height_view", False))
+        state.controlled_entity_pos = loaded_controlled_pos
+        state.current_map = data.get("current_map", state.current_map)
+        self._restore_map(state, data.get("map"))
+        self._restore_layers(state, data.get("world_layers", {}))
+        # 非地表层由分层数据重建二维兼容地图；地表旧快照仍以 map 为准。
+        if state.active_z != 0:
+            state.set_active_z(state.active_z)
+        state.map_exits = data.get("map_exits", [])
+        state.loot_spots = data.get("loot_spots", [])
+        state.harvested_bushes = {
+            tuple(map(int, key.split(","))) if isinstance(key, str) else tuple(key): value
+            for key, value in data.get("harvested_bushes", {}).items()
+        }
+        state.location_map = {
+            tuple(map(int, key.split(","))): value
+            for key, value in data.get("location_map", {}).items()
+        }
+        state.fog_surfaces = {tuple(pos) for pos in data.get("fog_surfaces", [])}
+        state.regen_candidates = {tuple(pos) for pos in data.get("regen_candidates", [])}
+        state.active_quests = list(data.get("active_quests", []))
+        state.completed_quests = list(data.get("completed_quests", []))
+        state.steal_persuade_failures = data.get("steal_persuade_failures", 0)
+        state.steal_persuade_bonus = data.get("steal_persuade_bonus", 0)
+        state.hidden_from = {
+            int(item["target"]): {int(observer) for observer in item["observers"]}
+            for item in data.get("hidden_from", [])
+        }
+        state.spot_clock = {
+            (int(item["observer"]), int(item["target"])): item["clock"]
+            for item in data.get("spot_clock", [])
+        }
+        state.seen_snap = {
+            int(item["observer"]): {int(target) for target in item["targets"]}
+            for item in data.get("seen_snap", [])
+        }
+        state.spot_memo = {
+            tuple(map(int, key.split(","))): value
+            for key, value in data.get("spot_memo", {}).items()
+        }
+        state.stealth.hidden_from = state.hidden_from
+        state.stealth.spot_clock = state.spot_clock
+        state.stealth.seen_snap = state.seen_snap
+        state.stealth.spot_memo = state.spot_memo
 
         # 恢复时间
-        state.clock.pendulum_count = data["clock"]["pendulum_count"]
-        state.clock.pendulum_acc_ticks = data["clock"]["pendulum_acc_ticks"]
+        clock = data.get("clock", {})
+        state.clock.pendulum_count = clock.get(
+            "pendulum_count", state.clock.pendulum_count
+        )
+        state.clock.pendulum_acc_ticks = clock.get(
+            "pendulum_acc_ticks", state.clock.pendulum_acc_ticks
+        )
 
         # 恢复战斗状态
         state.in_combat = data.get("in_combat", False)
         state.in_dungeon = data.get("in_dungeon", False)
+        state.combat_phase = data.get("combat_phase", "idle")
+        state.current_turn_index = data.get("current_turn_index", 0)
+        state.pending_attack = data.get("pending_attack")
+        state.state_version = data.get("state_version", state.state_version)
+        state.slow_mode = data.get("slow_mode", state.slow_mode)
+        state.knockout_mode = data.get("knockout_mode", state.knockout_mode)
+        state.observe_mode = data.get("observe_mode", state.observe_mode)
+        state.observe_cursor = tuple(data.get("observe_cursor", state.observe_cursor))
 
         # 恢复元素地表状态
         state.burning_surfaces = {
@@ -91,6 +310,14 @@ class SaveManager:
             tuple(map(int, k.split(","))): v
             for k, v in data.get("wet_surfaces", {}).items()
         }
+        saved_light = data.get("environment_light")
+        state.environment_light = (
+            LightLevel[saved_light] if saved_light else None
+        )
+        state.light_sources = {
+            _parse_light_source_key(key): (value[0], LightLevel[value[1]])
+            for key, value in data.get("light_sources", {}).items()
+        }
 
         # 恢复实体（NPC/生物）
         if loader:
@@ -98,9 +325,32 @@ class SaveManager:
         self._restore_ground_items(state, data.get("ground_items", []), loader)
         # 被控生物不在 entities 序列化中，读档后必须重新加入
         player = state.controlled_entity
-        pos = state.controlled_entity_pos
-        if player is not None and pos is not None and not any(c is player for c, _ in state.entities):
-            state.entities.append((player, tuple(pos)))
+        if player is not None and not any(c is player for c, _ in state.entities):
+            state.entities.append((player, loaded_controlled_pos))
+
+        party_names = data.get("party", [player.name] if player else [])
+        by_name = {c.name: c for c, _ in state.entities}
+        state.party = [by_name[name] for name in party_names if name in by_name]
+        if player is not None and player not in state.party:
+            state.party.insert(0, player)
+        for member in state.party:
+            member.party_member = True
+        by_ref = {self._entity_ref(entity): entity for entity, _ in state.entities}
+        if player is not None:
+            by_ref[self._entity_ref(player)] = player
+        state.combat_initiative = [
+            by_ref[ref] for ref in data.get("combat_initiative", [])
+            if ref in by_ref
+        ]
+        turn_ref = data.get("combat_turn_entity")
+        state.combat_turn_entity = by_ref.get(turn_ref)
+        controlled_ref = data.get("controlled_uid")
+        saved_controlled = by_ref.get(controlled_ref)
+        if saved_controlled is not None and saved_controlled is not state.controlled_entity:
+            state.set_controlled(saved_controlled)
+        state.pending_attack = self._restore_pending_attack(
+            state.pending_attack, by_ref, state
+        )
 
         # 恢复世界状态快照
         ws = data.get("world_state")
@@ -121,6 +371,78 @@ class SaveManager:
         return True
 
     # ── 序列化辅助 ──
+
+    @staticmethod
+    def _restore_layers(state: "GameState", data: dict) -> None:
+        """恢复分层地表及其不可逆破坏状态。"""
+        from domain.layers import LayerMap, SurfaceCell
+        from domain.grid import Terrain
+        for raw_z, payload in data.items():
+            layer = LayerMap(payload["width"], payload["height"])
+            for row, cells in enumerate(payload["cells"]):
+                for col, raw in enumerate(cells):
+                    layer.set_surface(
+                        (col, row),
+                        SurfaceCell(
+                            terrain=Terrain[raw["terrain"]],
+                            exists=raw["exists"],
+                            durability=raw["durability"],
+                            max_durability=raw["max_durability"],
+                        ),
+                    )
+            state.world_layers[int(raw_z)] = layer
+
+    @staticmethod
+    def _restore_map(state: "GameState", data: dict | None) -> None:
+        if not data:
+            return
+        width = data.get("width", state.map.width)
+        height = data.get("height", state.map.height)
+        if (width, height) != (state.map.width, state.map.height):
+            state.map = Grid[Terrain](width, height, Terrain.GRASS)
+            state.map_width = width
+            state.map_height = height
+        for row, values in enumerate(data.get("terrain", [])):
+            for col, terrain_name in enumerate(values):
+                state.map[col, row] = Terrain[terrain_name]
+        state._terrain_version += 1
+        state._transparent_cache = None
+
+    @staticmethod
+    def _entity_ref(entity):
+        return getattr(entity, "uid", None) if entity is not None else None
+
+    @classmethod
+    def _json_safe(cls, value):
+        if isinstance(value, dict):
+            return {str(key): cls._json_safe(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [cls._json_safe(item) for item in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return getattr(value, "uid", getattr(value, "name", str(value)))
+
+    @staticmethod
+    def _restore_pending_attack(value, by_ref: dict, state):
+        if not isinstance(value, dict):
+            return value
+        restored = dict(value)
+        for key in ("target", "attacker", "actor"):
+            ref = restored.get(key)
+            if ref in by_ref:
+                restored[key] = by_ref[ref]
+        weapon_ref = restored.get("weapon")
+        if isinstance(weapon_ref, str):
+            candidates = []
+            for member in state.party:
+                candidates.extend(member.inventory)
+                candidates.extend(
+                    item for item in member.equipment.values() if item is not None
+                )
+            item = next((item for item in candidates if item.name == weapon_ref), None)
+            if item is not None:
+                restored["weapon"] = item
+        return restored
 
     @staticmethod
     def _serialize_ground_items(items: list) -> list:
@@ -174,7 +496,8 @@ class SaveManager:
                     "gp": chest.get("gp", 0),
                     "inventory": inventory,
                 }
-            restored.append((item, tuple(entry["pos"])))
+            restored.append((item, tuple(entry["pos"]) if len(entry["pos"]) == 3
+                             else (*entry["pos"], 0)))
         state.ground_items = restored
         state.invalidate_spatial_cache()
 
@@ -183,7 +506,10 @@ class SaveManager:
         """将生物序列化为可 JSON 存储的 dict。（Phase 3: Player → Entity）"""
         return {
             "name": player.name,
+            "uid": player.uid,
             "char_class": player.char_class,
+            "class_level": player.class_level,
+            "class_exp": player.class_exp,
             "faction": player.faction,
             "hp": player.hp, "max_hp": player.max_hp,
             "mp": player.mp, "max_mp": player.max_mp,
@@ -191,6 +517,10 @@ class SaveManager:
             "ap": player.ap, "max_ap": player.max_ap,
             "courage": player.courage, "max_courage": player.max_courage,
             "body_type": player.body_type,
+            "z": player.z,
+            "climb_speed": player.climb_speed,
+            "fly_speed": player.fly_speed,
+            "is_hovering": player.is_hovering,
             "speed": player.speed,
             "stats": dict(player.stats),
             "armor_experience": dict(player.armor_experience),
@@ -202,50 +532,59 @@ class SaveManager:
             "darkvision_range": player.darkvision_range,
             "statuses": [{"name": s.name, "duration": s.duration} for s in player.statuses],
             "equipment": {
-                slot: item.name if item else None
+                slot: SaveManager._serialize_item(item) if item else None
                 for slot, item in player.equipment.items()
             },
-            "accessories": [item.name for item in player.accessories],
+            "accessories": [SaveManager._serialize_item(item) for item in player.accessories],
             "inventory": [
-                {"name": item.name, "count": item.count}
+                SaveManager._serialize_item(item)
                 for item in player.inventory
             ],
             "memorized_spells": list(player.memorized_spells),
             "spell_slots": dict(player.spell_slots),
             "spell_domains": list(player.spell_domains),
             "temp_traits": player.temp_traits,
+            "party_member": getattr(player, "party_member", False),
+            "attitude": dict(getattr(player, "_attitude", {})),
+            "favor": dict(getattr(player, "_favor", {})),
+            "_is_dead": getattr(player, "_is_dead", False),
+            "_comatose_pendulums": getattr(player, "_comatose_pendulums", 0.0),
+            "_death_save_pendulums": getattr(player, "_death_save_pendulums", 0.0),
+            "death_saves": (
+                None if getattr(player, "death_saves", None) is None else {
+                    "successes": player.death_saves.successes,
+                    "failures": player.death_saves.failures,
+                    "death_injury": player.death_saves.death_injury,
+                    "max_hp": player.death_saves.max_hp,
+                }
+            ),
+        }
+
+    @staticmethod
+    def _serialize_item(item) -> dict:
+        return {
+            "name": item.name,
+            "count": item.count,
+            "durability": item.durability,
+            "max_durability": item.max_durability,
+            "loaded": item.loaded,
         }
 
     @staticmethod
     def _serialize_entities(entities: list) -> list:
         """序列化地图上的 NPC/生物。只保存非玩家实体。"""
         result = []
-        for creature, (col, row) in entities:
-            ds = getattr(creature, "death_saves", None)
-            result.append({
+        for creature, position in entities:
+            entry = SaveManager._serialize_player(creature)
+            entry.update({
                 "key": creature.template_name,
-                "pos": [col, row],
-                "name": creature.name,
-                "faction": creature.faction,
-                "hp": creature.hp,
-                "mp": creature.mp,
-                "tenacity": creature.tenacity,
-                "ap": creature.ap,
+                "pos": list(position),
                 "statuses": [{"name": s.name, "duration": s.duration} for s in creature.statuses],
-                "armor_experience": dict(creature.armor_experience),
-                "armor_training_progress": dict(creature.armor_training_progress),
-                "food_value": creature.food_value,
                 "_looted": getattr(creature, "_looted", False),
                 "_is_dead": getattr(creature, "_is_dead", False),
                 "comatose_pendulums": getattr(creature, "_comatose_pendulums", 0.0),
-                "death_saves": None if ds is None else {
-                    "successes": ds.successes,
-                    "failures": ds.failures,
-                    "death_injury": ds.death_injury,
-                    "max_hp": ds.max_hp,
-                },
-                "temp_traits": creature.temp_traits,
             })
+            result.append(entry)
         return result
 
     @staticmethod
@@ -272,18 +611,30 @@ class SaveManager:
     def _restore_player(player: "Entity", data: dict,
                         loader: "DataLoader | None") -> None:
         """从存档数据恢复玩家状态。"""
-        player.hp = data["hp"]
-        player.max_hp = data["max_hp"]
-        player.mp = data["mp"]
-        player.max_mp = data["max_mp"]
-        player.tenacity = data["tenacity"]
-        player.max_tenacity = data["max_tenacity"]
-        player.ap = data["ap"]
-        player.max_ap = data["max_ap"]
+        if data.get("uid") is not None:
+            player.uid = data["uid"]
+        if data.get("name"):
+            player.name = data["name"]
+        player.char_class = data.get("char_class", player.char_class)
+        player.faction = data.get("faction", player.faction)
+        player.z = data.get("z", getattr(player, "z", 0))
+        player.climb_speed = data.get("climb_speed", getattr(player, "climb_speed", 0))
+        player.fly_speed = data.get("fly_speed", getattr(player, "fly_speed", 0))
+        player.is_hovering = data.get("is_hovering", getattr(player, "is_hovering", False))
+        player.max_hp = data.get("max_hp", player.max_hp)
+        player.hp = data.get("hp", player.hp)
+        player.max_mp = data.get("max_mp", player.max_mp)
+        player.mp = data.get("mp", player.mp)
+        player.max_tenacity = data.get("max_tenacity", player.max_tenacity)
+        player.tenacity = data.get("tenacity", player.tenacity)
+        player.max_ap = data.get("max_ap", player.max_ap)
+        player.ap = data.get("ap", player.ap)
+        player.class_level = data.get("class_level", player.class_level)
+        player.class_exp = data.get("class_exp", player.class_exp)
         player.max_courage = data.get("max_courage", 0)
         player.courage = min(data.get("courage", 0), player.max_courage)
         player.speed = data.get("speed", 1)
-        player.stats = data["stats"]
+        player.stats = dict(data.get("stats", player.stats))
         player.armor_experience = dict(data.get("armor_experience", {}))
         player.armor_training_progress = dict(data.get("armor_training_progress", {}))
         player.gp = data.get("gp", 0)
@@ -296,26 +647,58 @@ class SaveManager:
         player.spell_slots = data.get("spell_slots", {})
         player.spell_domains = data.get("spell_domains", [])
         player.temp_traits = data.get("temp_traits", {})
+        player._is_dead = data.get("_is_dead", getattr(player, "_is_dead", False))
+        player._comatose_pendulums = data.get(
+            "_comatose_pendulums", getattr(player, "_comatose_pendulums", 0.0)
+        )
+        player._death_save_pendulums = data.get(
+            "_death_save_pendulums", getattr(player, "_death_save_pendulums", 0.0)
+        )
+        ds_data = data.get("death_saves")
+        if ds_data:
+            from domain.death import DeathSaves
+            ds = DeathSaves()
+            ds.successes = ds_data.get("successes", 0)
+            ds.failures = ds_data.get("failures", 0)
+            ds.death_injury = ds_data.get("death_injury", 0)
+            ds.max_hp = ds_data.get("max_hp", player.max_hp)
+            player.death_saves = ds
+        player._attitude = dict(data.get("attitude", {}))
+        player._favor = {int(k): v for k, v in data.get("favor", {}).items()}
 
         # 装备重建
         if loader:
-            for slot, item_name in data.get("equipment", {}).items():
-                if item_name and slot in player.equipment:
-                    item = load_item(item_name)
+            for slot, item_data in data.get("equipment", {}).items():
+                item_data = item_data if isinstance(item_data, dict) else {"name": item_data}
+                if item_data.get("name") and slot in player.equipment:
+                    item = loader.load_item(item_data["name"])
                     if item:
+                        item.count = item_data.get("count", item.count)
+                        item.durability = item_data.get("durability", item.durability)
+                        item.max_durability = item_data.get("max_durability", item.max_durability)
+                        item.loaded = item_data.get("loaded", item.loaded)
                         player.equipment[slot] = item
             player.accessories.clear()
-            for item_name in data.get("accessories", []):
-                item = load_item(item_name)
+            for item_data in data.get("accessories", []):
+                item_data = item_data if isinstance(item_data, dict) else {"name": item_data}
+                item = loader.load_item(item_data["name"])
                 if item:
+                    item.count = item_data.get("count", item.count)
+                    item.durability = item_data.get("durability", item.durability)
+                    item.max_durability = item_data.get("max_durability", item.max_durability)
+                    item.loaded = item_data.get("loaded", item.loaded)
                     player.accessories.append(item)
 
             # 背包重建
             player.inventory = []
             for entry in data.get("inventory", []):
-                item = load_item(entry["name"])
+                item_data = entry if isinstance(entry, dict) else {"name": entry}
+                item = loader.load_item(item_data["name"])
                 if item:
-                    item.count = entry.get("count", 1)
+                    item.count = item_data.get("count", 1)
+                    item.durability = item_data.get("durability", item.durability)
+                    item.max_durability = item_data.get("max_durability", item.max_durability)
+                    item.loaded = item_data.get("loaded", item.loaded)
                     if item.weight:
                         item.weight = item.weight * item.count
                     player.inventory.append(item)
@@ -327,27 +710,17 @@ class SaveManager:
         state.entities = []
         for entry in data:
             c = loader.load_entity(entry["key"])
+            if c is None:
+                c = Entity(name=entry.get("name", entry.get("key", "未知实体")))
             if c:
-                c.hp = entry.get("hp", c.max_hp)
-                c.mp = entry.get("mp", 0)
-                c.tenacity = entry.get("tenacity", c.max_tenacity)
-                c.ap = entry.get("ap", c.max_ap)
-                c.statuses = [StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in entry.get("statuses", [])]
-                c.armor_experience = dict(entry.get("armor_experience", {}))
-                c.armor_training_progress = dict(entry.get("armor_training_progress", {}))
-                c.food_value = entry.get("food_value", c.food_value)
+                SaveManager._restore_player(c, entry, loader)
                 c.faction = entry.get("faction", c.faction)
                 c._looted = entry.get("_looted", False)
                 c._is_dead = entry.get("_is_dead", False)
                 c._comatose_pendulums = entry.get("comatose_pendulums", 0.0)
-                ds_data = entry.get("death_saves")
-                if ds_data:
-                    from domain.combat.death import DeathSaves
-                    ds = DeathSaves()
-                    ds.successes = ds_data.get("successes", 0)
-                    ds.failures = ds_data.get("failures", 0)
-                    ds.death_injury = ds_data.get("death_injury", 0)
-                    ds.max_hp = ds_data.get("max_hp", c.max_hp)
-                    c.death_saves = ds
                 c.temp_traits = entry.get("temp_traits", {})
+                c.party_member = entry.get("party_member", False)
+                c.ally = c.party_member
+                c._attitude = dict(entry.get("attitude", {}))
+                c._favor = {int(k): v for k, v in entry.get("favor", {}).items()}
                 state.add_entity(c, tuple(entry["pos"]))

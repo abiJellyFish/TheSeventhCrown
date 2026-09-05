@@ -113,11 +113,11 @@ class ExploreMixin:
         - 线索：始终可见，进视野仅触发一次性 sight_log（无感知检定）"""
         for trap in self.traps:
             pos = trap.pos
-            if pos not in self.fov_cache:
+            if not self.is_in_fov(pos):
                 continue
             if not self.spot_memo.get(pos, False):
-                from domain.dice import roll_d20
-                roll = roll_d20() + observer.stat_adjust("wis")
+                from domain.dice import roll_d20, check_total
+                roll = check_total(observer, roll_d20(), observer.stat_adjust("wis"))
                 if roll >= trap.dc:
                     self.spot_memo[pos] = True
                     trap.discovered = True
@@ -131,7 +131,7 @@ class ExploreMixin:
         for clue in self.clues:
             if clue.sight_log_fired:
                 continue
-            if clue.pos not in self.fov_cache:
+            if not self.is_in_fov(clue.pos):
                 continue
             clue.sight_log_fired = True
             if self.emit_log and clue.sight_log:
@@ -143,4 +143,3 @@ class ExploreMixin:
 
     # 被动感知 DC（D9：暂不写死，常量引用）
     PASSIVE_SPOT_DC = 10
-

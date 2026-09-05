@@ -18,7 +18,6 @@ class InteractType(Enum):
     PICK = auto()        # 采摘（灌木）
     REST = auto()        # 休息（床）
     OPEN = auto()        # 开门/关门
-    ENTER = auto()       # 进入地城
     PICKUP = auto()      # 捡起地上物品
     ITEM = auto()        # 地面物品交互面板
     HARVEST_CROP = auto()  # 收获作物
@@ -44,14 +43,33 @@ class InteractTarget:
 # 检测器（新增可交互类型只需追加函数到 _DETECTORS）
 # ═══════════════════════════════════════════════════
 
+def _observer_xyz(state) -> tuple[int, int, int]:
+    pos = state.controlled_entity_pos
+    if pos is None:
+        raise ValueError("被控实体没有坐标")
+    if len(pos) == 3:
+        return int(pos[0]), int(pos[1]), int(pos[2])
+    if len(pos) != 2:
+        raise ValueError("实体坐标必须是三维")
+    return int(pos[0]), int(pos[1]), int(getattr(state, "active_z", 0))
+
+
+def _visible_at_height(state, pos: tuple[int, int, int]) -> bool:
+    if pos[2] == _observer_xyz(state)[2]:
+        return True
+    return pos in getattr(state, "fov_cache", ())
+
+
 def _detect_creatures(state) -> list[InteractTarget]:
     """检测相邻格生物：活着 → TALK，死亡 → CORPSE（尸体面板：搜刮/捡起）。"""
-    pc, pr = state.controlled_entity_pos
+    pc, pr = _observer_xyz(state)[:2]
     results = []
-    for creature, (ec, er) in state.entities:
+    for creature, (ec, er, ez) in state.entities:
         if creature.controlled:
             continue
         if max(abs(ec - pc), abs(er - pr)) > 1:
+            continue
+        if not _visible_at_height(state, (ec, er, ez)):
             continue
         if creature.is_dead:
             results.append(InteractTarget(
@@ -78,14 +96,15 @@ def _detect_creatures(state) -> list[InteractTarget]:
 
 def _detect_doors(state) -> list[InteractTarget]:
     """检测相邻格门。"""
-    pc, pr = state.controlled_entity_pos
+    pc, pr, pz = state.controlled_entity_pos
     results = []
     for dc in (-1, 0, 1):
         for dr in (-1, 0, 1):
             pos = (pc + dc, pr + dr)
             door = next(
                 (item for item, item_pos in state.ground_items
-                 if item_pos == pos and item.name in ("打开的门", "关闭的门")),
+                 if item_pos == (pos[0], pos[1], pz)
+                 and item.name in ("打开的门", "关闭的门")),
                 None,
             )
             if door is not None:
@@ -98,13 +117,13 @@ def _detect_doors(state) -> list[InteractTarget]:
 
 def _detect_beds(state) -> list[InteractTarget]:
     """检测相邻格床。"""
-    pc, pr = state.controlled_entity_pos
+    pc, pr, pz = state.controlled_entity_pos
     results = []
     for dc in (-1, 0, 1):
         for dr in (-1, 0, 1):
             pos = (pc + dc, pr + dr)
             if state.map.within_bounds(*pos) and any(
-                item_pos == pos and item.name == "床铺"
+                item_pos == (pos[0], pos[1], pz) and item.name == "床铺"
                 for item, item_pos in state.ground_items
             ):
                 results.append(InteractTarget(
@@ -113,47 +132,26 @@ def _detect_beds(state) -> list[InteractTarget]:
     return results
 
 
-def _detect_entrances(state) -> list[InteractTarget]:
-    """检测自身格及相邻格是否为地城入口/出口。"""
-    pc, pr = state.controlled_entity_pos
-    results = []
-    if not state.in_dungeon:
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                pos = (pc + dc, pr + dr)
-                if state.map.within_bounds(*pos) and state.map[pos] == Terrain.STAIRS_DOWN:
-                    results.append(InteractTarget(
-                        label="洞口", interact_type=InteractType.ENTER,
-                        pos=pos, extra={"direction": "enter"},
-                    ))
-    if state.in_dungeon:
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                pos = (pc + dc, pr + dr)
-                if state.map.within_bounds(*pos) and state.map[pos] == Terrain.STAIRS_UP:
-                    results.append(InteractTarget(
-                        label="洞口（离开）", interact_type=InteractType.ENTER,
-                        pos=pos, extra={"direction": "exit"},
-                    ))
-    return results
-
-
 def _detect_ground_items(state) -> list[InteractTarget]:
     """检测玩家所在格及相邻格的地上物品。"""
     from domain.combat.shape import entity_reach
-    pc, pr = state.controlled_entity_pos
+    pc, pr = _observer_xyz(state)[:2]
     reach = entity_reach(state.controlled_entity)
     results = []
-    seen: set[tuple[int, int]] = set()
-    for item, (ic, ir) in state.ground_items:
+    seen: set[tuple[int, int, int]] = set()
+    for item, (ic, ir, iz) in state.ground_items:
         if max(abs(ic - pc), abs(ir - pr)) > reach:
             continue
-        pos_key = (ic, ir)
+        if not _visible_at_height(state, (ic, ir, iz)):
+            continue
+        pos_key = (ic, ir, iz)
         if pos_key in seen:
             continue
         seen.add(pos_key)
-        # 收集该格所有物品信息
-        items_at_tile = [it for it, (col, row) in state.ground_items if (col, row) == pos_key]
+        items_at_tile = [
+            it for it, (col, row, zz) in state.ground_items
+            if (col, row, zz) == pos_key
+        ]
         if items_at_tile:
             # 显示第一个物品名，堆叠物品显示总数
             total_count = sum(it.count for it in items_at_tile)
@@ -163,7 +161,7 @@ def _detect_ground_items(state) -> list[InteractTarget]:
                 label += f" x{total_count}"
             results.append(InteractTarget(
                 label=label, interact_type=InteractType.ITEM,
-                pos=pos_key, extra={"items": items_at_tile},
+                pos=(ic, ir), extra={"items": items_at_tile},
             ))
     return results
 
@@ -172,7 +170,7 @@ def _detect_crops(state) -> list[InteractTarget]:
     """检测相邻格作物：成熟可收获、未成熟可采摘、枯萎可清除。"""
     from domain.crops import crop_label, is_crop_mature, load_seed_config
 
-    pc, pr = state.controlled_entity_pos
+    pc, pr = state.controlled_entity_pos[:2]
     results = []
     for dc in (-1, 0, 1):
         for dr in (-1, 0, 1):
@@ -195,7 +193,6 @@ def _detect_crops(state) -> list[InteractTarget]:
 # 检测器注册列表（新增目标类型只需追加函数）
 _DETECTORS: list = [
     _detect_doors,
-    _detect_entrances,
     _detect_beds,
     _detect_creatures,
     _detect_crops,

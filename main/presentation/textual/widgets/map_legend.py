@@ -39,18 +39,18 @@ class MapLegend(Static):
         gmap = self.state.map
 
         legend_seen: dict[str, str] = {"@": "玩家"}
-        for creature, (ec, er) in self.state.entities:
-            if (ec, er) in fov and not creature.is_dead:
+        for creature, position in self.state.entities:
+            if self.state.is_in_fov(position) and not creature.is_dead:
                 legend_seen[creature.char] = creature.name
 
         for pos in fov:
-            t = gmap[pos]
+            t = self.state.surface_at(pos[:2], pos[2]).terrain
             ch = TERRAIN_CHARS.get(t)
             label = TERRAIN_LABELS.get(t)
             if ch and label:
                 legend_seen.setdefault(ch, label)
-        for item, (ec, er) in self.state.ground_items:
-            if (ec, er) in fov:
+        for item, position in self.state.ground_items:
+            if self.state.is_in_fov(position):
                 render_info = (
                     {"char": item.render_char, "color": item.render_color}
                     if getattr(item, "render_char", "")

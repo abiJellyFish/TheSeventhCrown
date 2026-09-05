@@ -86,3 +86,16 @@ class PendulumClock:
 
     def set_npc_advance_callback(self, cb: Callable[[float], None]) -> None:
         self._on_advance_npcs = cb
+
+
+def spend_ap_or_pendulum(state, actor, ap: int) -> bool:
+    """战斗扣 AP，探索按 clock.scale（默认 10AP=1钟摆）推进。不足返回 False。"""
+    if ap < 0:
+        raise ValueError("AP 不能为负")
+    if state.in_combat:
+        if actor.ap < ap:
+            return False
+        actor.ap -= ap
+        return True
+    state.clock.tick_action(ap / state.clock.scale)
+    return True

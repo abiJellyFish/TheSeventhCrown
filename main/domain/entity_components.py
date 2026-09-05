@@ -27,6 +27,12 @@ class ControlComponent:
 
 
 @dataclass
+class AllyComponent:
+    """盟友组件。挂载表示实体属于当前玩家小队。"""
+    active: bool = True
+
+
+@dataclass
 class AIComponent:
     """AI 行为组件。所有非玩家控制的生物挂载此组件。"""
     # 行为表

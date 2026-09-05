@@ -13,7 +13,6 @@ from domain.combat.attack import (hit_check, roll_damage, reduce_tenacity,
     apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack,
     miss_message, cover_message, normalize_damage_type)
 from domain.combat.flow import CombatFlow
-from domain.map.generation import build_world, build_dungeon
 import domain.dice
 from domain.ai.engine import BehaviorEngine
 from domain.rest import short_rest, long_rest
@@ -42,7 +41,6 @@ _INTERACT_DISPATCH = {
     InteractType.PICK: "_interact_pick",
     InteractType.REST: "_interact_rest",
     InteractType.OPEN: "_interact_door",
-    InteractType.ENTER: "_interact_entrance",
     InteractType.PICKUP: "_interact_pickup",
     InteractType.ITEM: "_interact_item",
     InteractType.HARVEST_CROP: "_interact_harvest_crop",
@@ -372,6 +370,9 @@ class InteractMixin:
 
     def _cancel_interact(self) -> None:
         """取消交互，恢复默认状态。"""
+        if self._state.interact_phase == "party_select":
+            leader = self._state.controlled_entity
+            self._state.selected_party_members = {id(leader)} if leader is not None else set()
         self._state.interact_phase = ""
         self._state.interact_targets = []
         self._state.interact_target = None
@@ -626,15 +627,6 @@ class InteractMixin:
         else:
             self._act_log.add("门打开了")
         _update_fov(self._state)
-        self.refresh_all()
-
-    def _interact_entrance(self, target) -> None:
-        """进入/离开地下城。"""
-        direction = target.extra.get("direction", "enter")
-        if direction == "exit":
-            self._exit_dungeon()
-        else:
-            self._enter_dungeon()
         self.refresh_all()
 
     # ── 询问委托（3.4 完整实现，此处占位）──
@@ -897,7 +889,7 @@ class InteractMixin:
 
     def _detect_cooking_tools(self) -> list[dict]:
         """扫描玩家 3x3 范围内厨具，徒手始终可用。"""
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         tools = [{"name": "徒手", "type": "bare_hands", "pos": (pc, pr)}]
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):

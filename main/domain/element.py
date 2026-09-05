@@ -11,6 +11,7 @@ from domain.combat.attack import apply_final_damage, roll_dice
 from domain.fov import LightLevel
 from domain.grid import (Terrain, DIRS_4, FLAMMABLE, FUEL,
                        BURN_OUT_RESULT, REGENERABLE_FROM)
+from domain.lighting import effect_light_pos
 
 
 MAX_TIER = 3           # 燃烧最高档位
@@ -51,18 +52,18 @@ def _tick_burning(state) -> list[str]:
     # 快照遍历，避免迭代中修改 dict
     for pos, bs in list(state.burning_surfaces.items()):
         for creature, creature_pos in list(state.entities):
-            if creature_pos == pos and not creature.is_dead:
+            if creature_pos[:2] == pos and not creature.is_dead:
                 apply_final_damage(creature, roll_dice(1, 4), "fire")
         for item, item_pos in list(state.ground_items):
-            if item_pos == pos:
+            if item_pos[:2] == pos:
                 apply_final_damage(item, roll_dice(1, 4), "fire")
         player = getattr(state, "controlled_entity", None)
         player_in_entities = any(c is player for c, _ in state.entities)
         if (player is not None and not player_in_entities
-                and state.controlled_entity_pos == pos):
+                and state.controlled_entity_pos[:2] == pos):
             apply_final_damage(player, roll_dice(1, 4), "fire")
         # 2. 光源：半径随档位 1→2→3
-        state.register_light(pos, bs.tier, LightLevel.BRIGHT)
+        state.register_light(effect_light_pos(state, pos), bs.tier, LightLevel.BRIGHT)
 
         # 3. 传播（仅 3 档）：目标格潮湿且非水源 → 先移除潮湿，再按概率判定点燃
         if bs.tier >= MAX_TIER:
@@ -76,14 +77,18 @@ def _tick_burning(state) -> list[str]:
                 if t in FLAMMABLE and nbr not in state.burning_surfaces:
                     if random.randint(1, 100) <= FLAMMABLE[t]:
                         state.burning_surfaces[nbr] = BurningSurface(fuel=FUEL[t])
-                        state.register_light(nbr, 1, LightLevel.BRIGHT)
+                        state.register_light(
+                            effect_light_pos(state, nbr), 1, LightLevel.BRIGHT
+                        )
 
         # 4. 档位推进：每 TIER_UP_TICKS 钟摆升一档，最高 MAX_TIER
         bs.tick += 1
         if bs.tick >= TIER_UP_TICKS and bs.tier < MAX_TIER:
             bs.tier += 1
             bs.tick = 0
-            state.register_light(pos, bs.tier, LightLevel.BRIGHT)
+            state.register_light(
+                effect_light_pos(state, pos), bs.tier, LightLevel.BRIGHT
+            )
 
         # 5. 燃料消耗：永久火源（fuel=None）永不耗尽；否则耗尽后烧尽成对应地块
         if bs.fuel is None:
@@ -94,7 +99,7 @@ def _tick_burning(state) -> list[str]:
             if t in BURN_OUT_RESULT:
                 state.map[pos] = BURN_OUT_RESULT[t]
                 state.regen_candidates.add(pos)
-            state.unregister_light(pos)
+            state.unregister_light(effect_light_pos(state, pos))
             del state.burning_surfaces[pos]
             logs.append(f"{pos} 处的火焰熄灭了")
     state.remove_destroyed_ground_items()
@@ -148,16 +153,20 @@ def _tick_regeneration(state) -> list[str]:
 
 class SurfaceEffectsMixin:
 
-    def _check_surface_effects(self, creature: Entity) -> None:
+    def _check_surface_effects(self, creature: Entity | None) -> None:
         """实体移动后检查地表效果：踩水熄灭灼烧、着火格点燃、自燃、潮湿。"""
+        if creature is None or creature.is_dead:
+            return
         pos = self.controlled_entity_pos if creature.controlled else None
         if pos is None:
-            for c, (ec, er) in self.entities:
+            for c, (ec, er, ez) in self.entities:
                 if c is creature:
-                    pos = (ec, er)
+                    pos = (ec, er, ez)
                     break
         if not pos:
             return
+        # 地表效果容器以二维坐标为键；实体位置统一降维后查询
+        pos = pos[:2]
         # 灼烧 + 站在水源/潮湿地表 → 熄灭并受潮湿
         if creature.has_status("灼烧"):
             if self.is_wet(pos):
@@ -201,8 +210,8 @@ class SurfaceEffectsMixin:
         from domain.fov import LightLevel
         for item, pos in self.ground_items:
             if item.name == "篝火":
-                self.burning_surfaces[pos] = BurningSurface(fuel=None, tier=3)
-                self.register_light(pos, 3, LightLevel.BRIGHT)
+                self.burning_surfaces[pos[:2]] = BurningSurface(fuel=None, tier=3)
+                self.register_light(pos if len(pos) == 3 else (*pos, self.active_z), 3, LightLevel.BRIGHT)
 
     def _find_nearest_water(self, creature: Entity, pos: tuple[int, int]) -> tuple[int, int] | None:
         """在实体视野内寻找最近的水源（WATER 地形）或潮湿地表。

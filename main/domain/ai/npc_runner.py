@@ -46,7 +46,6 @@ class NpcBehaviorMixin:
         # 复用状态空间索引，避免每个 NPC 重复扫描全部地面物品。
         spatial = self.spatial_cache()
         item_by_position = spatial["ground_items_by_position"]
-        all_item_positions = spatial["item_positions"]
         food_item_positions = spatial["food_item_positions"]
 
         def _record_food(dist: int, nc: int, nr: int, kind: str) -> None:
@@ -86,11 +85,12 @@ class NpcBehaviorMixin:
             entry
             for chunk in visible_chunks
             for entry in nearby_entities.get(chunk, [])
+            if entry[1][2] == creature.z
         ]
 
         # 猎物（智慧生物扫描视野内带食物战利品的野兽，使用附近区块索引）
         if body_type == 'humanoid':
-            for ent, (nc, nr) in candidate_entities:
+            for ent, (nc, nr, _nz) in candidate_entities:
                 if ent is creature or ent.is_dead or getattr(ent, 'body_type', '') != 'beast':
                     continue
                 if (nc - ec) ** 2 + (nr - er) ** 2 > vr * vr:
@@ -111,14 +111,17 @@ class NpcBehaviorMixin:
         ctx["food_tiles"].sort(key=lambda x: x[0])
         ctx["prey_targets"].sort(key=lambda x: x[0])
 
-        # 相邻格（含自身格）是否有可捡取物品（O(1) 查表）
-        items_nearby = False
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                if (ec + dc, er + dr) in all_item_positions:
-                    items_nearby = True
-                    break
-        ctx["items_nearby"] = items_nearby
+        # 相邻格（含自身格）可捡物品；全身障碍和 can_pickup=False 不触发 pickup
+        nearby_items = [
+            (item, item_position)
+            for dc in (-1, 0, 1)
+            for dr in (-1, 0, 1)
+            for position in ((ec + dc, er + dr),)
+            for item, item_position in item_by_position.get(position, ())
+            if getattr(item, "can_pickup", True)
+        ]
+        ctx["items_nearby"] = bool(nearby_items)
+        ctx["nearby_items"] = nearby_items
 
         # 相邻格门状态
         door_nearby = False
@@ -133,32 +136,23 @@ class NpcBehaviorMixin:
                     door_nearby = True
                 else:
                     # 开启的门：检查是否无生物占据
-                    if pos == self.controlled_entity_pos:
+                    if pos == self.controlled_entity_pos[:2]:
                         continue
                     occupied = any(
                         (e2c, e2r) == pos and not c2.is_dead
-                        for c2, (e2c, e2r) in self.iter_entities()
+                        for c2, (e2c, e2r, _e2z) in self.iter_entities()
                     )
                     if not occupied:
                         open_door_nearby = True
         ctx["door_nearby"] = door_nearby
         ctx["open_door_nearby"] = open_door_nearby
 
-        # 相邻格（含自身格）物品对象缓存（供 _npc_pickup 复用，避免重复遍历）
-        nearby_items = [
-            (item, position)
-            for dc in (-1, 0, 1)
-            for dr in (-1, 0, 1)
-            for position in ((ec + dc, er + dr),)
-            for item, _ in item_by_position.get(position, ())
-        ]
-        ctx["nearby_items"] = nearby_items
-
-        # 敌人检测（统一走 are_hostile，无特例；身后扇区不感知，阶段2；隐匿过滤，阶段4）
+        # 战斗参与者已经知道战斗中的敌人，不再受背后扇区限制；探索中仍按视野感知。
         from domain.movement import sector_of
+        in_combat_here = self.in_combat and creature in self.combat_initiative
         enemy_adjacent = False
         enemy_visible = False
-        for c2, (e2c, e2r) in candidate_entities:
+        for c2, (e2c, e2r, _e2z) in candidate_entities:
             if c2.is_dead or c2 is creature:
                 continue
             if not are_hostile(creature, c2):
@@ -167,7 +161,9 @@ class NpcBehaviorMixin:
                 continue  # 欧几里得视野半径（圆形）
             dist = max(abs(e2c - ec), abs(e2r - er))  # 切比雪夫：相邻判定
             # 身后 3 方向扇区不纳入视野（相邻一圈豁免：统一视野=相邻一圈∪面前扇形）
-            if sector_of(creature.facing, (e2c - ec, e2r - er)) == "back" and dist > 1:
+            if (not in_combat_here
+                    and sector_of(creature.facing, (e2c - ec, e2r - er)) == "back"
+                    and dist > 1):
                 continue
             # 隐匿过滤：敌方对观察者隐匿 → 不纳入考量
             if self._is_hidden_to(creature, c2, (e2c, e2r)):
@@ -179,7 +175,6 @@ class NpcBehaviorMixin:
         ctx["enemy_adjacent"] = enemy_adjacent
         ctx["enemy_visible"] = enemy_visible
         # 隐匿探查（阶段4完善）：战斗中失去可见敌人目标 → 可能敌人隐匿，主动探查
-        in_combat_here = self.in_combat and creature in self.combat_initiative
         ctx["suspicious_hidden"] = in_combat_here and not enemy_visible
 
         # 缓存盟友数（供渲染使用，避免 O(N²)）
@@ -215,8 +210,8 @@ class NpcBehaviorMixin:
             tx, ty = path[step]
             # 检查是否被占
             blocked = False
-            for c, (bc, br) in self.iter_entities():
-                if (bc, br) == (tx, ty) and not c.is_dead:
+            for c, (bc, br, bz) in self.iter_entities():
+                if (bc, br) == (tx, ty) and bz == creature.z and not c.is_dead:
                     blocked = True
                     break
             if blocked:
@@ -284,7 +279,7 @@ class NpcBehaviorMixin:
             if arrived:
                 creature._cached_path = None
                 creature._path_target = None
-            if self.emit_log and (ec, er) in self.fov_cache:
+            if self.emit_log and self.is_in_fov((ec, er)):
                 self.emit_log(f"{creature.name} 向食物移动")
 
     def _npc_eat_food(self, creature, ec, er, ctx) -> None:
@@ -298,11 +293,11 @@ class NpcBehaviorMixin:
                         expected_state_version=self.state_version,
                         position=(tx, ty),
                     ))
-                    if self.emit_log and (ec, er) in self.fov_cache:
+                    if self.emit_log and self.is_in_fov((ec, er)):
                         self.emit_log(f"{creature.name} 吃掉了灌木丛的浆果")
                     return
                 elif ftype == 'item':
-                    for item, (gi, gj) in list(self.ground_items):
+                    for item, (gi, gj, gz) in list(self.ground_items):
                         if (gi, gj) == (tx, ty) and getattr(item, 'effect', '') == 'restore_food':
                             amt = item.amount
                             try:
@@ -320,7 +315,7 @@ class NpcBehaviorMixin:
                                 expected_state_version=self.state_version,
                                 item_id=id(item),
                             ))
-                            if self.emit_log and (ec, er) in self.fov_cache:
+                            if self.emit_log and self.is_in_fov((ec, er)):
                                 self.emit_log(f"{creature.name} 吃掉了地上的{item.name}")
                             return
 
@@ -343,18 +338,18 @@ class NpcBehaviorMixin:
             if arrived:
                 creature._cached_path = None
                 creature._path_target = None
-            if self.emit_log and (ec, er) in self.fov_cache:
+            if self.emit_log and self.is_in_fov((ec, er)):
                 self.emit_log(f"{creature.name} 向{prey.name}移动")
 
     def _npc_attack_prey_impl(self, creature, hunt_target) -> None:
         """攻击相邻敌人；优先执行尚未生效的特殊动作。"""
         # 查找 creature 位置用于 FOV 守卫
         pos = None
-        for c, (ec_ent, er_ent) in self.iter_entities():
+        for c, (ec_ent, er_ent, _ez_ent) in self.iter_entities():
             if c is creature:
                 pos = (ec_ent, er_ent)
                 break
-        in_fov = pos is not None and pos in self.fov_cache
+        in_fov = pos is not None and self.is_in_fov(pos)
         actions = getattr(creature, "actions", []) or []
         special = next(
             (action for action in actions
@@ -365,7 +360,10 @@ class NpcBehaviorMixin:
         )
         if special is not None:
             from domain.events import LogCategory
-            save_roll = roll_d20() + hunt_target.stat_adjust("dex")
+            from domain.dice import check_total
+            save_roll = check_total(
+                hunt_target, roll_d20(), hunt_target.stat_adjust("dex")
+            )
             if save_roll < 12:
                 hunt_target.add_status("prone")
                 self.emit_log(
@@ -443,9 +441,9 @@ class NpcBehaviorMixin:
         if taken and self.emit_log:
             # 猎人或目标在 FOV 内才记录
             in_fov = False
-            for c, (ec2, er2) in self.iter_entities():
+            for c, (ec2, er2, _ez2) in self.iter_entities():
                 if c is hunter or c is hunt_target:
-                    if (ec2, er2) in self.fov_cache:
+                    if self.is_in_fov((ec2, er2)):
                         in_fov = True
                         break
             if in_fov:
@@ -463,19 +461,19 @@ class NpcBehaviorMixin:
                     expected_state_version=self.state_version,
                     position=(tx, ty),
                 ))
-                if self.emit_log and (ec, er) in self.fov_cache:
+                if self.emit_log and self.is_in_fov((ec, er)):
                     self.emit_log(f"{creature.name} 摘了一些浆果")
                 return
             elif ftype == 'item':
-                for item, (gi, gj) in list(self.ground_items):
-                    if (gi, gj) == (tx, ty) and getattr(item, 'effect', '') == 'restore_food':
+                for item, pos in list(self.ground_items):
+                    if pos[:2] == (tx, ty) and getattr(item, 'effect', '') == 'restore_food':
                         self._try_execute_action(PickupAction(
                             actor_id=id(creature),
                             expected_state_version=self.state_version,
                             item_id=id(item),
-                            position=(gi, gj),
+                            position=pos[:2],
                         ))
-                        if self.emit_log and (ec, er) in self.fov_cache:
+                        if self.emit_log and self.is_in_fov((ec, er)):
                             self.emit_log(f"{creature.name} 捡起了地上的{item.name}")
                         return
 
@@ -494,7 +492,7 @@ class NpcBehaviorMixin:
                     expected_state_version=self.state_version,
                     item_id=id(item),
                 ))
-                if self.emit_log and (ec, er) in self.fov_cache:
+                if self.emit_log and self.is_in_fov((ec, er)):
                     self.emit_log(f"{creature.name} 吃掉了背包里的{item.name}")
                 return
 
@@ -510,7 +508,7 @@ class NpcBehaviorMixin:
                         position=pos,
                         opened=True,
                     ))
-                    if self.emit_log and (ec, er) in self.fov_cache:
+                    if self.emit_log and self.is_in_fov((ec, er)):
                         self.emit_log(f"{creature.name} 打开了门")
                     return
 
@@ -523,9 +521,9 @@ class NpcBehaviorMixin:
                     continue
                 if not self.is_door_open(pos):
                     continue
-                if pos == self.controlled_entity_pos:
+                if pos == self.controlled_entity_pos[:2]:
                     continue
-                occupied = any((e2c, e2r) == pos and not c2.is_dead for c2, (e2c, e2r) in self.iter_entities())
+                occupied = any((e2c, e2r) == pos and not c2.is_dead for c2, (e2c, e2r, _e2z) in self.iter_entities())
                 if occupied:
                     continue
                 self._try_execute_action(DoorAction(
@@ -534,7 +532,7 @@ class NpcBehaviorMixin:
                     position=pos,
                     opened=False,
                 ))
-                if self.emit_log and (ec, er) in self.fov_cache:
+                if self.emit_log and self.is_in_fov((ec, er)):
                     self.emit_log(f"{creature.name} 关上了门")
                 return
 
@@ -554,7 +552,7 @@ class NpcBehaviorMixin:
             if arrived:
                 creature._cached_path = None
                 creature._path_target = None
-            if self.emit_log and (ec, er) in self.fov_cache:
+            if self.emit_log and self.is_in_fov((ec, er)):
                 self.emit_log(f"{creature.name} 向水源移动")
 
     def _npc_move_away_from_fire(self, creature, ec, er, ctx) -> None:
@@ -579,7 +577,7 @@ class NpcBehaviorMixin:
             expected_state_version=self.state_version,
             status="prone",
         ))
-        if self.emit_log and (ec, er) in self.fov_cache:
+        if self.emit_log and self.is_in_fov((ec, er)):
             self.emit_log(f"{creature.name} 在地上打滚，扑灭了火焰")
 
     def _npc_hide(self, creature, ec, er, ctx) -> None:
@@ -609,7 +607,7 @@ class NpcBehaviorMixin:
         """攻击相邻敌人。"""
         target = None
         best_dist = 999
-        for c2, (e2c, e2r) in self.iter_entities():
+        for c2, (e2c, e2r, _e2z) in self.iter_entities():
             if c2.is_dead or c2 is creature:
                 continue
             if not are_hostile(creature, c2):
@@ -654,23 +652,23 @@ class NpcBehaviorMixin:
                         actor_id=id(creature),
                         expected_state_version=self.state_version,
                         item_id=id(item),
-                        position=pos,
+                        position=pos[:2],
                     ))
                     self._try_execute_action(EatAction(
                         actor_id=id(creature),
                         expected_state_version=self.state_version,
                         item_id=id(item),
                     ))
-                    if self.emit_log and (ec, er) in self.fov_cache:
+                    if self.emit_log and self.is_in_fov((ec, er)):
                         self.emit_log(f"{creature.name} 吃掉了地上的{item.name}")
             else:
                 self._try_execute_action(PickupAction(
                     actor_id=id(creature),
                     expected_state_version=self.state_version,
                     item_id=id(item),
-                    position=pos,
+                    position=pos[:2],
                 ))
-                if self.emit_log and (ec, er) in self.fov_cache:
+                if self.emit_log and self.is_in_fov((ec, er)):
                     self.emit_log(f"{creature.name} 捡起了{item.name}")
                 self._auto_equip_npc(creature, item)
 
@@ -780,21 +778,33 @@ class NpcBehaviorMixin:
                 self.emit_log(f"{creature.name} 选择攻击动作")
             comp = COMPONENTS.get(action)
             if comp is None:
-                return
+                raise ValueError(
+                    f"行动评估表未识别动作: {action} "
+                    f"(实体: {getattr(creature, 'name', id(creature))})"
+                )
 
             # 统一扣费：参战生物扣 AP（1 钟摆 = 10 AP），非参战扣钟摆
             in_combat_action = self.in_combat and creature in self.combat_initiative
             combat_cost = comp.cost * 10
-            if in_combat_action and creature.ap < combat_cost:
-                # AP 不足 → 尝试下一个候选动作
-                candidates.pop(0)
-                if not candidates:
-                    break
-                continue
-            if in_combat_action:
-                creature.ap -= combat_cost
-            else:
-                creature._action_remaining_cost = comp.cost
+            is_move_action = action in (
+                "forage", "hunt", "wander", "flee", "approach_enemy",
+                "find_water", "escape_fire", "avoid_fire",
+            )
+
+            def spend_action() -> None:
+                if in_combat_action:
+                    creature.ap -= combat_cost
+                else:
+                    creature._action_remaining_cost = comp.cost
+
+            if not is_move_action:
+                if in_combat_action and creature.ap < combat_cost:
+                    # AP 不足 → 尝试下一个候选动作
+                    candidates.pop(0)
+                    if not candidates:
+                        break
+                    continue
+                spend_action()
 
             # 移动类：验证路径（候选格 → 目标源 大小条件嵌套）
             if action in ("forage", "hunt", "wander", "flee", "approach_enemy",
@@ -811,6 +821,10 @@ class NpcBehaviorMixin:
                     else:
                         handler = self._NPC_ACTIONS.get(action)
                         if handler:
+                            if in_combat_action:
+                                if creature.ap < combat_cost:
+                                    return
+                                spend_action()
                             handler(creature, ec, er, ctx)
                             # cost 提前归零但路径未走完（如中途躲藏减速）→
                             # 重新覆盖路径时长，恢复"移动期间零评估"（仅非战斗）
@@ -831,12 +845,17 @@ class NpcBehaviorMixin:
                 target = move_candidates[0]
                 # 视野内寻路：目标均在视野内选取，A* 限搜索半径 = 视野 + 1（候选格可能落在目标源相邻格）
                 vr = getattr(creature, 'vision_range', 8)
-                path = find_path(self.map, list(self.iter_entities()), (ec, er), target, self.controlled_entity_pos,
+                controlled_pos = self.controlled_entity_pos
+                path = find_path(self.map, list(self.iter_entities()), (ec, er), target,
+                                 controlled_pos[:2] if controlled_pos is not None else None,
                                  ground_items=self.ground_items, max_radius=vr + 1,
                                  door_positions={
                                      pos for _, pos in self.ground_items
                                      if self.get_door_at(pos) is not None
-                                 })
+                                 },
+                                 surface_layers=self.world_layers,
+                                 actor_z=creature.z,
+                                 can_fly=creature.is_hovering or creature.fly_speed > 0)
                 if path:
                     creature._cached_path = path
                     creature._path_target = target
@@ -850,6 +869,10 @@ class NpcBehaviorMixin:
                         creature._action_remaining_cost = max(comp.cost, path_ticks)
                     handler = self._NPC_ACTIONS.get(action)
                     if handler:
+                        if in_combat_action:
+                            if creature.ap < combat_cost:
+                                return
+                            spend_action()
                         handler(creature, ec, er, ctx)
                     move_candidates = None
                     return
@@ -913,15 +936,17 @@ class NpcBehaviorMixin:
 
         elif action == "wander":
             vr = getattr(creature, 'vision_range', 8)
+            controlled_pos = self.controlled_entity_pos
+            player_pos = controlled_pos[:2] if controlled_pos is not None else None
             for _ in range(5):
                 tx = ec + random.randint(-vr, vr)
                 ty = er + random.randint(-vr, vr)
-                if self.map.within_bounds(tx, ty) and (tx, ty) != self.controlled_entity_pos and obstacle_at((tx, ty), self.entities, self.ground_items) is None:
+                if self.map.within_bounds(tx, ty) and (tx, ty) != player_pos and obstacle_at((tx, ty), self.entities, self.ground_items) is None:
                     return [(tx, ty)]
             return None
 
         elif action == "flee":
-            pc, pr = self.controlled_entity_pos
+            pc, pr = self.controlled_entity_pos[:2]
             dx = -1 if pc > ec else (1 if pc < ec else random.choice([-1, 1]))
             dy = -1 if pr > er else (1 if pr < er else random.choice([-1, 1]))
             target = (ec + dx * 5, er + dy * 5)
@@ -930,7 +955,7 @@ class NpcBehaviorMixin:
         elif action == "approach_enemy":
             best_dist = 999
             best_enemy_pos = None
-            for c2, (e2c, e2r) in self.iter_entities():
+            for c2, (e2c, e2r, _e2z) in self.iter_entities():
                 if c2.is_dead or c2 is creature:
                     continue
                 if not are_hostile(creature, c2):
@@ -998,7 +1023,7 @@ class NpcBehaviorMixin:
         pos = self.get_entity_pos(creature)
         if pos is None:
             return
-        ec, er = pos
+        ec, er = pos[:2]
         while creature.ap > 0:
             if creature.is_dead or creature.has_status("濒死"):
                 break
@@ -1019,7 +1044,7 @@ class NpcBehaviorMixin:
             pos = self.get_entity_pos(creature)
             if pos is None:
                 break
-            ec, er = pos
+            ec, er = pos[:2]
 
     # ═══════════════════════════════════════════════════
     # 树枝生成（阶段8）
@@ -1038,13 +1063,14 @@ class NpcBehaviorMixin:
         entity_ids = {id(creature) for creature, _ in self.entities}
         for creature, _ in self.entities:
             creature.advance_armor_training(delta)
+        self.advance_death_saves(delta)
         if self.controlled_entity is not None and id(self.controlled_entity) not in entity_ids:
             self.controlled_entity.advance_armor_training(delta)
         self._tick_all_statuses(delta)
         self._check_daily_domain_talents()
         self._tick_daily_crops()
-        self._tick_mp_regen()
-        self._tick_food()
+        self._tick_mp_regen(delta)
+        self._tick_food(delta)
         self._check_surface_effects(self.controlled_entity)
         # 昏迷自然清醒累积（1500 钟摆，期间持续昏迷；失去昏迷后清零）
         for creature, _ in self.entities:
@@ -1061,23 +1087,32 @@ class NpcBehaviorMixin:
             if self.emit_log:
                 self.emit_log(msg)
 
-        loops = max(1, int(delta))
-        # 预建 _scan_context 缓存（id(creature) → ctx），loop 内复用避免重复扫描
+        full_loops = max(0, int(delta))
+        if full_loops == 0:
+            return
+
+        # 按 maxS 降序排序，同速按 uid（稳定唯一 id）；跳过被控生物
+        # 同一 delta 内排序一次：速度不变则顺序不变
+        sorted_entities = sorted(
+            [
+                (c, p) for c, p in self.entities
+                if not c.controlled
+                and not any(member is c for member in self.party)
+                and not c.is_dead
+                and not c.has_status("不可移动")
+            ],
+            key=lambda x: (-x[0].speed, x[0].uid)
+        )
+
+        # 预建 id → pos 映射，loop 内增量更新
+        pos_map = {id(c): (ec, er, ez) for c, (ec, er, ez) in self.entities}
         ctx_cache: dict[int, dict] = {}
-        for loop_idx in range(loops):
-            # 按 maxS 降序排序，同速按 uid（稳定唯一 id）；跳过被控生物
-            sorted_entities = sorted(
-                [(c, p) for c, p in self.entities if not c.controlled and not c.is_dead and not c.has_status("不可移动")],
-                key=lambda x: (-x[0].speed, x[0].uid)
-            )
 
-            # 预建 id → pos 映射，避免逐实体 O(N) 线性查找（O(N²)→O(N)）
-            pos_map = {id(c): (ec, er) for c, (ec, er) in self.entities}
-
+        for loop_idx in range(full_loops):
             for creature, _ in sorted_entities:
                 if creature.is_dead:
                     continue
-                ec, er = pos_map.get(id(creature))
+                ec, er, _ez = pos_map.get(id(creature))
                 if ec is None:
                     continue
 
@@ -1090,10 +1125,8 @@ class NpcBehaviorMixin:
                 if not combatants and in_initiative:
                     continue
 
-                # 濒死：掷死亡豁免，跳过行动（D24）
+                # 濒死实体不可行动，死亡豁免由统一死亡系统处理
                 if creature.has_status("濒死"):
-                    # _roll_death_save 内部已处理 稳定(hp=1+昏迷)/苏醒(hp=1)/死亡
-                    self._roll_death_save(creature)
                     continue
 
                 # 忙碌中 → cost 倒计时（受伤害则打断当前动作，立即重新评估）
@@ -1115,13 +1148,14 @@ class NpcBehaviorMixin:
                                 creature._action_remaining_cost = 0
                             # 移动后刷新 pos_map + 失效该实体 ctx（与评估路径行为一致）
                             new_pos = self.get_entity_pos(creature)
-                            if new_pos and new_pos != (ec, er):
+                            if new_pos and new_pos[:2] != (ec, er):
                                 ctx_cache.pop(id(creature), None)
                                 pos_map[id(creature)] = new_pos
                             if self._player_reaction_pending():
                                 if self.emit_reaction_required:
                                     self.emit_reaction_required()
                                 return
+                        ctx_cache.pop(id(creature), None)
                         continue
 
                 # 评估 + 执行：复用缓存 ctx，实体移动后失效
@@ -1131,10 +1165,11 @@ class NpcBehaviorMixin:
                     ctx = self._scan_context(creature, ec, er)
                     ctx_cache[cid] = ctx
                 self._npc_evaluate_and_dispatch(creature, ec, er, ctx=ctx)
+                ctx_cache.pop(cid, None)
                 # 移动后刷新 pos_map，供后续实体读取最新坐标；使该实体 ctx 缓存失效
                 new_pos = self.get_entity_pos(creature)
                 if new_pos:
-                    if new_pos != (ec, er):
+                    if new_pos[:2] != (ec, er):
                         ctx_cache.pop(cid, None)
                     pos_map[cid] = new_pos
                 if self._player_reaction_pending():
@@ -1143,11 +1178,14 @@ class NpcBehaviorMixin:
                     return
 
         # 敌对检测：双方互相在视野内才触发战斗（跳过尸体与濒死）
-        pc, pr = self.controlled_entity_pos
-        for creature, (ec, er) in self.entities:
+        controlled = self.controlled_entity
+        if controlled is None:
+            return
+        pc, pr = self.controlled_entity_pos[:2]
+        for creature, (ec, er, ez) in self.entities:
             if creature.is_dead or creature.has_status("濒死"):
                 continue
-            if are_hostile(creature, self.controlled_entity) and (ec, er) in self.fov_bright:
+            if are_hostile(creature, controlled) and self.is_in_fov((ec, er, ez)):
                 vr = getattr(
                     creature,
                     'effective_vision_range',
@@ -1187,7 +1225,9 @@ class NpcBehaviorMixin:
             for domain in ("evocation", "abjuration"):
                 if domain in creature.domain_talents:
                     continue
-                success, _ = check_dc(creature.stat_adjust("int"), 30)
+                success, _ = check_dc(
+                    creature.stat_adjust("int"), 30, creature=creature
+                )
                 if success:
                     creature.grant_domain_exp(domain, 1)
                     self.emit_log(f"{creature.name} 启发了{domain}领域魔法天赋")

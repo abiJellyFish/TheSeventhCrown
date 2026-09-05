@@ -6,12 +6,14 @@ from dataclasses import InitVar, dataclass, field
 from typing import Any, Callable
 
 from domain.entity import Entity, Item, are_hostile, is_ally
-from domain.grid import Grid
+from domain.grid import Grid, DIRS_8
+from domain.layers import LayerMap, SurfaceCell
 from domain.dice import roll_2d6
 from domain.movement import Terrain, can_enter, find_path
 from domain.obstacle import is_full_obstacle
 from domain.ai.components import COMPONENTS
 from domain.pendulum import PendulumClock
+from domain.death import DeathSystem
 
 from domain.explore import Trap, Clue, _move_ap_cost, ExploreMixin
 from domain.lighting import LightMixin
@@ -46,6 +48,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
 
     # 地图
     map: Grid[Terrain] = field(init=False)
+    world_layers: dict[int, LayerMap] = field(default_factory=dict)
+    active_z: int = 0
     current_map: str = ""
     map_exits: list[dict] = field(default_factory=list)
     loot_spots: list[dict] = field(default_factory=list)
@@ -85,7 +89,13 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     _bush_tiles_cache: object = field(default=None, repr=False)
 
     # 实体
-    entities: list[tuple[Entity, tuple[int, int]]] = field(default_factory=list)
+    entities: list[tuple[Entity, tuple[int, int, int]]] = field(default_factory=list)
+    party: list[Entity] = field(default_factory=list)
+    max_party_size: int = 4
+
+    # 多选小队成员移动（按 id 存储的选中集合）
+    selected_party_members: set[int] = field(default_factory=set, repr=False)
+    _party_move_curS: dict[int, int] = field(default_factory=dict, repr=False)
 
     # 控制组件；控制权是实体组件，不是第二套实体存储。
     controlled_id: int | None = None
@@ -105,6 +115,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
 
     # 时间
     clock: PendulumClock = field(default_factory=PendulumClock)
+    death_system: DeathSystem = field(default_factory=DeathSystem, repr=False)
 
     # 战斗
     in_combat: bool = False
@@ -116,8 +127,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
 
     # 光照与视野
     light_map: Grid | None = None
-    environment_light: "LightLevel | None" = None  # 全局环境光照覆盖；None=按 in_dungeon（室外明亮/室内黑暗）
-    light_sources: dict = field(default_factory=dict)          # {pos: (radius, LightLevel)}
+    environment_light: "LightLevel | None" = None  # 全局环境光照覆盖；None=天光 BRIGHT
+    light_sources: dict = field(default_factory=dict)          # {(x,y,z): (radius, LightLevel)}
     _light_version: int = field(default=0, repr=False)
     _light_cache_key: tuple | None = field(default=None, repr=False)
     _light_grid_cache: Grid | None = field(default=None, repr=False)
@@ -130,6 +141,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     # 观察模式
     observe_mode: bool = False
     observe_cursor: tuple[int, int] = (0, 0)
+    observe_z: int | None = None
+    height_view: bool = False
 
     # 慢速模式
     slow_mode: bool = False
@@ -154,7 +167,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     completed_quests: list[str] = field(default_factory=list)  # 已完成（历史）任务名
 
     # 物品系统
-    ground_items: list = field(default_factory=list)  # list[tuple[Item, tuple[int,int]]]
+    ground_items: list = field(default_factory=list)  # list[tuple[Item, tuple[int,int,int]]]
     item_menu_stack: list[dict] = field(default_factory=list)  # 物品交互菜单栈
     _twig_regrow_at: int = 0               # 下次树枝重生钟摆数
 
@@ -172,14 +185,28 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
 
     def __post_init__(self, player: Entity | None = None):
         self.map = Grid[Terrain](self.map_width, self.map_height, Terrain.GRASS)
+        if not self.world_layers:
+            self.world_layers = {
+                0: LayerMap(self.map_width, self.map_height, Terrain.GRASS)
+            }
+        elif self.active_z not in self.world_layers:
+            self.world_layers[self.active_z] = LayerMap(
+                self.map_width, self.map_height, Terrain.GRASS,
+                exists=self.active_z == 0,
+            )
         # 统一历史字段与领域容器的存储对象，避免两套隐匿状态分叉。
         self.stealth.hidden_from = self.hidden_from
         self.stealth.spot_clock = self.spot_clock
         self.stealth.seen_snap = self.seen_snap
         self.stealth.spot_memo = self.spot_memo
+        self._death_events_emitted: set[int] = set()
+        self.death_system.bind(self)
         if player is not None:
             player.controlled = True
             self.add_entity(player, (0, 0))
+            self.party = [player]
+            player.party_member = True
+            player.z = self.active_z
         self.clock.set_npc_advance_callback(self._advance_npcs)
         self._NPC_ACTIONS = {
             "wander": self._npc_wander,
@@ -210,9 +237,21 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     # ---- 控制组件 ----
 
     def set_controlled(self, creature: Entity | None) -> None:
-        """设置当前被玩家控制的生物。挂载控制组件，摘除 AI 组件（被控跳过 AI）。"""
+        """设置当前被玩家控制的生物。挂载控制组件，摘除 AI 组件（被控跳过 AI）。
+
+        若传入成员已死亡，自动切换到小队中下一个存活成员；全灭则置空。
+        """
         from domain.entity_components import ControlComponent, AIComponent
         from domain.ai.components import DEFAULT_BEHAVIOR
+        if creature is not None and not self.party:
+            self.party = [creature]
+            creature.party_member = True
+            creature.ally = False
+        if creature is not None and self.party and creature not in self.party:
+            raise ValueError("只能控制当前小队成员")
+        if creature is not None and creature.is_dead:
+            alive = [member for member in self.party if not member.is_dead]
+            creature = alive[0] if alive else None
         if creature is not None and not any(c is creature for c, _ in self.entities):
             creature._control = ControlComponent(controlled=True)
             creature._ai = None
@@ -220,6 +259,9 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             if c is creature:
                 c._control = ControlComponent(controlled=True)
                 c._ai = None  # 被控生物跳过 AI
+            elif any(member is c for member in self.party):
+                c._control = None
+                c._ai = None  # 盟友由玩家依次控制，不进入 NPC 行动表
             else:
                 c._control = None
                 if c._ai is None:
@@ -229,7 +271,65 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                     )
         self.controlled_id = id(creature) if creature else None
         self._controlled_cache = creature
+        self.selected_party_members = {self.controlled_id} if self.controlled_id else set()
         self.state_version += 1
+
+    def add_party_member(self, creature: Entity) -> bool:
+        """将场上实体加入小队；小队最多包含四名成员。"""
+        if creature in self.party:
+            return True
+        if len(self.party) >= self.max_party_size or creature.is_dead:
+            return False
+        if not any(c is creature for c, _ in self.entities):
+            raise ValueError("盟友必须先加入地图")
+        self.party.append(creature)
+        creature.party_member = True
+        creature.ally = True
+        creature._control = None
+        creature._ai = None
+        self.state_version += 1
+        return True
+
+    def remove_party_member(self, creature: Entity) -> bool:
+        """移除盟友；玩家不能通过该接口移除。"""
+        if creature not in self.party or creature is self.party[0]:
+            return False
+        self.party.remove(creature)
+        creature.party_member = False
+        creature.ally = False
+        from domain.entity_components import AIComponent
+        from domain.ai.components import DEFAULT_BEHAVIOR
+        creature._ai = AIComponent(
+            behavior_table=list(DEFAULT_BEHAVIOR["components"]),
+            behavior_overrides=dict(DEFAULT_BEHAVIOR["overrides"]),
+        )
+        if creature is self.controlled_entity:
+            self.set_controlled(self.party[0])
+        self.state_version += 1
+        return True
+
+    def next_controlled(self) -> Entity | None:
+        """循环切换到下一名存活小队成员。"""
+        alive = [member for member in self.party if not member.is_dead]
+        if not alive:
+            self.set_controlled(None)
+            return None
+        current = self.controlled_entity
+        if current in alive:
+            index = alive.index(current)
+            target = alive[(index + 1) % len(alive)]
+        else:
+            start = self.party.index(current) if current in self.party else -1
+            target = next(
+                member for member in self.party[start + 1:] + self.party[:start + 1]
+                if not member.is_dead
+            )
+        self.set_controlled(target)
+        return target
+
+    def is_game_over(self) -> bool:
+        """所有当前小队成员死亡时结束旅途。"""
+        return bool(self.party) and all(member.is_dead for member in self.party)
 
     @property
     def controlled_entity(self) -> Entity | None:
@@ -247,29 +347,42 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     def controlled_entity(self, creature: Entity | None) -> None:
         """设置受控实体；实体加入地图后由 add_entity 完成位置归属。"""
         if creature is not None:
+            if self.party and creature not in self.party:
+                if any(member is creature for member, _ in self.entities):
+                    if not self.add_party_member(creature):
+                        raise ValueError("只能控制当前小队成员")
+                else:
+                    raise ValueError("只能控制当前小队成员")
             self.set_controlled(creature)
         else:
             self.set_controlled(None)
 
     @property
-    def controlled_entity_pos(self) -> tuple[int, int] | None:
-        """当前受控实体的位置。"""
+    def controlled_entity_pos(self) -> tuple[int, int, int] | None:
+        """当前受控实体的三维位置。"""
         controlled = self.controlled_entity
         if controlled is not None:
             position = self.get_entity_pos(controlled)
             if position is not None:
                 return position
-        return self.__dict__.get("_controlled_pos_pending")
+        pending = self.__dict__.get("_controlled_pos_pending")
+        if pending is not None and len(pending) == 2:
+            return (pending[0], pending[1], 0)
+        return pending
 
     @controlled_entity_pos.setter
-    def controlled_entity_pos(self, value: tuple[int, int]) -> None:
+    def controlled_entity_pos(self, value: tuple[int, int] | tuple[int, int, int]) -> None:
         controlled = self.controlled_entity
         if controlled is None:
             self.__dict__["_controlled_pos_pending"] = tuple(value)
             return
-        for index, (creature, _) in enumerate(self.entities):
+        for index, (creature, pos) in enumerate(self.entities):
             if creature is controlled:
-                self.entities[index] = (creature, tuple(value))
+                if len(value) == 2:
+                    new_pos = (value[0], value[1], pos[2])
+                else:
+                    new_pos = tuple(value)
+                self.entities[index] = (creature, new_pos)
                 self.state_version += 1
                 return
         self.__dict__["_controlled_pos_pending"] = tuple(value)
@@ -310,6 +423,20 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                 position = self.get_entity_pos(source)
         self.emit_event(log_event(message, category, position=position))
 
+    def notify_entity_death(self, creature: Entity) -> None:
+        """发布实体首次真正死亡的事件和日志。"""
+        entity_id = id(creature)
+        if entity_id in self._death_events_emitted:
+            return
+        self._death_events_emitted.add(entity_id)
+        from domain.events import entity_died
+        self.emit_event(entity_died(entity_id, creature.name))
+        self.emit_log(f"{creature.name}死亡")
+        self.selected_party_members.discard(entity_id)
+        self._party_move_curS.pop(entity_id, None)
+        if self.controlled_entity is creature:
+            self.next_controlled()
+
     def emit_reaction_required(self) -> None:
         self.emit_event(reaction_required())
 
@@ -333,21 +460,32 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
 
     # ---- 实体管理 ----
 
-    def add_entity(self, creature: Entity, pos: tuple[int, int]) -> None:
+    def add_entity(self, creature: Entity, pos: tuple[int, int] | tuple[int, int, int]) -> None:
         # 实体的控制权只由 ControlComponent 决定。通过运行时入口加入的
         # 实体也必须遵守同一规则，避免出现“无控制且无 AI”的悬空实体。
         from domain.entity_components import AIComponent
         from domain.ai.components import DEFAULT_BEHAVIOR
+        creature._death_callback = self.notify_entity_death
+        creature._death_save_callback = self.death_system.on_enter_dying
         if creature._control is None and creature._ai is None:
             creature._ai = AIComponent(
                 behavior_table=list(DEFAULT_BEHAVIOR["components"]),
                 behavior_overrides=dict(DEFAULT_BEHAVIOR["overrides"]),
             )
-        self.entities.append((creature, tuple(pos)))
+        if len(pos) == 2:
+            pos3 = (pos[0], pos[1], getattr(creature, "z", 0))
+        else:
+            pos3 = tuple(pos)
+            creature.z = pos3[2]
+        self.entities.append((creature, pos3))
         self.invalidate_spatial_cache()
         self.state_version += 1
-        if self.is_burning(pos):
+        if self.is_burning(pos3[:2]):
             self._ignite(creature, 5)
+
+    def advance_death_saves(self, delta: float) -> None:
+        """推进所有濒死实体的独立死亡豁免计时。"""
+        self.death_system.advance(delta)
 
     def remove_entity(self, creature: Entity) -> None:
         self.entities = [(c, p) for c, p in self.entities if c is not creature]
@@ -365,8 +503,376 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         for key in [k for k in self.spot_clock if cid in k]:
             del self.spot_clock[key]
 
-    def get_entity_at(self, col: int, row: int) -> Entity | None:
-        return self.spatial_cache()["entity_by_position"].get((col, row))
+    def get_entity_at(self, col: int, row: int, z: int | None = None) -> Entity | None:
+        """返回指定高度层实体；省略高度时使用当前活动层。"""
+        layer_z = self.active_z if z is None else int(z)
+        if layer_z == self.active_z:
+            return self.spatial_cache()["entity_by_position"].get((col, row))
+        return next(
+            (
+                creature for creature, position in self.entities
+                if position[2] == layer_z and position[:2] == (col, row)
+            ),
+            None,
+        )
+
+    def layer(self, z: int | None = None, create: bool = True) -> LayerMap:
+        """返回指定高度层；create=False 时不创建空层，避免污染 world_layers。"""
+        level = self.active_z if z is None else int(z)
+        if level not in self.world_layers:
+            if not create:
+                return LayerMap(
+                    self.map_width, self.map_height, Terrain.BARREN,
+                    exists=False,
+                )
+            self.world_layers[level] = LayerMap(
+                self.map_width, self.map_height, Terrain.BARREN,
+                exists=level == 0,
+            )
+        return self.world_layers[level]
+
+    def surface_at(self, position: tuple[int, int] | tuple[int, int, int],
+                   z: int | None = None, create: bool = True) -> SurfaceCell:
+        return self.layer(z, create=create).surface(tuple(position[:2]))
+
+    def visible_surface_levels(self, position: tuple[int, int]) -> list[int]:
+        """返回该坐标存在且可切片查看的高度层，最高层优先。"""
+        col, row = position
+        levels = [
+            z for z, layer in self.world_layers.items()
+            if layer.grid.within_bounds(col, row) and layer.surface(position).exists
+        ]
+        return sorted(levels, reverse=True)
+
+    def surface_height_at(self, position: tuple[int, int]) -> int:
+        """返回坐标上仍存在地表的最高绝对高度。"""
+        levels = self.visible_surface_levels(position)
+        return levels[0] if levels else self.active_z
+
+    def _surface_height_grid(self) -> Grid[int]:
+        grid = Grid[int](self.map_width, self.map_height, self.active_z)
+        for row in range(self.map_height):
+            for col in range(self.map_width):
+                grid[col, row] = self.surface_height_at((col, row))
+        return grid
+
+    def observation_surface(self, position: tuple[int, int]) -> tuple[int, SurfaceCell]:
+        """返回观察光标当前选中的绝对高度与地表。"""
+        levels = self.visible_surface_levels_in_fov(position)
+        # 纯面板测试/初始化阶段尚未计算 FOV；真实观察状态有非空缓存时不允许回退。
+        if not levels and not self.fov_cache:
+            levels = self.visible_surface_levels(position)[:1]
+        z = self.observe_z if self.observe_z in levels else (
+            levels[0] if levels else self.active_z
+        )
+        if not levels:
+            return z, SurfaceCell(exists=False)
+        return z, self.surface_at(position, z)
+
+    def exposed_surface(self, position: tuple[int, int], visible=None):
+        """返回视野中该坐标最高的露出地表。"""
+        visible = self.fov_cache if visible is None else visible
+        candidates = [
+            z for z in self.visible_surface_levels(position)
+            if (position[0], position[1], z) in visible
+        ]
+        if not candidates:
+            return None
+        z = candidates[0]
+        return z, self.surface_at(position, z)
+
+    def is_exposed_surface(self, position: tuple[int, int, int]) -> bool:
+        """判断三维地表是否是当前视野内该坐标的最高露出层。"""
+        exposed = self.exposed_surface(position[:2])
+        return exposed is not None and exposed[0] == position[2]
+
+    def is_column_in_fov(self, position: tuple[int, int]) -> bool:
+        """该列是否有任一格进入三维视野。"""
+        col, row = position
+        return any(x == col and y == row for x, y, _ in self.fov_cache)
+
+    def is_targetable_cell(self, cell: tuple[int, int, int]) -> bool:
+        """瞄准光标可停留的三维格：视野内地表，或视野内球形视距中的空气。"""
+        if cell in self.fov_cache:
+            return True
+        observer = self.controlled_entity
+        if observer is None or not self.is_column_in_fov(cell[:2]):
+            return False
+        origin = self.get_entity_pos(observer) or (*self.observe_cursor, self.active_z)
+        dx, dy, dz = (cell[0] - origin[0], cell[1] - origin[1],
+                      cell[2] - getattr(observer, "z", self.active_z))
+        return dx * dx + dy * dy + dz * dz <= observer.vision_range ** 2
+
+    def visible_surface_levels_in_fov(self, position: tuple[int, int]) -> list[int]:
+        """返回该坐标实际进入三维视野的地表层，最高层优先。"""
+        levels = [
+            z for z in self.visible_surface_levels(position)
+            if (position[0], position[1], z) in self.fov_cache
+        ]
+        return levels[:1]
+
+    def target_surface_levels_in_fov(self, position: tuple[int, int]) -> list[int]:
+        """返回瞄准可选的所有视野内地表层，最高层优先。"""
+        return [
+            z for z in self.visible_surface_levels(position)
+            if (position[0], position[1], z) in self.fov_cache
+        ]
+
+    def is_height_wall(self, position: tuple[int, int], z: int) -> bool:
+        """判断坐标是否是生成地图登记的高度墙。"""
+        return (*position, z) in getattr(self, "dungeon_wall_cells", set())
+
+    def is_surface_edge(self, position: tuple[int, int], z: int) -> bool:
+        """判断地表是否是高层地表与低层地表的边缘。"""
+        if not self.surface_at(position, z).exists:
+            return False
+        col, row = position
+        for dx, dy in DIRS_8:
+            neighbor = (col + dx, row + dy)
+            if not self.map.within_bounds(*neighbor):
+                continue
+            if self.surface_height_at(neighbor) < z:
+                return True
+        return False
+
+    def is_xy_in_fov(self, position: tuple[int, int]) -> bool:
+        """判断二维坐标是否有任一高度层进入视野。"""
+        col, row = position
+        return any(x == col and y == row for x, y, _ in self.fov_cache)
+
+    def damageables_in_shape(
+        self, anchor: tuple[int, int, int], shape: str,
+        visible_only: bool = False,
+    ) -> list:
+        """收集三维形状内露出的实体与地面物品。"""
+        from domain.combat.shape import shape_cells
+        from domain.combat.shape import parse_shape
+        cells = set(shape_cells(anchor, parse_shape(shape)))
+        result = []
+        if visible_only:
+            cells = {
+                cell for cell in cells
+                if cell in self.fov_cache
+                and self.surface_at(cell[:2], cell[2]).exists
+                and self.is_exposed_surface(cell)
+            }
+        for creature, position in self.entities:
+            if position in cells and self.surface_at(position[:2], position[2]).exists:
+                result.append(creature)
+        for item, position in self.ground_items:
+            if position in cells and self.surface_at(position[:2], position[2]).exists:
+                result.append(item)
+        return result
+
+    def damage_surface(self, position: tuple[int, int], amount: int,
+                       z: int | None = None) -> int:
+        layer_z = self.active_z if z is None else int(z)
+        cell = self.surface_at(position, layer_z)
+        was_exists = cell.exists
+        remaining = self.layer(layer_z).damage_surface(position, amount)
+        self._terrain_version += 1
+        self.invalidate_spatial_cache()
+        if was_exists and not cell.exists:
+            self._relocate_objects_after_surface_loss(position, layer_z)
+        return remaining
+
+    def _relocate_objects_after_surface_loss(
+        self, position: tuple[int, int], lost_z: int
+    ) -> None:
+        """地表消失后，将该层对象下沉到最近存在的地表。"""
+        from domain.item_actions import find_placeable_position, place_on_ground
+        col, row = position
+        lowered_entities = []
+        for creature, pos in self.entities:
+            if pos == (col, row, lost_z):
+                lowered = self._lowered_position(pos)
+                creature.z = lowered[2]
+                lowered_entities.append((creature, lowered))
+            else:
+                lowered_entities.append((creature, pos))
+        self.entities = lowered_entities
+        remaining_items = [
+            entry for entry in self.ground_items
+            if entry[1] != (col, row, lost_z)
+        ]
+        for item, _ in [
+            entry for entry in self.ground_items
+            if entry[1] == (col, row, lost_z)
+        ]:
+            target = find_placeable_position(
+                remaining_items,
+                self._lowered_position((col, row, lost_z)),
+                item,
+                self.world_layers,
+            )
+            if target is None:
+                raise RuntimeError(f"地表下沉后没有物品可用位置: {(col, row, lost_z)}")
+            place_on_ground(remaining_items, item, *target)
+        self.ground_items = remaining_items
+        self.invalidate_spatial_cache()
+
+    def _lowered_position(self, position: tuple[int, int, int]) -> tuple[int, int, int]:
+        """返回坐标下方最近存在的地表位置。"""
+        col, row, z = position
+        for lower_z in sorted((level for level in self.world_layers if level < z), reverse=True):
+            if self.surface_at((col, row), lower_z).exists:
+                return col, row, lower_z
+        raise RuntimeError(f"对象下方没有存在地表: {position}")
+
+    def set_active_z(self, z: int) -> None:
+        """切换兼容二维地图入口，不移动实体。"""
+        self.active_z = int(z)
+        layer = self.layer(self.active_z)
+        self.map = Grid(layer.width, layer.height, Terrain.BARREN)
+        for row in range(layer.height):
+            for col in range(layer.width):
+                cell = layer.surface((col, row))
+                if cell.exists:
+                    self.map[col, row] = cell.terrain
+        self.invalidate_spatial_cache()
+
+    def climb_player(self, direction: int) -> bool:
+        """按朝向逐层攀爬；direction=1 向高处，-1 向低处。"""
+        creature = self.controlled_entity
+        if creature is None or not creature.meets_condition("can_move"):
+            return False
+        position = self.get_entity_pos(creature)
+        if position is None:
+            return False
+        target_z = creature.z + (1 if direction > 0 else -1)
+        dx, dy = creature.facing
+        flying = creature.fly_speed > 0
+        hovering = creature.is_hovering and not flying
+        if hovering and direction > 0:
+            return False
+        if flying or hovering:
+            if target_z not in self.world_layers or target_z < 0:
+                return False
+            climb_cells = [position[:2]]
+        elif direction < 0:
+            climb_cells = [position[:2]] + [
+                (position[0] + offset_x, position[1] + offset_y)
+                for offset_x, offset_y in DIRS_8
+                if self.map.within_bounds(
+                    position[0] + offset_x, position[1] + offset_y
+                )
+            ]
+        else:
+            if (dx, dy) == (0, 0):
+                return False
+            climb_cells = [
+                (position[0] + offset_x, position[1] + offset_y)
+                for offset_x, offset_y in DIRS_8
+                if dx * offset_x + dy * offset_y > 0
+                and self.map.within_bounds(
+                    position[0] + offset_x, position[1] + offset_y
+                )
+            ]
+            climb_cells.sort(
+                key=lambda cell: (
+                    cell != (position[0] + dx, position[1] + dy),
+                    abs(cell[0] - position[0]) + abs(cell[1] - position[1]),
+                )
+            )
+        flying = creature.is_hovering or creature.fly_speed > 0
+        if not can_enter(
+            position[0], position[1], self.map, self.entities,
+            allow_non_adjacent=True,
+            ground_items=self.ground_items,
+            surface_layers=self.world_layers,
+            actor_z=target_z,
+            can_fly=flying,
+        ):
+            return False
+        has_target_surface = any(
+            self.surface_at(cell, target_z).exists for cell in climb_cells
+        )
+        has_vertical_hole = (
+            direction < 0
+            and not self.surface_at(position[:2], target_z).exists
+            and any(
+                self.surface_at(position[:2], z).exists
+                for z in self.world_layers
+                if z < target_z
+            )
+        )
+        if not flying and not has_target_surface and not has_vertical_hole:
+            return False
+        if self.is_height_wall(position[:2], target_z):
+            return False
+        for index, (entity, entity_position) in enumerate(self.entities):
+            if entity is creature:
+                self.entities[index] = (entity, (*entity_position[:2], target_z))
+                break
+        creature.z = target_z
+        self.active_z = target_z
+        self.set_active_z(target_z)
+        self.state_version += 1
+        speed = creature.climb_speed or creature.effective_speed / 2
+        self.clock.tick_move(speed)
+        return True
+
+    def release_player(self) -> bool:
+        """解除攀附并逐层下降至可站立地表。"""
+        creature = self.controlled_entity
+        if creature is None or creature.is_hovering or creature.fly_speed > 0:
+            return False
+        return self.fall_player()
+
+    def fall_player(self, save_ability: str | None = None) -> bool:
+        """逐层检查坠落，落地后按最终高度差统一结算伤害。"""
+        creature = self.controlled_entity
+        if creature is None:
+            return False
+        # 坠落中的实体可能不在 active_z；空间缓存只索引当前切片，
+        # 因此这里直接从实体容器读取二维位置。
+        position = next(
+            (entity_position for entity, entity_position in self.entities
+             if entity is creature),
+            None,
+        )
+        if position is None:
+            return False
+        start_z = creature.z
+        landing_z = start_z
+        landing = None
+        while landing_z > -2:
+            landing_z -= 1
+            candidate = self.surface_at(position, landing_z)
+            supported = candidate.exists
+            if not supported and creature.meets_condition("can_move"):
+                for dx, dy in DIRS_8:
+                    neighbor = (position[0] + dx, position[1] + dy)
+                    if (self.map.within_bounds(*neighbor)
+                            and self.surface_at(neighbor, landing_z).exists):
+                        supported = True
+                        break
+            if supported:
+                landing = candidate
+                break
+        if landing is None:
+            return False
+        creature.z = landing_z
+        for index, (entity, entity_position) in enumerate(self.entities):
+            if entity is creature:
+                self.entities[index] = (entity, (*entity_position[:2], landing_z))
+                break
+        distance = start_z - landing_z
+        if distance > 1:
+            from domain.combat.attack import roll_dice
+            damage = roll_dice(distance - 1, 6)
+            if landing.terrain is Terrain.WATER:
+                from domain.combat.attack import stat_check
+                if save_ability not in {"str", "dex"}:
+                    save_ability = "str" if creature.stat("str") >= creature.stat("dex") else "dex"
+                if stat_check(creature, save_ability) >= 15:
+                    damage //= 2
+            creature.take_damage(damage, "bludgeoning")
+            creature.add_status("prone")
+        self.active_z = landing_z
+        self.set_active_z(landing_z)
+        self.state_version += 1
+        return True
 
     def get_door_at(self, pos: tuple[int, int]):
         """返回指定位置的门物品。"""
@@ -415,9 +921,14 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         if self._spatial_cache is None:
             entity_by_position = {}
             for creature, position in self.entities:
-                entity_by_position.setdefault(position, creature)
+                if position[2] == self.active_z:
+                    entity_by_position.setdefault(position[:2], creature)
             self._spatial_cache = {
-                "entity_positions": {id(c): pos for c, pos in self.entities},
+                "active_z": self.active_z,
+                "entity_positions": {
+                    id(c): pos for c, pos in self.entities
+                    if pos[2] == self.active_z
+                },
                 "entity_by_position": entity_by_position,
                 "ground_items_by_position": {},
                 "item_positions": set(),
@@ -425,29 +936,38 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                 "bush_positions": set(),
                 "entities_by_chunk": {},
                 "ground_items_by_chunk": {},
-                "alive_positions": {pos for c, pos in self.entities if not c.is_dead},
-                "dead_positions": {pos for c, pos in self.entities if c.is_dead},
-                "blocking_positions": {
-                    pos for item, pos in self.ground_items
-                    if is_full_obstacle(item)
+                "alive_positions": {
+                    pos[:2] for c, pos in self.entities
+                    if not c.is_dead and pos[2] == self.active_z
                 },
+                "dead_positions": {
+                    pos[:2] for c, pos in self.entities
+                    if c.is_dead and pos[2] == self.active_z
+                },
+                "blocking_positions": set(),
             }
             for item, pos in self.ground_items:
+                if pos[2] != self.active_z:
+                    continue
                 self._spatial_cache["ground_items_by_position"].setdefault(
-                    pos, []
+                    pos[:2], []
                 ).append((item, pos))
-                self._spatial_cache["item_positions"].add(pos)
+                self._spatial_cache["item_positions"].add(pos[:2])
                 if getattr(item, "effect", "") == "restore_food":
-                    self._spatial_cache["food_item_positions"].add(pos)
+                    self._spatial_cache["food_item_positions"].add(pos[:2])
                 if "灌木" in getattr(item, "name", ""):
-                    self._spatial_cache["bush_positions"].add(pos)
+                    self._spatial_cache["bush_positions"].add(pos[:2])
             for creature, pos in self.entities:
-                chunk = chunk_for_position(pos, self.chunk_size)
+                if pos[2] != self.active_z:
+                    continue
+                chunk = chunk_for_position(pos[:2], self.chunk_size)
                 self._spatial_cache["entities_by_chunk"].setdefault(
                     chunk, []
                 ).append((creature, pos))
             for item, pos in self.ground_items:
-                chunk = chunk_for_position(pos, self.chunk_size)
+                if pos[2] != self.active_z:
+                    continue
+                chunk = chunk_for_position(pos[:2], self.chunk_size)
                 self._spatial_cache["ground_items_by_chunk"].setdefault(
                     chunk, []
                 ).append((item, pos))
@@ -480,15 +1000,41 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         self._visibility_cache = {}
         self._fov_cache_key = None
 
+    def is_in_fov(self, position: tuple[int, int] | tuple[int, int, int]) -> bool:
+        """检查位置是否在视野内。支持二维或三维坐标。
+        
+        二维坐标检查该坐标在当前活动层是否在视野内；三维坐标检查精确位置。
+        """
+        if len(position) == 3:
+            return position in self.fov_cache
+        col, row = position
+        return (col, row, self.active_z) in self.fov_cache
+
     def get_damageable_at(self, col: int, row: int):
         """兼容旧调用方：返回坐标上的第一个可伤害对象。"""
         return next(iter(self.get_damageables_at(col, row)), None)
 
-    def get_damageables_at(self, col: int, row: int) -> list:
-        """返回坐标上的全部可伤害对象，不对实体和物品排序取舍。"""
+    def get_damageables_at(
+        self, col: int, row: int, z: int | None = None,
+        include_dead: bool = False,
+    ) -> list:
+        """返回指定高度层全部可伤害对象，不对实体和物品排序取舍。
+        include_dead=True 时包含死亡实体（用于复活等瞄准面板）。"""
+        layer_z = self.active_z if z is None else int(z)
+        if layer_z != self.active_z:
+            entity = self.get_entity_at(col, row, layer_z)
+            result = [entity] if entity is not None and (include_dead or not entity.is_dead) else []
+            for item, position in self.ground_items:
+                if position[2] != layer_z or position[:2] != (col, row):
+                    continue
+                if not is_destroyed(item) and (
+                    hasattr(item, "durability") or hasattr(item, "max_durability")
+                ):
+                    result.append(item)
+            return result
         result = []
         entity = self.spatial_cache()["entity_by_position"].get((col, row))
-        if entity is not None and not entity.is_dead:
+        if entity is not None and (include_dead or not entity.is_dead):
             result.append(entity)
         for item, _ in self.spatial_cache()["ground_items_by_position"].get(
             (col, row), ()
@@ -514,35 +1060,32 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         self.invalidate_spatial_cache()
         return destroyed
 
-    def get_entity_pos(self, target: Entity) -> tuple[int, int] | None:
-        """查找生物在地图上的坐标。"""
+    def get_entity_pos(self, target: Entity) -> tuple[int, int, int] | None:
+        """查找生物在地图上的三维坐标（含非当前活动层）。"""
         position = self.spatial_cache().get("entity_positions", {}).get(id(target))
-        return position
+        if position is not None:
+            return position
+        return next((pos for c, pos in self.entities if c is target), None)
 
     def check_combat_visibility(self, creature: Entity | None = None) -> bool:
-        """当前生物脱离所有敌对实体视野时自动退出战斗。"""
+        """参战敌对实体均看不见该生物时返回 True，表示应退出战斗。
+
+        只检查 combat_initiative 中的存活敌对实体，不修改状态。
+        """
         if not self.in_combat:
             return False
         creature = creature or self.controlled_entity
         if creature is None:
             return False
         from domain.visibility import can_see
-        enemies = [
-            entity for entity, _ in self.iter_entities()
+        hostiles = [
+            entity for entity in self.combat_initiative
             if entity is not creature
             and not entity.is_dead
             and are_hostile(creature, entity)
         ]
-        if enemies and any(can_see(self, enemy, creature) for enemy in enemies):
+        if hostiles and any(can_see(self, enemy, creature) for enemy in hostiles):
             return False
-        self.in_combat = False
-        self.combat_initiative.clear()
-        self.current_turn_index = 0
-        self.combat_turn_entity = None
-        self.pending_reactions.clear()
-        self.pending_attack = None
-        self.combat_phase = "idle"
-        self.interact_phase = ""
         return True
 
     # ---- 移动 ----
@@ -553,29 +1096,49 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             return False
         if not p.meets_condition("can_move"):
             return False
-        for i, (c, (ec, er)) in enumerate(self.entities):
+        for i, (c, (ec, er, ez)) in enumerate(self.entities):
             if c is p:
+                target_z = p.z
+                if (col - ec, row - er) != (0, 0):
+                    p.facing = (col - ec, row - er)
                 if can_enter(col, row, self.map, self.entities, ec, er,
                              ground_items=self.ground_items,
-                             tile_space_prebuilt=self.spatial_cache()):
-                    self.entities[i] = (c, (col, row))
+                             tile_space_prebuilt=self.spatial_cache(),
+                             surface_layers=self.world_layers,
+                             actor_z=target_z,
+                             can_fly=p.is_hovering or p.fly_speed > 0):
+                    self.entities[i] = (c, (col, row, target_z))
                     self._spatial_cache = None
+                    p.z = target_z
+                    if target_z != self.active_z:
+                        self.active_z = target_z
+                        self.set_active_z(target_z)
                     self.state_version += 1
                     self._check_surface_effects(p)
                     self._check_traps(p, (col, row))
-                    self.check_combat_visibility(p)
+                    self._check_wall_support_or_fall(p)
                     if not self.in_combat:
-                        # 躲藏/倒地移动速度减半（阶段7.5/7.6：速度减半=每格消耗翻倍，
-                        # 移动不自动解除躲藏/倒地，起身需独立 _do_stand）
                         halved = p.has_status("prone") or p.has_status("hiding")
                         speed = p.effective_speed / 2.0 if halved else p.effective_speed
                         self.clock.tick_move(speed)
-                    # 移动自动转向（阶段2）
-                    if (col - ec, row - er) != (0, 0):
-                        p.facing = (col - ec, row - er)
                     self._offer_opportunities(p, (ec, er), (col, row))
                     return True
         return False
+
+    def _check_wall_support_or_fall(self, creature) -> None:
+        """墙面上的横向移动后，失去同高度支撑时触发坠落。"""
+        if creature.is_hovering or creature.fly_speed > 0:
+            return
+        position = self.get_entity_pos(creature)
+        if position is None or self.surface_at(position[:2], creature.z).exists:
+            return
+        for dx, dy in DIRS_8:
+            neighbor = (position[0] + dx, position[1] + dy)
+            if (self.map.within_bounds(*neighbor)
+                    and self.surface_at(neighbor, creature.z).exists):
+                return
+        if creature is self.controlled_entity:
+            self.fall_player()
 
     def move_entity(self, creature: Entity, from_col: int, from_row: int,
                     to_col: int, to_row: int,
@@ -587,11 +1150,14 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                      from_col, from_row,
                          allow_non_adjacent=allow_non_adjacent,
                          ground_items=self.ground_items,
-                         tile_space_prebuilt=self.spatial_cache()):
+                         tile_space_prebuilt=self.spatial_cache(),
+                         surface_layers=self.world_layers,
+                         actor_z=creature.z,
+                         can_fly=creature.is_hovering or creature.fly_speed > 0):
             # 更新位置
-            for i, (c, (ec, er)) in enumerate(self.entities):
+            for i, (c, (ec, er, ez)) in enumerate(self.entities):
                 if c is creature and (ec, er) == (from_col, from_row):
-                    self.entities[i] = (c, (to_col, to_row))
+                    self.entities[i] = (c, (to_col, to_row, ez))
                     self._spatial_cache = None
                     self.state_version += 1
                     self._check_surface_effects(creature)
@@ -600,6 +1166,75 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                     creature.facing = (to_col - from_col, to_row - from_row)
                     return True
         return False
+
+    def move_selected_followers(self, leader: Entity, delta: float) -> None:
+        """根据 leader 移动推进的钟摆数，移动所有被选中的跟随者。"""
+        if delta <= 0:
+            return
+        leader_pos = self.get_entity_pos(leader)
+        if leader_pos is None:
+            return
+        SCALE = 10
+        for member in list(self.party):
+            if member is leader or member.is_dead or id(member) not in self.selected_party_members:
+                continue
+            member_pos = self.get_entity_pos(member)
+            if member_pos is None:
+                continue
+            target = self._party_follower_target(member_pos, leader_pos, member)
+            if target is None:
+                continue
+            path = find_path(
+                self.map, self.entities, member_pos, target,
+                ground_items=self.ground_items,
+                surface_layers=self.world_layers,
+                actor_z=member.z,
+                can_fly=member.is_hovering or member.fly_speed > 0,
+            )
+            if not path or len(path) < 2:
+                continue
+            halved = member.has_status("prone") or member.has_status("hiding")
+            ticks_per_grid = _move_ap_cost(member, halved=halved)
+            curS = self._party_move_curS.get(id(member), 0)
+            curS += int(SCALE * delta)
+            steps = curS // ticks_per_grid
+            self._party_move_curS[id(member)] = curS % ticks_per_grid
+            from_pos = member_pos
+            for i in range(min(steps, len(path) - 1)):
+                next_pos = path[i + 1]
+                if not self.move_entity(member, from_pos[0], from_pos[1], next_pos[0], next_pos[1]):
+                    break
+                from_pos = next_pos
+
+    def _party_follower_target(
+        self, follower_pos: tuple[int, int], leader_pos: tuple[int, int], follower: Entity
+    ) -> tuple[int, int] | None:
+        """为跟随者选取 leader 相邻的可用目标格。"""
+        candidates = []
+        for dc in (-1, 0, 1):
+            for dr in (-1, 0, 1):
+                if dc == 0 and dr == 0:
+                    continue
+                pos = (leader_pos[0] + dc, leader_pos[1] + dr)
+                if not self.map.within_bounds(pos[0], pos[1]):
+                    continue
+                if pos == follower_pos:
+                    return pos
+                if can_enter(
+                    pos[0], pos[1], self.map, self.entities,
+                    allow_non_adjacent=True,
+                    ground_items=self.ground_items,
+                    tile_space_prebuilt=self.spatial_cache(),
+                    surface_layers=self.world_layers,
+                    actor_z=follower.z,
+                    can_fly=follower.is_hovering or follower.fly_speed > 0,
+                ):
+                    distance = max(abs(pos[0] - follower_pos[0]), abs(pos[1] - follower_pos[1]))
+                    candidates.append((distance, pos))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
 
     def _player_reaction_pending(self) -> bool:
         return any(e.get("reactor") is not None and getattr(e["reactor"], "controlled", False)
@@ -631,7 +1266,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         kind = event["kind"]
         spec = REACTION_DEFS[kind]
         apos = self.get_entity_pos(reactor)
-        visible = apos is not None and apos in self.fov_cache
+        visible = apos is not None and self.is_in_fov(apos)
         if reactor.ap < cost:
             if self.emit_log and visible:
                 self.emit_log(spec["log_npc"].format(reactor=reactor.name, mover=mover.name)
@@ -685,8 +1320,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                 return
             self.emit_turn_resume()
 
-    def _first_free_adjacent(self, origin: tuple[int, int]) -> tuple[int, int]:
-        oc, orow = origin
+    def _first_free_adjacent(self, origin: tuple[int, int] | tuple[int, int, int]) -> tuple[int, int]:
+        oc, orow = origin[0], origin[1]
         for radius in range(1, 32):
             for dc in range(-radius, radius + 1):
                 for dr in range(-radius, radius + 1):
@@ -698,13 +1333,12 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         raise RuntimeError("无可用邻格复活")
 
     def extract_corpse_and_place(self, creature: Entity) -> None:
-        corpse_name = getattr(creature.corpse, "name", None) if creature.corpse else None
+        corpse = getattr(creature, "corpse", None)
         holder_pos = None
         for ent, pos in self.entities:
             inv = getattr(ent, "inventory", None) or []
             for item in list(inv):
-                if corpse_name and item.name == corpse_name:
-                    inv.remove(item)
+                if corpse is not None and item is corpse:
                     holder_pos = pos
                     break
             if holder_pos:
@@ -712,11 +1346,55 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         if holder_pos is None:
             return
         dest = self._first_free_adjacent(holder_pos)
-        for i, (c, _) in enumerate(self.entities):
+        for ent, _ in self.entities:
+            if ent is creature:
+                break
+        else:
+            raise ValueError("尸体实体不在地图上")
+        # 先确认目标格，再变更背包，保证无空位时完整回滚。
+        for ent, _ in self.entities:
+            inv = getattr(ent, "inventory", None) or []
+            if corpse in inv:
+                inv.remove(corpse)
+                break
+        for i, (c, pos) in enumerate(self.entities):
             if c is creature:
-                self.entities[i] = (c, dest)
+                if len(dest) == 2:
+                    dest3 = (dest[0], dest[1], pos[2])
+                else:
+                    dest3 = tuple(dest)
+                self.entities[i] = (c, dest3)
                 return
-        self.entities.append((creature, dest))
+        self.entities.append((creature, dest3))
+
+    def revive_entity(self, creature: Entity) -> tuple[int, int]:
+        """原子复活实体并移至相邻空格，失败时不改变尸体或状态。"""
+        if not creature.is_dead or creature.body_type == "undead":
+            raise ValueError("目标不是可复活的非亡灵尸体")
+        current_pos = self.get_entity_pos(creature)
+        if current_pos is None:
+            raise ValueError("尸体不在地图上")
+        holder_pos = current_pos
+        corpse = getattr(creature, "corpse", None)
+        holder = None
+        for ent, pos in self.entities:
+            if corpse is not None and any(item is corpse for item in ent.inventory):
+                holder, holder_pos = ent, pos
+                break
+        destination = self._first_free_adjacent(holder_pos)
+        if holder is not None and corpse is not None:
+            holder.inventory.remove(corpse)
+        creature.revive()
+        for index, (entity, pos) in enumerate(self.entities):
+            if entity is creature:
+                if len(destination) == 2:
+                    dest3 = (destination[0], destination[1], pos[2])
+                else:
+                    dest3 = tuple(destination)
+                self.entities[index] = (entity, dest3)
+                self.invalidate_spatial_cache()
+                return dest3
+        raise ValueError("尸体实体不在地图上")
 
     def _tick_all_statuses(self, delta: float = 1.0) -> None:
         """推进所有实体的状态计时。
@@ -727,15 +1405,18 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         if p is not None and not any(c is p for c, _ in self.entities):
             p.tick_statuses(delta)
 
-    def _tick_mp_regen(self) -> None:
+    def _tick_mp_regen(self, delta: float = 1.0) -> None:
         """每钟摆魔法使自然恢复 MP：1d4 + 智力调整值 + 感知调整值。"""
         p = self.controlled_entity
         if not p or p.mp >= p.max_mp or p.char_class != "mage":
             return
-        restore = random.randint(1, 4) + p.stat_adjust("int") + p.stat_adjust("wis")
+        base = p.stat_adjust("int") + p.stat_adjust("wis")
+        restore = 0
+        for _ in range(int(delta)):
+            restore += random.randint(1, 4) + base
         p.mp = min(p.max_mp, p.mp + restore)
 
-    def _tick_food(self) -> None:
+    def _tick_food(self, delta: float = 1.0) -> None:
         """每钟摆所有非 food_locked 生物消耗 1 饮食值，归零后扣 HP。
         被控生物若在 entities 中则随迭代处理，否则单独处理。"""
         # 确保被控生物被处理（build_world 等可能清空 entities）
@@ -746,14 +1427,16 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         for creature, _ in all_creatures:
             if creature.is_dead:
                 continue
-            # 临时：被控生物 HP 保底 1（玩家暂不可死亡，接入完整死亡流程后移除）
-            if creature.controlled and creature.hp < 1:
-                creature.hp = 1
             if creature.food_locked:
                 continue
             # NPC 饥饿时优先吃背包食物（玩家手动吃，不自动）
             max_food = 15000
-            if not creature.controlled and creature.food_value < max_food * 0.2 and creature.inventory:
+            if (
+                not creature.controlled
+                and not creature.party_member
+                and creature.food_value < max_food * 0.2
+                and creature.inventory
+            ):
                 for item in list(creature.inventory):
                     if getattr(item, 'effect', '') == 'restore_food':
                         amt = item.amount
@@ -775,7 +1458,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                                 position=self.get_entity_pos(creature),
                             )
                         break
-            creature.food_value = max(0, creature.food_value - 250)
+            creature.food_value = max(0, creature.food_value - int(delta))
             # 玩家饥饿/濒死提示
             if creature.controlled and self.emit_log:
                 if creature.food_value == 3000:

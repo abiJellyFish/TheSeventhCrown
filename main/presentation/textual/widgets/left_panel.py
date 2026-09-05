@@ -11,6 +11,14 @@ from domain.classes import combat_abilities
 from presentation.textual.view_models import GameViewModel
 from presentation.textual.widgets.pagination import paginate_lines, to_renderable
 
+
+def rotation_controls(plane: str, direction: int) -> str:
+    """返回瞄准面板的三维旋转状态和快捷键说明。"""
+    return (
+        f"当前: {plane} 方向: {direction % 8}/8  "
+        "1 XY水平旋转  2 XZ横向旋转  3 YZ纵向旋转"
+    )
+
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data")
 
 
@@ -102,6 +110,8 @@ class LeftPanel(Static):
             return self._render_steal_panel()
         if iphase == "steal_caught":
             return self._render_steal_caught_panel()
+        if iphase == "party_select":
+            return self._render_party_select_panel()
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
         if (self.state.pending_attack or {}).get("target_choice_active"):
@@ -164,11 +174,14 @@ class LeftPanel(Static):
         return "[[F]]切换击晕"
 
     def _render_explore_default(self) -> str:
-        return "\n".join([
+        return "\n".join(self._party_lines() + [
+            self._combat_mode_line(),
             "[[0]]交互 [[N]]动作",
             "[[g]]慢速 [[G]]疾走  [[r]]短休 [[R]]长休  [[,]]消磨",
             "[[A]]攻击 [[S]]法术  " + self._knockout_line(),
             self._stealth_line(),
+            r"] 向高处攀爬  \[ 向低处攀爬  L 松手",
+            "[[;]]多选成员移动",
             "[[D1]]北 [[D2]]东 [[D3]]南 [[D4]]西",
         ])
 
@@ -176,16 +189,64 @@ class LeftPanel(Static):
         p = self.state.controlled_entity
         # 阶段7.6：AP%化（固定10格），右侧显示"剩余AP/上限"
         filled = max(0, min(10, round(p.ap / max(p.max_ap, 1) * 10)))
-        lines = [
+        lines = self._party_lines() + [
+            self._combat_mode_line(),
             f"AP [{'|' * filled}{'.' * (10 - filled)}] {p.ap}/{p.max_ap}",
-            "S-Tab 结束战斗轮",
+            "S-Tab 结束轮转回合",
             "[[0]]交互 [[N]]动作",
             "[[g]]慢速 [[G]]疾走  [[r]]短休 [[R]]长休  [[,]]消磨",
             "[[A]]攻击 [[S]]法术  " + self._knockout_line(),
             self._stealth_line(),
+            r"] 向高处攀爬  \[ 向低处攀爬  L 松手",
             "[[D1]]北 [[D2]]东 [[D3]]南 [[D4]]西",
         ]
         return "\n".join(lines)
+
+    def _combat_mode_line(self) -> str:
+        if self.state.in_combat:
+            party = getattr(self.state, "party", [])
+            status = (
+                "参战中"
+                if any(
+                    not any(member is participant for member in party)
+                    for participant in self.state.combat_initiative
+                )
+                else "未参战"
+            )
+            return f"[[T]]探索模式（{status}）"
+        return "[[T]]轮转模式"
+
+    def _party_lines(self) -> list[str]:
+        """显示固定四个小队槽位；宽度不足时按列自动换行。"""
+        members = list(getattr(self.state, "party", []))[:4]
+        slots = []
+        for index in range(4):
+            member = members[index] if index < len(members) else None
+            if member is None:
+                slots.append(["空位", "HP --/--", "MP --/--", "TEN --/--"])
+                continue
+            status = "（死亡）" if member.is_dead else ""
+            slots.append([
+                f"{member.name}{status}",
+                f"HP {member.hp}/{member.max_hp}",
+                f"MP {member.mp}/{member.max_mp}",
+                f"TEN {member.tenacity}/{member.max_tenacity}",
+            ])
+
+        width = getattr(getattr(self, "content_region", None), "width", 0)
+        width = width or self.size.width or 68
+        slot_width = max(len(line) for slot in slots for line in slot) + 2
+        columns = max(1, min(4, width // slot_width))
+        lines = []
+        for start in range(0, 4, columns):
+            row_slots = slots[start:start + columns]
+            for line_index in range(4):
+                lines.append("  ".join(
+                    slot[line_index].ljust(slot_width - 2)
+                    for slot in row_slots
+                ).rstrip())
+        lines.append("─" * max(1, min(width, columns * slot_width + (columns - 1) * 2)))
+        return lines
 
     def _stealth_line(self) -> str:
         """隐匿提示行：当前控制的实体对谁隐匿。"""
@@ -251,6 +312,24 @@ class LeftPanel(Static):
         lines.append("[[0]]离开")
         return "\n".join(lines[:self.size.height])
 
+    def _render_party_select_panel(self) -> str:
+        """多选小队成员移动面板。"""
+        st = self.state
+        lines = ["[bold]── 选择同行成员 ──[/]", ""]
+        leader = st.controlled_entity
+        members = [m for m in st.party if not m.is_dead]
+        for idx in range(4):
+            if idx >= len(members):
+                lines.append(f"[[{idx + 1}]] 空位")
+                continue
+            member = members[idx]
+            leader_mark = " (当前)" if member is leader else ""
+            selected = id(member) in st.selected_party_members
+            mark = "✓" if selected else " "
+            lines.append(f"[[{idx + 1}]] [{mark}] {member.name}{leader_mark}")
+        lines.extend(["", "[[Enter]]确认  [[0]]取消"])
+        return "\n".join(lines)
+
 
     # ── 动作收集（数据与渲染分离）──
 
@@ -305,7 +384,7 @@ class LeftPanel(Static):
         """通用瞄准面板（近战/远程/法术/投掷/点火）。只看范围，不看视野。"""
         pa = self.state.pending_attack or {}
         weapon = pa.get("weapon")
-        pc, pr = self.state.controlled_entity_pos
+        pc, pr = self.state.controlled_entity_pos[:2]
         oc, oro = self.state.observe_cursor
         weapon_name = weapon.name if weapon else "武器"
         # 范围：统一读 pending_attack["max_range"]，fallback 按模式推导
@@ -331,23 +410,30 @@ class LeftPanel(Static):
         # 多格形状：光标 = 锚格 + 形状偏移
         from domain.combat.shape import shape_cells, shape_from_pending_attack
         shape = shape_from_pending_attack(pa)
-        cells = shape_cells((oc, oro), shape)
+        target_z = int(pa.get("target_z", self.state.controlled_entity.z))
+        anchor = (oc, oro, target_z)
+        cells = shape_cells(anchor, shape)
         multi = not shape.is_single
 
         # 距离：多格取最远格
-        far = max(max(abs(c - pc), abs(r - pr)) for c, r in cells)
+        far = max(max(abs(c - pc), abs(r - pr)) for c, r, *_ in cells)
         in_range = far <= max_range
 
         # 地表（锚格）
-        terrain = self.state.map[oc, oro]
+        target_z = int(pa.get("target_z", self.state.controlled_entity.z))
+        target_surface = self.state.surface_at((oc, oro), target_z, create=False)
+        terrain = target_surface.terrain
         t_names = {Terrain.GRASS: "草地", Terrain.BARREN: "荒地", Terrain.PLAIN: "平原", Terrain.FLOOR: "地面", Terrain.STAIRS_DOWN: "楼梯下", Terrain.STAIRS_UP: "楼梯上", Terrain.WATER: "水"}
         terrain_name = t_names.get(terrain, "未知")
 
         # 目标：范围允许即可选（含自身，不校验视野）
-        ent = self.state.get_entity_at(oc, oro)
-        has_valid_target = ent and not ent.is_dead
+        is_revive = pa.get("spell", {}).get("effect", {}).get("type") == "revive"
+        ent = self.state.get_entity_at(oc, oro, target_z)
+        has_valid_target = ent and (not ent.is_dead or is_revive)
         ground = next(
-            (item for item, pos in self.state.ground_items if pos == (oc, oro)),
+            (item for item, pos in self.state.ground_items
+             if pos[:2] == (oc, oro)
+             and (len(pos) < 3 or pos[2] == target_z)),
             None,
         )
 
@@ -356,12 +442,18 @@ class LeftPanel(Static):
             f"{target_label}  范围: {max_range}格",
         ]
         if multi:
-            rows = max(r for _, r in shape.offsets) + 1
-            cols = max(c for c, _ in shape.offsets) + 1
-            lines.append(f"形状: {rows}x{cols}  光标: {len(cells)}格  [[/]]旋转")
+            rows = max(r for _, r, *_ in shape.offsets) + 1
+            cols = max(c for c, *_ in shape.offsets) + 1
+            depth = max(offset[2] for offset in shape.offsets) + 1 if len(
+                shape.offsets[0]
+            ) == 3 else 1
+            plane = pa.get("target_rotation_plane", "XY")
+            direction = pa.get("target_rotation", 0)
+            lines.append(f"形状: {cols}x{rows}x{depth}  光标: {len(cells)}格")
+            lines.append(rotation_controls(plane, direction))
         lines.append(f"光标: ({oc}, {oro})  距离: {far}/{max_range}"
                      + (" [green]✓[/]" if in_range else " [red]超出范围[/]"))
-        lines.append(f"地表: {terrain_name}")
+        lines.append(f"地表: {terrain_name}  高度: {target_z}")
         lines.append("")
 
         # 多目标进度
@@ -377,19 +469,22 @@ class LeftPanel(Static):
 
         if multi:
             parts = []
-            for (c, r) in cells:
-                e = self.state.get_entity_at(c, r)
+            for c, r, cell_z in cells:
+                e = self.state.get_entity_at(c, r, z=cell_z)
                 parts.append(e.name if e and not e.is_dead else "空地")
             lines.append("目标: " + ", ".join(parts))
         elif has_valid_target:
-            hp_pct = ent.hp / max(ent.max_hp, 1) * 100
-            self_tag = " (你)" if ent is self.state.controlled_entity else ""
-            faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
-                           "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
-            lines.append(f"目标: {ent.name}{self_tag} {faction_tag}")
-            lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
-            if ent.statuses:
-                lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+            if ent.is_dead:
+                lines.append(f"目标: {ent.name} (尸体)")
+            else:
+                hp_pct = ent.hp / max(ent.max_hp, 1) * 100
+                self_tag = " (你)" if ent is self.state.controlled_entity else ""
+                faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
+                               "中立": "[yellow]中立[/]"}.get(ent.faction, ent.faction)
+                lines.append(f"目标: {ent.name}{self_tag} {faction_tag}")
+                lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
+                if ent.statuses:
+                    lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
         elif ground is not None:
             obstacle = getattr(ground, "obstacle_type", "")
             obstacle_name = getattr(obstacle, "value", obstacle) or "无"
@@ -403,8 +498,11 @@ class LeftPanel(Static):
             lines.append("目标: (空地)")
 
         lines.append("")
-        rotate_tip = "  [[/]]旋转" if multi else ""
-        lines.append(f"[[方向键]] 移动光标  [[Enter]] 确认  [[']] 取消{rotate_tip}")
+        rotate_tip = "  [[1]][[2]][[3]]选择旋转平面" if multi else ""
+        lines.append(
+            f"[[方向键]] 移动光标  [[ / ]]调整高度  [[Enter]] 确认  "
+            f"[[']] 取消{rotate_tip}"
+        )
         return "\n".join(lines)
 
     def _render_target_choice_panel(self) -> str:
@@ -417,13 +515,19 @@ class LeftPanel(Static):
             "",
         ]
         for index, target in enumerate(pa.get("target_candidates", []), 1):
-            if hasattr(target, "hp"):
+            if target is None:
+                label = "空气"
+                detail = "无目标"
+            elif hasattr(target, "hp"):
+                label = target.name
                 detail = f"HP {target.hp}/{target.max_hp}"
+            elif hasattr(target, "durability"):
+                label = target.name
+                detail = f"耐久 {target.durability}/{target.max_durability}"
             else:
-                detail = (
-                    f"耐久 {target.durability}/{target.max_durability}"
-                )
-            lines.append(f"[[A{index}]]{target.name}  {detail}")
+                label = getattr(target, "name", str(target))
+                detail = ""
+            lines.append(f"[[A{index}]]{label}  {detail}")
         lines.extend(["", "[[A0]]取消"])
         return "\n".join(lines)
 
@@ -451,7 +555,7 @@ class LeftPanel(Static):
 
         maneuvers = combat_abilities(
             self.state.controlled_entity, "maneuver", target, weapon,
-            self.state.controlled_entity_pos, pa.get("target_pos"))
+            self.state.controlled_entity_pos[:2], pa.get("target_pos"))
         self._maneuver_map.clear()
         lines = ["── 命中后选择战技 ──",
                  f"{weapon.name if weapon else '武器'}击中{target_name} (roll={attack_roll} vs AC={target_ac})"]
@@ -480,7 +584,7 @@ class LeftPanel(Static):
         weapon = pa.get("weapon")
         p = self.state.controlled_entity
         lower_actions = combat_abilities(
-            p, "lower", target, weapon, self.state.controlled_entity_pos,
+            p, "lower", target, weapon, self.state.controlled_entity_pos[:2],
             pa.get("target_pos"))
 
         target_name = target.name if target else "目标"
@@ -569,6 +673,11 @@ class LeftPanel(Static):
         player = self.state.controlled_entity
         if not are_hostile(c, player) and c.body_type != "beast":
             lines.append("[[T]]交易")
+        from domain.faction import get_attitude
+        if (not getattr(c, "party_member", False)
+                and get_attitude(c, player) in ("友好", "冷漠")):
+            recruit_hint = "（需要5GP）" if c.name == "商人" or c.shop_id else ""
+            lines.append(f"[[R]]招募{recruit_hint}")
         # 委托选项：所有非野兽实体可询问，无任务由 handler 提示（P1 3.4）
         if c.body_type != "beast":
             lines.append("[[Q]]询问委托")

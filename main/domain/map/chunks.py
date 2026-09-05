@@ -19,13 +19,13 @@ class ChunkCoord:
 
 
 def chunk_for_position(
-    position: tuple[int, int],
+    position: tuple[int, ...],
     chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> ChunkCoord:
     """返回坐标所属区块，支持地图边界外的负坐标。"""
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
-    col, row = position
+    col, row = position[:2]
     return ChunkCoord(col // chunk_size, row // chunk_size)
 
 

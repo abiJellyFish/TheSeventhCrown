@@ -26,7 +26,7 @@ class CombatViewModel:
 
 @dataclass(frozen=True)
 class MapViewModel:
-    player_position: tuple[int, int]
+    player_position: tuple[int, int, int]
     visible_tiles: frozenset[tuple[int, int]]
 
 

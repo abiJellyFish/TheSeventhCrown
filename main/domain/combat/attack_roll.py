@@ -56,6 +56,18 @@ class AttackRollMixin:
             self._end_pending_attack(abandoned=False)
             return
 
+        from domain.combat.target_phase import SurfaceTarget
+        if isinstance(target, SurfaceTarget):
+            damage = roll_damage(weapon, p)
+            self._state.damage_surface(
+                target.position[:2], damage, z=target.position[2]
+            )
+            self._log(
+                f"{self._pn} 使用{weapon.name}击中地表，造成 {damage} 点伤害"
+            )
+            self._end_pending_attack(abandoned=False)
+            return
+
         if not isinstance(target, Entity):
             damage = roll_damage(weapon, p)
             damage = apply_final_damage(target, damage, weapon.damage_type)
@@ -121,7 +133,7 @@ class AttackRollMixin:
         # 远程武器掩体检查（命中后、进入战技面板前）
         if hit and weapon.weapon_type == "ranged":
             attacker_pos = self._state.get_entity_pos(p) or self._state.controlled_entity_pos
-            tc, tr = target_pos if target_pos else (0, 0)
+            tc, tr = target_pos[:2] if target_pos else (0, 0)
             blocked, cover_pos = resolve_cover_line(
                 roll, attacker_pos, (tc, tr),
                 self._state.map, weapon.weapon_type,
@@ -168,10 +180,10 @@ class AttackRollMixin:
 
     def _log_empty_target(self, weapon, target_pos) -> None:
         """空目标日志 — 按武器类型查表。"""
-        tc, tr = target_pos if target_pos else (0, 0)
+        tc, tr, tz = target_pos if target_pos else (0, 0, self._state.active_z)
         flavor = EMPTY_TARGET_FLAVOR.get(weapon.weapon_type, EMPTY_TARGET_FLAVOR["melee"])
         from domain.obstacle import is_full_obstacle
-        candidates = self._state.get_damageables_at(tc, tr)
+        candidates = self._state.get_damageables_at(tc, tr, z=tz)
         target = candidates[0] if candidates else None
         key = "wall" if is_full_obstacle(target) else "empty"
         self._log(flavor[key].format(weapon=weapon.name))
@@ -182,7 +194,7 @@ class AttackRollMixin:
         attacker_pos = self._state.get_entity_pos(p) or self._state.controlled_entity_pos
         from domain.combat.cover import is_light_cover
         for cell in cells:
-            targets = self._state.get_damageables_at(cell[0], cell[1])
+            targets = self._state.get_damageables_at(cell[0], cell[1], z=cell[2])
             if not targets:
                 self._log_empty_target(weapon, cell)
                 continue
@@ -271,4 +283,3 @@ class AttackRollMixin:
             if self._state.in_combat:
                 if target not in self._state.combat_initiative:
                     self._state.combat_initiative.append(target)
-

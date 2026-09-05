@@ -8,7 +8,6 @@ from domain.action import (
 from domain.movement import can_enter
 from domain.events import (
     damage_dealt,
-    entity_died,
     item_equipped,
     item_picked_up,
     status_changed,
@@ -41,17 +40,22 @@ class ActionExecutor:
             position = state.get_entity_pos(actor)
             if position is None:
                 raise ActionConflict("action actor has no position")
+            from_col, from_row = position[:2]
             if not can_enter(
                 *action.destination,
                 state.map,
                 state.entities,
-                *position,
+                from_col,
+                from_row,
                 ground_items=getattr(state, "ground_items", None),
+                surface_layers=getattr(state, "world_layers", None),
+                actor_z=position[2],
+                can_fly=actor.is_hovering or actor.fly_speed > 0,
             ):
                 return False
             if actor is state.controlled_entity:
                 return state.move_player(*action.destination)
-            return state.move_entity(actor, *position, *action.destination)
+            return state.move_entity(actor, from_col, from_row, *action.destination)
         if isinstance(action, AttackAction):
             target = next(
                 (creature for creature, _ in state.iter_entities()
@@ -92,7 +96,7 @@ class ActionExecutor:
                     id(actor), id(target), result["damage"], result["damage_type"],
                 ))
             if target.is_dead:
-                state.emit_event(entity_died(id(target), target.name))
+                state.notify_entity_death(target)
             state.state_version += 1
             return True
         if isinstance(action, HideAction):
@@ -117,14 +121,16 @@ class ActionExecutor:
             state.state_version += 1
             return True
         if isinstance(action, DoorAction):
-            door = next(
-                (item for item, pos in state.ground_items
-                 if pos == action.position
+            door_entry = next(
+                ((item, pos) for item, pos in state.ground_items
+                 if pos[:2] == action.position
                  and item.name in ("打开的门", "关闭的门")),
                 None,
             )
+            door = door_entry[0] if door_entry is not None else None
             if door is None or (action.opened == (door.name == "打开的门")):
                 return False
+            door_position = door_entry[1]
             from domain.trade import load_item
             state.ground_items = [
                 (item, pos) for item, pos in state.ground_items if item is not door
@@ -136,34 +142,34 @@ class ActionExecutor:
                 door, "door_id",
                 f"{action.position[0]},{action.position[1]}",
             )
-            state.ground_items.append((replacement, action.position))
+            state.ground_items.append((replacement, door_position))
             state.invalidate_spatial_cache()
             state.state_version += 1
             return True
         if isinstance(action, PickupAction):
+            if len(action.position) != 2:
+                raise ValueError("PickupAction.position 必须是二维坐标")
             entry = next(
                 ((item, pos) for item, pos in state.ground_items
-                 if id(item) == action.item_id and pos == action.position),
+                 if id(item) == action.item_id and pos[:2] == action.position),
                 None,
             )
             if entry is None:
-                if action.item is None:
-                    return False
-                actor.inventory.append(action.item)
-                state.emit_event(item_picked_up(id(actor), action.item.name, action.position))
-                state.state_version += 1
-                return True
+                raise ValueError("拾取目标不在地面")
             item, _ = entry
+            if not getattr(item, "can_pickup", True):
+                raise ValueError("物品不可拾取")
             state.ground_items.remove(entry)
             actor.inventory.append(item)
             state.emit_event(item_picked_up(id(actor), item.name, action.position))
+            state.invalidate_spatial_cache()
             state.state_version += 1
             return True
         if isinstance(action, EatAction):
             if action.item_id is None and action.position is not None:
                 bush = next(
                     (item for item, position in state.ground_items
-                     if position == action.position and "灌木" in item.name),
+                     if position[:2] == action.position and "灌木" in item.name),
                     None,
                 )
                 if bush is None:

@@ -9,6 +9,13 @@ _REPOSITORY = get_repository()
 _SPELL_FACTORY = SpellFactory(_REPOSITORY)
 
 
+def spell_area_cells(anchor: tuple[int, int, int], shape: str) -> set[tuple[int, int, int]]:
+    """按 WxHxD 形状生成跨高度层的法术影响格。"""
+    from domain.combat.shape import parse_shape, shape_cells
+    parsed = parse_shape(shape)
+    return set(shape_cells(anchor, parsed))
+
+
 def load_spells(repository: RepositoryPort | None = None) -> dict[str, dict]:
     """返回 法术名 → 法术数据 的映射（带缓存）。遍历 data/spells/*.json。"""
     return (SpellFactory(repository or _REPOSITORY)).create_all()
@@ -157,9 +164,10 @@ def spell_save_dc(caster: Entity, spell: dict, attribute: str | None = None) -> 
 def spell_saving_throw(target: Entity, dc: int, ability: str = "dex") -> bool:
     """目标进行豁免检定。返回 True = 豁免成功。
     回避状态下敏捷豁免具有优势（阶段7 D19）。"""
-    from domain.dice import roll_d20
+    from domain.dice import roll_d20, check_total
     adv = 1 if (ability == "dex" and target.has_status("dodge")) else 0
-    return (roll_d20(advantage=adv) + target.stat_adjust(ability)) >= dc
+    roll = roll_d20(advantage=adv)
+    return check_total(target, roll, target.stat_adjust(ability)) >= dc
 
 
 def resolve_spell(caster: Entity, target: Entity | None,
@@ -294,8 +302,9 @@ def resolve_spell(caster: Entity, target: Entity | None,
         return result
 
     if etype == "revive":
-        if isinstance(target, Entity) and target.is_dead:
-            target.revive(hp=1)
+        if (isinstance(target, Entity) and target.is_dead
+                and target.body_type != "undead"):
+            target.revive()
             result["effect"] = "revive"
             result["message"] = f"对 {tname} 施放 {spell['name']}：复活"
         else:

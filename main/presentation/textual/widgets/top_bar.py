@@ -25,9 +25,7 @@ class TopBar(Static):
     @staticmethod
     def _get_location(s) -> str:
         """O(1) 哈希表查询，无分支。"""
-        if s.in_dungeon:
-            return "地下城1层"
-        return s.location_map.get(s.controlled_entity_pos, "平原")
+        return s.location_map.get(s.controlled_entity_pos[:2], "平原")
 
     def render(self) -> str:
         if self.state is None:
@@ -44,7 +42,8 @@ class TopBar(Static):
         location = self._get_location(s)
         left = f" [bold]{map_name}[/] {location}  晴"
 
-        right = f"{current_pc}钟摆 第{day}天 {month}月 {year}纪年 "
+        player_height = getattr(s.controlled_entity, "z", s.active_z)
+        right = f"高度{player_height}  {current_pc}钟摆 第{day}天 {month}月 {year}纪年 "
 
         def visible_len(t: str) -> int:
             return Text.from_markup(t).cell_len

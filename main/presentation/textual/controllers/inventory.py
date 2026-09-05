@@ -22,7 +22,7 @@ from domain.interact import InteractType, scan_interact_targets
 from domain.trade import (load_shop, trade_buy, trade_sell, price_to_text,
     copper_to_currency, shop_gold_text, player_receive,
     resolve_items, load_item)
-from domain.item_actions import (get_item_actions, find_placeable_tile,
+from domain.item_actions import (get_item_actions, find_placeable_position,
     place_on_ground, remove_from_inventory as item_remove_from_inventory,
     copy_item_with_count, get_throw_range, get_throw_max_range,
     tile_space_used, MAX_TILE_SPACE)
@@ -263,6 +263,8 @@ class InventoryMixin:
     def _sync_carry_status(self) -> None:
         """同步负重状态到 creature.statuses。"""
         p = self._state.controlled_entity
+        if p is None:
+            return
         status = p.carry_status()
         # 移除旧负重状态
         for old in ("轻便", "负重", "超重"):
@@ -298,11 +300,23 @@ class InventoryMixin:
             self._act_log.add(f"  恢复了 {val or '一定'} 饮食值")
         elif eff == "revive":
             if p.is_dead:
-                p.revive(hp=1)
+                p.revive()
                 self._state.extract_corpse_and_place(p)
                 self._act_log.add("  复活了")
             else:
                 self._act_log.add("  没有任何效果")
+        elif eff == "climb_speed":
+            p.climb_speed = 2
+            p.remove_status("攀爬药效")
+            p.add_status("攀爬药效", val or 30000)
+        elif eff == "fly_speed":
+            p.fly_speed = 2
+            p.remove_status("飞行药效")
+            p.add_status("飞行药效", val or 1000)
+        elif eff == "hover":
+            p.is_hovering = True
+            p.remove_status("悬浮药效")
+            p.add_status("悬浮药效", val or 15000)
 
     # ── 物品交互菜单 ──
 
@@ -413,10 +427,11 @@ class InventoryMixin:
                 "throw_range": throw_range,
                 "throw_max_range": throw_max,
                 "max_range": throw_max,
+                "target_z": self._state.controlled_entity.z,
             }
             self._state.combat_phase = "ranged_target"
             self._state.observe_mode = False
-            self._state.observe_cursor = self._state.controlled_entity_pos
+            self._state.observe_cursor = self._state.controlled_entity_pos[:2]
             self._act_log.add(f"选择投掷目标 — 射程:{throw_range}  移动  确认  取消")
             stack.clear()  # 退出物品菜单，进入瞄准
             self._close_input()
@@ -501,7 +516,7 @@ class InventoryMixin:
     def _exec_drop(self, item, inv_index: int, quantity: int) -> None:
         """执行丢弃：从背包扣除 → BFS 找放置格 → 放到地上。"""
         player = self._state.controlled_entity
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
 
         dropped = item_remove_from_inventory(player, inv_index, quantity)
         if dropped is None:
@@ -509,10 +524,12 @@ class InventoryMixin:
             return
 
         # BFS 查找放置格
-        target_pos = find_placeable_tile(
-            self._state.ground_items, pc, pr, dropped,
-            self._state.map.width, self._state.map.height,
-            map=self._state.map, entities=self._state.entities,
+        target_pos = find_placeable_position(
+            self._state.ground_items,
+            self._state.controlled_entity_pos,
+            dropped,
+            self._state.world_layers,
+            entities=self._state.entities,
         )
         if target_pos is None:
             # 找不到空位，退回物品
@@ -520,39 +537,37 @@ class InventoryMixin:
             self._act_log.add("周围没有空间丢弃物品")
             return
 
-        place_on_ground(self._state.ground_items, dropped, target_pos[0], target_pos[1])
+        place_on_ground(self._state.ground_items, dropped, *target_pos)
         self._state.invalidate_spatial_cache()
         self._act_log.add(f"{self._pn} 丢弃了 {dropped.name}" + (f" x{quantity}" if quantity > 1 else ""))
         self.refresh_all()
 
     def _exec_pickup(self, item, pos: tuple[int, int], quantity: int) -> None:
         """执行捡起：从地上移除 → 加入玩家背包。"""
+        if not getattr(item, "can_pickup", True):
+            raise ValueError("物品不可拾取")
         player = self._state.controlled_entity
         ground = self._state.ground_items
 
-        # 查找地上物品索引
-        gidx = None
-        for i, (it, (ic, ir)) in enumerate(ground):
-            if it is item and (ic, ir) == pos:
-                gidx = i
-                break
-
+        gidx = next(
+            (i for i, (it, item_pos) in enumerate(ground)
+             if it is item and item_pos[:2] == pos),
+            None,
+        )
         if gidx is None:
-            self._act_log.add("物品已不在原地")
-            return
+            raise ValueError("物品已不在原地")
 
         if quantity >= item.count:
-            # 全部捡起
             ground.pop(gidx)
             picked = item
         else:
-            # 部分捡起
             unit_weight = item.weight / item.count if item.count > 0 else 0
             item.count -= quantity
             item.weight -= unit_weight * quantity
             picked = copy_item_with_count(item, quantity, unit_weight * quantity)
 
         _add_to_inventory(player, picked)
+        self._state.invalidate_spatial_cache()
         self._act_log.add(f"{self._pn} 捡起了 {picked.name}" + (f" x{quantity}" if quantity > 1 else ""))
         self.refresh_all()
 
@@ -627,6 +642,7 @@ class InventoryMixin:
             "level": getattr(item, "level", 1),
             "range": getattr(item, "range", 1),
             "cast_time_pendulum": getattr(item, "cast_time_pendulum", 0),
+            "target": getattr(item, "target", ""),
             "needs_hit": getattr(item, "needs_hit", False),
             "effect": getattr(item, "effect_data", {}) or {},
             "description": item.description,
@@ -641,10 +657,11 @@ class InventoryMixin:
             "target_count": 1,
             "targets": [],
             "max_range": spell["range"],
+            "target_z": self._state.controlled_entity.z,
         }
         self._state.combat_phase = "ranged_target"
         self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos
+        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._act_log.add(f"选择 {item.name} 目标 — 范围:{spell['range']}格")
         self._close_input()
         self.refresh_all()
@@ -687,8 +704,9 @@ class InventoryMixin:
                 "item": item,
                 "inv_index": inv_index,
                 "max_range": 1,
+                "target_z": self._state.controlled_entity.z,
             }
-            self._state.observe_cursor = self._state.controlled_entity_pos
+            self._state.observe_cursor = self._state.controlled_entity_pos[:2]
             self._act_log.add("选择相邻一格生火 (方向键移动, Enter确认, '取消)")
             self.refresh_all()
             return
@@ -739,7 +757,7 @@ class InventoryMixin:
         """火把点燃/熄灭回调（由 CombatFlow 的动作处理触发）。"""
         ls = item.light
         if ls is None:
-            return
+            raise ValueError("物品没有光源")
         radius = ls.radius
         level = LightLevel.BRIGHT if ls.level == "bright" else LightLevel.DIM
 
@@ -763,10 +781,11 @@ class InventoryMixin:
             "seed_item": item,
             "seed_inv_index": inv_index,
             "max_range": 1,
+            "target_z": self._state.controlled_entity.z,
         }
         self._state.combat_phase = "ranged_target"
         self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos
+        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._act_log.add(f"选择种植位置 — 相邻格  移动  确认  取消")
         self._close_input()
         self.refresh_all()
@@ -778,10 +797,11 @@ class InventoryMixin:
             "item": item,
             "inv_index": inv_index,
             "max_range": 1,
+            "target_z": self._state.controlled_entity.z,
         }
         self._state.combat_phase = "ranged_target"
         self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos
+        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._act_log.add("选择倒水位置 — 相邻格  移动  确认  取消")
         self._close_input()
         self.refresh_all()
@@ -793,10 +813,11 @@ class InventoryMixin:
             "item": item,
             "inv_index": inv_index,
             "max_range": 1,
+            "target_z": self._state.controlled_entity.z,
         }
         self._state.combat_phase = "ranged_target"
         self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos
+        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._act_log.add("选择取水位置 — 相邻水域  移动  确认  取消")
         self._close_input()
         self.refresh_all()

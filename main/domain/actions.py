@@ -22,6 +22,17 @@ class ActionResolverMixin:
     # 动作核心 _do_* 全在 GameState（数据+规则层），UI/NPC 只做入口。
     # ═══════════════════════════════════════════════════
 
+    def _action_cost_ap(self, action: dict) -> int:
+        """动作耗时以 AP 为准；钟摆 = AP / clock.scale。两者同时给出时必须 10:1。"""
+        cost_ap = action.get("cost_ap", 0)
+        cost_p = action.get("cost_pendulum", 0)
+        scale = self.clock.scale
+        if cost_ap and cost_p and cost_ap != cost_p * scale:
+            raise ValueError(f"AP/钟摆不一致: {cost_ap} AP vs {cost_p} 钟摆")
+        if cost_ap:
+            return cost_ap
+        return cost_p * scale
+
     def _find_action(self, actor, action_key: str) -> dict | None:
         """在实体行动表中按 key 查找动作。"""
         for a in actor.actions:
@@ -37,8 +48,7 @@ class ActionResolverMixin:
         action = self._find_action(actor, action_key)
         if action is None:
             return "no_action"
-        cost_ap = action.get("cost_ap", 0)
-        cost_p = action.get("cost_pendulum", 0)
+        cost_ap = self._action_cost_ap(action)
         # AP 硬约束：战斗内不足则拒绝，绝不先扣后退
         if self.in_combat and actor.ap < cost_ap:
             return "no_ap"
@@ -50,11 +60,8 @@ class ActionResolverMixin:
         # 发动动作（躲藏/起身/转向除外）→ 破坏隐匿
         if action_key not in ("hide", "face", "stand"):
             self._break_stealth_in_view(actor)
-        # 统一扣费
-        if self.in_combat:
-            actor.ap -= cost_ap
-        else:
-            self.clock.tick_action(cost_p)
+        from domain.pendulum import spend_ap_or_pendulum
+        spend_ap_or_pendulum(self, actor, cost_ap)
         return "ok"
 
     def _spend_action(self, actor, action_key: str, action=None) -> None:
@@ -64,12 +71,8 @@ class ActionResolverMixin:
             action = self._find_action(actor, action_key)
             if action is None:
                 return
-        cost_ap = action.get("cost_ap", 0)
-        cost_p = action.get("cost_pendulum", 0)
-        if self.in_combat:
-            actor.ap -= cost_ap
-        else:
-            self.clock.tick_action(cost_p)
+        from domain.pendulum import spend_ap_or_pendulum
+        spend_ap_or_pendulum(self, actor, self._action_cost_ap(action))
 
     # ---- 动作骨架实现（完整规则在后续阶段细化）----
 
@@ -113,7 +116,7 @@ class ActionResolverMixin:
         """躲藏（阶段4.6，阶段7.5 拆分起身）：
         未躲藏 → 敏捷检定定对抗值 hide_dc（满足隐匿条件时优势），清空旧配对，自动发现当前能看见自己的观察者。
         起身为独立动作 `_do_stand`；躲藏动作本身不算状态改变。"""
-        from domain.dice import roll_d20
+        from domain.dice import roll_d20, check_total
         actor_pos = self.get_entity_pos(actor)
         if actor_pos is None:
             return False
@@ -126,7 +129,8 @@ class ActionResolverMixin:
                 self.emit_log(f"{actor.name} 处于倒地状态，无法躲藏")
             return False
         adv = 1 if self._stealth_conditions_met(actor_pos, actor_pos) else 0
-        roll = roll_d20(advantage=adv, disadvantage=0) + actor.stat_adjust("dex")
+        roll = check_total(actor, roll_d20(advantage=adv, disadvantage=0),
+                           actor.stat_adjust("dex"))
         actor.temp_traits["hide_dc"] = roll
         actor.add_status("hiding")
         # 保留视野外观察者的配对（Q5：躲藏不算状态改变），销毁重新能看见自己的配对
@@ -141,7 +145,7 @@ class ActionResolverMixin:
         if self.emit_log:
             self.emit_log(f"{actor.name} 躲藏起来 (对抗值 {roll})")
         # 对当前能看见自己的观察者自动发现（不入隐匿表），逐观察者日志
-        for c, (ec, er) in self.entities:
+        for c, (ec, er, ez) in self.entities:
             if c.is_dead or c is actor:
                 continue
             if self._observer_can_see(c, actor_pos):
@@ -231,10 +235,10 @@ class ActionResolverMixin:
         actor_wis = actor.stat_adjust("wis")
         # 陷阱探查（感知检定）
         for trap in self.traps:
-            if self.spot_memo.get(trap.pos, False) or trap.pos not in self.fov_cache:
+            if self.spot_memo.get(trap.pos, False) or not self.is_in_fov(trap.pos):
                 continue
-            from domain.dice import roll_d20
-            roll = roll_d20() + actor_wis
+            from domain.dice import roll_d20, check_total
+            roll = check_total(actor, roll_d20(), actor_wis)
             if roll >= trap.dc:
                 self.spot_memo[trap.pos] = True
                 trap.discovered = True
@@ -244,10 +248,10 @@ class ActionResolverMixin:
                 result = True
         # 线索探查（智力检定）
         for clue in list(self.clues):
-            if clue.investigated or clue.pos not in self.fov_cache:
+            if clue.investigated or not self.is_in_fov(clue.pos):
                 continue
-            from domain.dice import roll_d20
-            roll = roll_d20() + actor_int
+            from domain.dice import roll_d20, check_total
+            roll = check_total(actor, roll_d20(), actor_int)
             if roll >= clue.dc:
                 clue.investigated = True
                 if self.emit_log:
@@ -255,46 +259,109 @@ class ActionResolverMixin:
                 result = True
         return result
 
-    def _do_jump(self, actor, target=None, target_pos=None) -> bool:
-        """跳跃（阶段7 D19）：距离=(速度等级+力量调整)×2；逐格计费；落点对抗挤格受伤；
-        跨障碍 DC10 力量（失败撞障倒地）；落点困难地形 DC10 敏捷（失败失足倒地）；
-        倒地/躲藏/失能状态不可跳跃。
-
-        计费在动作逻辑内部完成（jump 的 actions.json 消耗为 0），失败拒绝不扣费、
-        部分到达（撞障）按已走格数计费、完整落点按整段距离计费。
-        """
-        if target_pos is None:
-            return False
+    def _jump_status_blocked(self, actor) -> bool:
         if (actor.has_status("prone") or actor.has_status("hiding")
                 or actor.has_status("incapacitated")
                 or actor.has_status("不可移动")):
             if self.emit_log:
                 self.emit_log(f"{actor.name} 处于倒地/躲藏/失能状态，无法跳跃")
-            return False
+            return True
+        return False
+
+    def _jump_xyz(self, actor, target_pos):
         actor_pos = self.get_entity_pos(actor)
+        if actor_pos is None or target_pos is None:
+            return None, None
+        target_z = target_pos[2] if len(target_pos) > 2 else actor_pos[2]
+        return actor_pos, (int(target_pos[0]), int(target_pos[1]), int(target_z))
+
+    def _jump_height_blocked(self, from_xyz, to_xyz) -> bool:
+        landing = to_xyz[:2]
+        if self.is_height_wall(landing, to_xyz[2]):
+            return True
+        lo, hi = sorted((from_xyz[2], to_xyz[2]))
+        return any(
+            self.is_height_wall(landing, z) for z in range(lo + 1, hi)
+        )
+
+    def _place_jump_actor(self, actor, xyz) -> None:
+        for index, (entity, _position) in enumerate(self.entities):
+            if entity is actor:
+                self.entities[index] = (entity, xyz)
+                break
+        actor.z = xyz[2]
+        self.invalidate_spatial_cache()
+        self.state_version += 1
+        if actor is self.controlled_entity:
+            self.active_z = xyz[2]
+            self.set_active_z(xyz[2])
+
+    def _do_jump(self, actor, target=None, target_pos=None) -> bool:
+        """跳远：距离=速度等级+力量调整；只能同层或更低；落地后坠落检查。"""
+        if self._jump_status_blocked(actor):
+            return False
+        actor_pos, landing = self._jump_xyz(actor, target_pos)
         if actor_pos is None:
             return False
-        if target_pos == actor_pos:
+        if landing[:2] == actor_pos[:2]:
             return True  # 原地跳跃（免费）
-        max_steps = (actor.effective_speed + actor.stat_adjust("str")) * 2
+        max_steps = actor.effective_speed + actor.stat_adjust("str")
         if max_steps <= 0:
             return False
-        dx = target_pos[0] - actor_pos[0]
-        dy = target_pos[1] - actor_pos[1]
+        dx = landing[0] - actor_pos[0]
+        dy = landing[1] - actor_pos[1]
         if max(abs(dx), abs(dy)) > max_steps:
             if self.emit_log:
                 self.emit_log(f"{actor.name} 超出跳跃距离")
             return False
+        if landing[2] > actor_pos[2]:
+            return False
+        if self._jump_height_blocked(actor_pos, landing):
+            return False
         path_length = abs(dx) + abs(dy)
-        if self.in_combat and actor.ap < path_length * _move_ap_cost(actor):
+        charge_cells = path_length + abs(landing[2] - actor_pos[2])
+        if self.in_combat and actor.ap < charge_cells * _move_ap_cost(actor):
             if self.emit_log:
                 self.emit_log(f"{actor.name} AP 不足，无法完成跳跃")
             return False
         from domain.combat.attack import stat_check
-        if not self._jump_execute(actor, actor_pos, target_pos, stat_check, path_length):
+        if not self._jump_execute(actor, actor_pos, landing, stat_check, path_length):
             return False
         if self.emit_log:
             self.emit_log(f"{actor.name} 跳了出去")
+        return True
+
+    def _do_high_jump(self, actor, target=None, target_pos=None) -> bool:
+        """跳高：相邻格更高地表；垂直距离=力量调整//2。"""
+        if self._jump_status_blocked(actor):
+            return False
+        actor_pos, landing = self._jump_xyz(actor, target_pos)
+        if actor_pos is None:
+            return False
+        dx = landing[0] - actor_pos[0]
+        dy = landing[1] - actor_pos[1]
+        if max(abs(dx), abs(dy)) != 1:
+            return False
+        if landing[2] <= actor_pos[2]:
+            return False
+        max_height = max(0, actor.stat_adjust("str") // 2)
+        if landing[2] - actor_pos[2] > max_height:
+            return False
+        if not self.surface_at(landing[:2], landing[2]).exists:
+            return False
+        if self._jump_height_blocked(actor_pos, landing):
+            return False
+        path_length = abs(dx) + abs(dy)
+        charge_cells = path_length + abs(landing[2] - actor_pos[2])
+        if self.in_combat and actor.ap < charge_cells * _move_ap_cost(actor):
+            if self.emit_log:
+                self.emit_log(f"{actor.name} AP 不足，无法完成跳跃")
+            return False
+        from domain.combat.attack import stat_check
+        if not self._jump_execute(actor, actor_pos, landing, stat_check, path_length):
+            return False
+        if self.emit_log:
+            self.emit_log(f"{actor.name} 跳了上去")
         return True
 
     def _jump_path(self, actor_pos: tuple[int, int],
@@ -305,7 +372,7 @@ class ActionResolverMixin:
         sx = (1 if dx > 0 else (-1 if dx < 0 else 0))
         sy = (1 if dy > 0 else (-1 if dy < 0 else 0))
         path = []
-        cx, cy = actor_pos
+        cx, cy = actor_pos[:2]
         for _ in range(abs(dx)):
             cx += sx
             path.append((cx, cy))
@@ -329,10 +396,12 @@ class ActionResolverMixin:
 
     def _jump_execute(self, actor, actor_pos, target_pos, stat_check, dist) -> bool:
         """跳跃落点结算：跨障碍/困难地形检定、落点对抗挤格受伤、移动到位。"""
-        from domain.movement import Terrain, can_enter
         from domain.movement import DIFFICULT_TERRAINS
+        landing_z = target_pos[2] if len(target_pos) > 2 else actor_pos[2]
+        landing_xyz = (int(target_pos[0]), int(target_pos[1]), int(landing_z))
         path = self._jump_path(actor_pos, target_pos)
         count = dist
+        charge_cells = count + abs(landing_z - actor_pos[2])
         # 跨中间障碍（起点后、落点前的每一格）
         for i in range(count - 1):
             mid = path[i]
@@ -341,52 +410,52 @@ class ActionResolverMixin:
             if obstacle is not None:
                 if stat_check(actor, "str") < 10:
                     # 撞向障碍 → 落在此障碍格 + 倒地 + 按已走格数计费
-                    for index, (entity, position) in enumerate(self.entities):
-                        if entity is actor:
-                            self.entities[index] = (entity, mid)
-                            self.invalidate_spatial_cache()
-                            break
-                    self.state_version += 1
+                    self._place_jump_actor(actor, (mid[0], mid[1], actor_pos[2]))
                     actor.add_status("prone", duration=None)
                     self._jump_charge(actor, i + 1)
+                    self._check_wall_support_or_fall(actor)
                     if self.emit_log:
                         self.emit_log(f"{actor.name} 撞上了障碍，摔倒在地")
                     return True
-        # 落点生物对抗（挤格受伤）
-        landing = target_pos
-        occ = self.get_entity_at(landing[0], landing[1])
+        occ = self.get_entity_at(landing_xyz[0], landing_xyz[1], z=landing_z)
         if occ is not None and occ is not actor and not occ.is_dead:
             if stat_check(actor, "str") > stat_check(occ, "str"):
-                dest = self._find_push_slot((landing[0], landing[1]), actor_pos)
+                dest = self._find_push_slot((landing_xyz[0], landing_xyz[1]), actor_pos)
                 if dest is None:
                     if self.emit_log:
                         self.emit_log(f"{actor.name} 无法挤入 {occ.name} 所在的落点")
                     return False
-                self.move_entity(occ, landing[0], landing[1], dest[0], dest[1])
+                self.move_entity(occ, landing_xyz[0], landing_xyz[1], dest[0], dest[1])
                 dmg = max(0, actor.stat_adjust("str"))
                 occ.take_damage(dmg)
-                self.move_entity(actor, actor_pos[0], actor_pos[1],
-                                 landing[0], landing[1], allow_non_adjacent=True)
+                self._place_jump_actor(actor, landing_xyz)
+                actor.facing = (landing_xyz[0] - actor_pos[0], landing_xyz[1] - actor_pos[1])
                 if self.emit_log:
                     self.emit_log(f"{actor.name} 挤开了 {occ.name} 并落到落点")
             else:
-                # actor 对抗失败：被挤回原格，受伤=目标力量调整值
                 dmg = max(0, occ.stat_adjust("str"))
                 actor.take_damage(dmg)
                 if self.emit_log:
                     self.emit_log(f"{actor.name} 被 {occ.name} 顶回了原格")
-            self._jump_charge(actor, count)
+                self._jump_charge(actor, charge_cells)
+                return True
+            self._jump_charge(actor, charge_cells)
+            self._check_wall_support_or_fall(actor)
             return True
-        # 无障碍无人 → 移动到位 + 落点困难地形检定
-        self.move_entity(actor, actor_pos[0], actor_pos[1],
-                         landing[0], landing[1], allow_non_adjacent=True)
-        lt = self.map[landing[0], landing[1]]
+        self._place_jump_actor(actor, landing_xyz)
+        delta = (landing_xyz[0] - actor_pos[0], landing_xyz[1] - actor_pos[1])
+        if delta != (0, 0):
+            actor.facing = delta
+        lt = self.map[landing_xyz[0], landing_xyz[1]]
         if lt in DIFFICULT_TERRAINS:
             if stat_check(actor, "dex") < 10:
                 actor.add_status("prone", duration=None)
                 if self.emit_log:
                     self.emit_log(f"{actor.name} 落点湿滑，失足倒地")
-        self._jump_charge(actor, count)
+        self._check_surface_effects(actor)
+        self._check_traps(actor, landing_xyz[:2])
+        self._jump_charge(actor, charge_cells)
+        self._check_wall_support_or_fall(actor)
         return True
 
     def _find_push_slot(self, landing: tuple[int, int],
@@ -459,10 +528,10 @@ class ActionResolverMixin:
             if can_enter(dest[0], dest[1], self.map, self.entities,
                          tgt_pos[0], tgt_pos[1],
                          ground_items=self.ground_items):
-                self.move_entity(target, tgt_pos[0], tgt_pos[1], dest[0], dest[1])
-                if self.emit_log:
-                    self.emit_log(f"{actor.name} 把 {target.name} 推开了一格")
-                return True
+                if self.move_entity(target, tgt_pos[0], tgt_pos[1], dest[0], dest[1]):
+                    if self.emit_log:
+                        self.emit_log(f"{actor.name} 把 {target.name} 推开了一格")
+                    return True
             # 推不动 → fallback 撞倒
             target.add_status("prone", duration=None)
             if self.emit_log:
@@ -512,14 +581,10 @@ class ActionResolverMixin:
             return False
         if target.has_status("濒死"):
             # 急救：DC10 感知（医药）检定 → 稳定
-            from domain.dice import roll_d20
-            roll = roll_d20() + actor.stat_adjust("wis")
+            from domain.dice import roll_d20, check_total
+            roll = check_total(actor, roll_d20(), actor.stat_adjust("wis"))
             if roll >= 10:
-                target.hp = 1  # hp setter 自动清濒死/昏迷
-                target.add_status("昏迷")
-                ds = target.death_saves
-                if ds:
-                    ds.reset()
+                self.death_system.stabilize(target)
                 if self.emit_log:
                     self.emit_log(f"{actor.name} 对 {target.name} 进行急救，目标稳定了")
             else:
@@ -535,40 +600,6 @@ class ActionResolverMixin:
             if self.emit_log:
                 self.emit_log(f"{actor.name} 协助了 {target.name}（下次检定优势）")
         return True
-
-    def _roll_death_save(self, creature) -> str:
-        """濒死生物掷一次死亡豁免。返回 "died" | "stable" | "woke" | "ongoing"。
-
-        规则（D24）：d20≥10 成功、<10 失败；1=两失败、20=恢复1HP脱离濒死；
-        3 成功=稳定、3 失败=死亡。
-        """
-        ds = creature._get_death_saves()
-        result = ds.roll_save()
-        if result == "crit_success":
-            creature.hp = 1  # hp setter 清濒死/昏迷
-            if self.emit_log:
-                self.emit_log(f"{creature.name} 挺了过来，恢复了意识")
-            return "woke"
-        if ds.is_dead:
-            creature._die()
-            if self.emit_log:
-                self.emit_log(f"{creature.name} 没能挺住，死了")
-            return "died"
-        if ds.is_stable:
-            # 3 成功 → 稳定（HP=1+昏迷）
-            creature.hp = 1
-            creature.add_status("昏迷")
-            if self.emit_log:
-                self.emit_log(f"{creature.name} 稳定下来，陷入昏迷")
-            return "stable"
-        if self.emit_log:
-            if result == "crit_fail":
-                self.emit_log(f"{creature.name} 的死亡豁免掷出大失败（{ds.failures}失败/{ds.successes}成功）")
-            elif result == "failure":
-                self.emit_log(f"{creature.name} 的死亡豁免失败（{ds.failures}失败/{ds.successes}成功）")
-            else:
-                self.emit_log(f"{creature.name} 的死亡豁免成功（{ds.failures}失败/{ds.successes}成功）")
-        return "ongoing"
 
     # ═══════════════════════════════════════════════════
     # 陷阱与线索（阶段5）

@@ -9,7 +9,8 @@ import random
 from domain.game_state import GameState
 from domain.entity import Entity
 from domain.items.item import Item
-from domain.obstacle import ObstacleType
+from domain.layers import LayerMap, SurfaceCell
+from domain.obstacle import ObstacleType, is_full_obstacle
 from domain.grid import Grid, PASSABLE_TERRAINS
 from domain.fov import LightLevel
 from domain.movement import Terrain
@@ -27,6 +28,7 @@ def _load_map_json(filename: str) -> dict:
 def _place_zone(state: GameState, data: dict, loader) -> None:
     """根据 JSON 数据放置一个地图子区域。"""
     ox, oy = data["offset"]
+    _place_surfaces(state, data.get("surfaces", {}), ox, oy)
 
     for item_data in data.get("items", []):
         _place_map_item(state, item_data, ox, oy, loader)
@@ -41,7 +43,9 @@ def _place_zone(state: GameState, data: dict, loader) -> None:
         if c is None:
             raise RuntimeError(f"缺少地图实体：{ent['key']}")
         c.template_name = ent["key"]
-        state.add_entity(c, (ox + ent["pos"][0], oy + ent["pos"][1]))
+        ex, ey = ox + ent["pos"][0], oy + ent["pos"][1]
+        ez = _placement_z(state, (ex, ey), ent)
+        state.add_entity(c, (ex, ey, ez))
 
     # 陷阱（阶段5）：布置时同荒地，踩中 1d4 触发一次失效
     for trap in data.get("traps", []):
@@ -59,18 +63,43 @@ def _place_zone(state: GameState, data: dict, loader) -> None:
     _validate_layout(state)
 
 
+def _place_surfaces(
+    state: GameState, surfaces: dict, ox: int, oy: int
+) -> None:
+    """按局部坐标叠加分层地表；未声明的高层格保持不存在。"""
+    for raw_z, layer_data in surfaces.items():
+        z = int(raw_z)
+        layer = state.world_layers.setdefault(
+            z, LayerMap(
+                state.map_width, state.map_height, Terrain.BARREN, exists=False
+            )
+        )
+        local_offset = layer_data.get("offset", [0, 0])
+        for local_col, local_row in layer_data.get("cells", []):
+            col = ox + local_offset[0] + local_col
+            row = oy + local_offset[1] + local_row
+            if not layer.grid.within_bounds(col, row):
+                raise ValueError(f"分层地表坐标越界: {(col, row)}")
+            terrain = layer_data.get(
+                "terrain",
+                state.world_layers[0].surface((col, row)).terrain,
+            )
+            layer.set_surface((col, row), SurfaceCell(terrain=terrain))
+
+
 def _place_map_item(state: GameState, data: dict, ox: int, oy: int, loader) -> None:
     """按统一 items 配置放置地图物品。"""
     name = data["name"]
     x, y = ox + data["pos"][0], oy + data["pos"][1]
+    z = _placement_z(state, (x, y), data)
     if name == "墙壁":
-        _place_wall(state, x, y)
+        _place_wall(state, x, y, z)
         return
     if name == "灌木丛":
-        _place_plant(state, x, y, name, '"', ObstacleType.HALF)
+        _place_plant(state, x, y, name, '"', ObstacleType.HALF, z)
         return
     if name == "矮墙":
-        _place_plant(state, x, y, name, "=", ObstacleType.THREE_QUARTER)
+        _place_plant(state, x, y, name, "=", ObstacleType.THREE_QUARTER, z)
         return
     if name == "门":
         item_name = "打开的门" if data.get("open", False) else "关闭的门"
@@ -90,13 +119,13 @@ def _place_map_item(state: GameState, data: dict, ox: int, oy: int, loader) -> N
             "inventory": resolve_items(data.get("inventory", [])),
         }
     from domain.item_actions import place_on_ground
-    place_on_ground(state.ground_items, item, x, y)
+    place_on_ground(state.ground_items, item, x, y, z)
     if name == "篝火":
-        state.register_light((x, y), 3, LightLevel.BRIGHT)
+        state.register_light((x, y, z), 3, LightLevel.BRIGHT)
 
 
 def _place_plant(state: GameState, x: int, y: int, name: str,
-                 char: str, obstacle_type: ObstacleType) -> None:
+                 char: str, obstacle_type: ObstacleType, z: int = 0) -> None:
     """在干净地表上放置带障碍组件的地图特征物品。"""
     feature = Item(
         name=name, item_type="obstacle", weight=1.0,
@@ -116,10 +145,19 @@ def _place_plant(state: GameState, x: int, y: int, name: str,
         ),
     )
     from domain.item_actions import place_on_ground
-    place_on_ground(state.ground_items, feature, x, y)
+    place_on_ground(state.ground_items, feature, x, y, z)
 
 
-def _place_wall(state: GameState, x: int, y: int) -> None:
+def _placement_z(state: GameState, position: tuple[int, int], data: dict) -> int:
+    """解析地图对象高度；目标层不存在时下降到最近存在的地表。"""
+    requested = state.surface_height_at(position) if "z" not in data else int(data["z"])
+    for z in sorted((level for level in state.world_layers if level <= requested), reverse=True):
+        if state.surface_at(position, z).exists:
+            return z
+    raise ValueError(f"地图对象坐标没有可用地表: {position + (requested,)}")
+
+
+def _place_wall(state: GameState, x: int, y: int, z: int = 0) -> None:
     """放置全身障碍墙壁物品。"""
     feature = Item(
         name="墙壁", item_type="obstacle", weight=0.0,
@@ -130,19 +168,19 @@ def _place_wall(state: GameState, x: int, y: int) -> None:
         render_char="#", render_color="#808080",
     )
     from domain.item_actions import place_on_ground
-    place_on_ground(state.ground_items, feature, x, y)
+    place_on_ground(state.ground_items, feature, x, y, z)
 
 
 def _ground_position_available(state: GameState, x: int, y: int) -> bool:
     """判断随机地图特征位置是否尚未放置地面物品。"""
     return (
-        not any(position == (x, y) for _, position in state.ground_items)
-        and not any(position == (x, y) for _, position in state.entities)
+        not any(position[:2] == (x, y) for _, position in state.ground_items)
+        and not any(position[:2] == (x, y) for _, position in state.entities)
     )
 
 
 def _validate_layout(state: GameState) -> None:
-    """验证地图初始化不产生同格物品或实体。"""
+    """验证地图初始化对象坐标和地表层一致。"""
     item_positions = [position for _, position in state.ground_items]
     entity_positions = [position for _, position in state.entities]
     if len(item_positions) != len(set(item_positions)):
@@ -170,6 +208,27 @@ def _validate_layout(state: GameState) -> None:
             for position in sorted(conflicts)
         ]
         raise RuntimeError(f"地图初始化失败：物品与实体坐标重叠 {details}")
+    for item, position in state.ground_items:
+        _validate_object_surface(state, item.name, position)
+    for entity, position in state.entities:
+        _validate_object_surface(state, entity.name, position)
+
+
+def _validate_object_surface(state: GameState, name: str, position: tuple[int, int, int]) -> None:
+    """拒绝对象落在空地表或更高全身墙体覆盖的低层。"""
+    if len(position) != 3 or not state.surface_at(position[:2], position[2]).exists:
+        raise RuntimeError(f"地图对象没有有效地表: {name} {position}")
+    if name == "墙壁" or position[2] < 0:
+        return
+    col, row, z = position
+    for higher_z in state.visible_surface_levels((col, row)):
+        if higher_z <= z:
+            continue
+        if any(
+            item_pos == (col, row, higher_z) and is_full_obstacle(item)
+            for item, item_pos in state.ground_items
+        ):
+            raise RuntimeError(f"地图对象被高层墙体覆盖: {name} {position}")
 
 
 def build_world(state: GameState, loader) -> None:
@@ -177,6 +236,14 @@ def build_world(state: GameState, loader) -> None:
     w, h = 80, 60
     state.current_map = "世界"
     state.map = Grid[Terrain](w, h, Terrain.GRASS)
+    state.active_z = 0
+    state.world_layers = {
+        0: LayerMap(w, h, Terrain.GRASS),
+        **{
+            z: LayerMap(w, h, Terrain.BARREN, exists=False)
+            for z in range(1, 13)
+        },
+    }
     state.entities = []
     state.ground_items = []
     state.location_map = {}
@@ -200,6 +267,7 @@ def build_world(state: GameState, loader) -> None:
 
     # ── 树林 ──
     zones_data = _load_map_json("world_zones.json")
+    _place_zone(state, zones_data["hill"], loader)
     forest = zones_data["forest"]
     fx, fy = forest["offset"]
     fw, fh = forest["width"], forest["height"]
@@ -235,7 +303,6 @@ def build_world(state: GameState, loader) -> None:
 
     # 地下城入口
     entrance = (fx + random.randint(5, fw - 5), fy + random.randint(5, fh - 5))
-    state.map[entrance] = Terrain.STAIRS_DOWN
 
     # 风干的骨头线索（阶段5，D10）：洞口上方 3 格
     clue_pos = (entrance[0], entrance[1] - 3)
@@ -279,10 +346,12 @@ def build_world(state: GameState, loader) -> None:
     vw, vh = village.get("width", 21), village.get("height", 16)
     co = camp["offset"]
     cw, ch = camp.get("width", 9), camp.get("height", 15)
+    ho = zones_data["hill"]["offset"]
     RESERVED_ZONES = [
         (vo[0], vo[1], vw, vh),
         (fx, fy, fw, fh),
         (co[0], co[1], cw, ch),
+        (ho[0], ho[1], 6, 6),
     ]
 
     def _in_reserved(px: int, py: int) -> bool:
@@ -357,3 +426,11 @@ def build_world(state: GameState, loader) -> None:
     state.loot_spots = []
     state.seed_campfires()
     state._seed_twigs()
+    for row in range(h):
+        for col in range(w):
+            state.world_layers[0].set_surface(
+                (col, row), SurfaceCell(terrain=state.map[col, row])
+            )
+    from domain.map.generation.dungeon import build_dungeon_layers
+    build_dungeon_layers(state, loader, entrance)
+    _validate_layout(state)

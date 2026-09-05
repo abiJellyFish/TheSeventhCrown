@@ -15,7 +15,7 @@ class RightPanel(Static):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # "default" | "inventory" | "character" | "system" | "spellbook"
-        # | "quests" | "manual" | "title" | "quest_detail"
+        # | "quests" | "manual" | "title" | "quest_detail" | "guide"
         self.view_mode = "default"
         self.selected_quest: str = ""    # 任务详情页当前选中的任务名
         self._quests_back: str = "default"  # 任务面板返回目标（default 快捷 / manual 手册进入）
@@ -83,6 +83,8 @@ class RightPanel(Static):
             return self._render_manual()
         elif self.view_mode == "title":
             return self._render_title()
+        elif self.view_mode == "guide":
+            return self._render_guide()
         elif self.view_mode == "quests":
             return self._render_quests()
         elif self.view_mode == "quest_detail":
@@ -91,6 +93,8 @@ class RightPanel(Static):
 
     def _render_default(self) -> str:
         p = self.state.controlled_entity
+        if p is None:
+            return "小队已全灭，旅途结束"
         slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
         food_pct = p.food_value * 100 // 15000
         lines = [
@@ -102,7 +106,8 @@ class RightPanel(Static):
             "[[X]]观察",
             "[[C]]角色面板 [[I]]物品栏 [[B]]法术书 [[E]]思绪",
             "[[Q]]任务 [[Z]]制作 [[K]]烹饪 [[Y]]炼药",
-            "[[H]]高度 [[M]]地图",
+            "[[H]]查看高度 [[M]]地图" if not getattr(self.state, "height_view", False)
+            else "[[H]]关闭高度 [[M]]地图",
         ]
         if p.statuses:
             lines.append(f"[red]{' '.join(s.name for s in p.statuses)}[/]")
@@ -269,6 +274,7 @@ class RightPanel(Static):
             "",
             "  [[M1]]称号",
             "  [[M2]]任务",
+            "  [[M3]]操作指南",
             "",
             "[dim]:M序号 选择  E返回[/]",
         ]
@@ -287,6 +293,12 @@ class RightPanel(Static):
             lines.append("  (尚未获得称号)")
         lines.extend(["", "[dim]E返回[/]"])
         return "\n".join(lines)
+
+    def _render_guide(self) -> str:
+        return (
+            "[bold]─ 操作指南 -[/] [dim]E返回[/]\n\n"
+            "输入 store 快速存档。输入 read 快速读档。"
+        )
 
     def _render_spellbook(self) -> str:
         """渲染法术书 —— 只记载已知法术本体。"""
@@ -384,20 +396,31 @@ class RightPanel(Static):
         else:
             lines.append(f"位置: ({cx}, {cy})")
 
+        selected_z, surface = self.state.observation_surface(cursor)
+        t_here = surface.terrain if surface.exists else None
+        if surface.exists:
+            lines.append(f"高度: {selected_z}")
+            lines.append(
+                f"耐久: {surface.current_durability()}/{surface.max_durability}"
+            )
+        else:
+            lines.append(f"高度: {selected_z}")
+            lines.append("地表: 不存在")
+
         # 特征（地下城入口/出口）
-        t_here = self.state.map[cx, cy]
         if t_here == Terrain.STAIRS_DOWN:
             lines.append("特征: 洞口")
         elif t_here == Terrain.STAIRS_UP:
             lines.append("特征: 洞口（出口）")
 
         # 地形
-        terrain = self.state.map[cx, cy]
+        terrain = t_here
         t_names = {Terrain.GRASS: "草地", Terrain.BARREN: "荒地", Terrain.PLAIN: "平原", Terrain.FLOOR: "地面", Terrain.STAIRS_DOWN: "楼梯下", Terrain.STAIRS_UP: "楼梯上", Terrain.WATER: "水"}
-        lines.append(f"地表: {t_names.get(terrain, '未知')}")
+        if surface.exists:
+            lines.append(f"地表: {t_names.get(terrain, '未知')}")
 
         # 生物；尸体由既有尸体物品逻辑处理，不再显示死亡实体信息
-        ent = self.state.get_entity_at(cx, cy)
+        ent = self.state.get_entity_at(cx, cy, z=selected_z)
         if ent and not ent.is_dead:
             body_type = {
                 "human": "人类",
@@ -458,7 +481,7 @@ class RightPanel(Static):
 
         # 可见度（仅轻度遮蔽——重度遮蔽看不到、不在视野内、观察模式选不到，无需其他档位）
         player_pos = self.state.get_entity_pos(self.state.controlled_entity)
-        if player_pos is not None and self.state._cover_level((cx, cy), player_pos) == "light":
+        if player_pos is not None and self.state._cover_level((cx, cy), player_pos[:2]) == "light":
             lines.append("可见度: 轻度遮蔽")
 
         # 光照
@@ -471,7 +494,12 @@ class RightPanel(Static):
 
         # 物品清单
         from domain.item_actions import get_ground_items_at
-        ground_at = get_ground_items_at(self.state.ground_items, cx, cy)
+        layer_items = [
+            (item, position)
+            for item, position in self.state.ground_items
+            if position[:2] == (cx, cy) and position[2] == selected_z
+        ]
+        ground_at = get_ground_items_at(layer_items, cx, cy)
         if ground_at:
             lines.append("── 地上物品 ──")
             for g in ground_at:
@@ -493,6 +521,7 @@ class RightPanel(Static):
                         f"金币:{chest_data.get('gp', 0)} GP"
                     )
 
+        lines.append("[dim][[[] 和 []] 切换高度[/]")
         return "\n".join(lines)
 
     @staticmethod

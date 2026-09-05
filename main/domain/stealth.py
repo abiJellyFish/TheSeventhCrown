@@ -44,17 +44,10 @@ class StealthMixin:
         return "none"
 
     def _get_transparent_grid(self) -> "Grid[bool]":
-        """返回透明网格；只有实体或物品的全身障碍不可穿透。"""
+        """返回普通视线透明网格；全身障碍不阻挡视线。"""
         if self._transparent_cache is None:
             from domain.grid import Grid
-            from domain.obstacle import is_full_obstacle
-
             transparent = Grid[bool](self.map.width, self.map.height, True)
-            for col, row in self.spatial_cache()["blocking_positions"]:
-                transparent[col, row] = False
-            for entity, (col, row) in self.entities:
-                if not entity.is_dead and is_full_obstacle(entity):
-                    transparent[col, row] = False
             self._transparent_cache = transparent
         return self._transparent_cache
 
@@ -64,6 +57,10 @@ class StealthMixin:
         self._transparent_cache = None
         self._water_tiles_cache = None
         self._bush_tiles_cache = None
+        self._sky_cache_version = None
+        self._sky_block_z = None
+        self._light_cache_key = None
+        self._light_grid_cache = None
 
     def _get_water_tiles(self) -> frozenset:
         """WATER 地形坐标索引（按 _terrain_version 缓存）。"""
@@ -87,22 +84,44 @@ class StealthMixin:
         from domain.visibility import can_see
         return can_see(self, observer, target)
 
-    def _stealth_conditions_met(self, observer_pos: tuple[int, int], target_pos: tuple[int, int]) -> bool:
+    def _stealth_conditions_met(self, observer_pos: tuple[int, int, int], target_pos: tuple[int, int, int]) -> bool:
         """判定目标是否满足隐匿条件（规则2）：轻度遮蔽格 或 视线穿过轻度遮蔽格。"""
         from domain.combat.cover import is_light_cover
+        if len(target_pos) == 2:
+            target_pos = (*target_pos, observer_pos[2])
+        obs_xy = observer_pos[:2]
+        tgt_xy = target_pos[:2]
         # 目标在轻度遮蔽格（P3 短路：命中直接返回，跳过射线）
-        target = self.get_entity_at(*target_pos)
-        if is_light_cover(self, target_pos, excluded=target):
+        target = self.get_entity_at(*tgt_xy)
+        if is_light_cover(self, tgt_xy, excluded=target):
             return True
         # 观察者→目标视线穿过轻度遮蔽格（排除起终点）
-        line = self._ray_cells(self._get_transparent_grid(), observer_pos[0], observer_pos[1],
-                               target_pos[0], target_pos[1])
+        line = self._ray_cells_3d(observer_pos, target_pos)
         if len(line) < 3:
             return False
-        for (col, row) in line[1:-1]:
+        for col, row, _ in line[1:-1]:
             if is_light_cover(self, (col, row), excluded=target):
                 return True
         return False
+
+    @staticmethod
+    def _ray_cells_3d(start: tuple[int, int, int], end: tuple[int, int, int]) -> list[tuple[int, int, int]]:
+        """返回三维逐格射线，保证高度变化不会被二维投影抹掉。"""
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        dz = end[2] - start[2]
+        distance = max(abs(dx), abs(dy), abs(dz))
+        if distance == 0:
+            return [start]
+        cells = [start]
+        for step in range(1, distance + 1):
+            point = tuple(
+                round(start[index] + delta * step / distance)
+                for index, delta in enumerate((dx, dy, dz))
+            )
+            if point != cells[-1]:
+                cells.append(point)
+        return cells
 
     @staticmethod
     def _ray_cells(grid: "Grid[bool]", x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
@@ -131,12 +150,12 @@ class StealthMixin:
 
     def _passive_spot(self, observer: Entity, target: Entity) -> bool:
         """被动感知检定：d20+感知调整 vs DC。返回 True=发现（移除隐匿）。"""
-        from domain.dice import roll_d20
+        from domain.dice import roll_d20, check_total
         if target.has_status("hiding"):
             dc = target.temp_traits.get("hide_dc", self.PASSIVE_SPOT_DC)
         else:
             dc = 10 + target.stat_adjust("dex")
-        roll = roll_d20() + observer.stat_adjust("wis")
+        roll = check_total(observer, roll_d20(), observer.stat_adjust("wis"))
         return roll >= dc
 
     def _is_hidden_to(self, observer: Entity, target: Entity,
@@ -213,7 +232,7 @@ class StealthMixin:
         entity_by_id = {id(c): c for c, _ in self.entities}
         # 当前可见实体集（内联可视判定，与 _observer_can_see 三条件一致）
         current_visible: set[int] = set()
-        for c, (ec, er) in self.entities:
+        for c, (ec, er, ez) in self.entities:
             cid = id(c)
             if c.is_dead or cid == obs_id:
                 continue
@@ -286,4 +305,3 @@ class StealthMixin:
                         observers.discard(obs_id)
                         if self.emit_log:
                             self.emit_log(f"{obs.name} 察觉到身后有动静")
-

@@ -53,10 +53,10 @@ def is_full_obstacle(obstacle) -> bool:
 def obstacle_at(pos, entities=None, ground_items=None):
     """返回坐标上的第一个障碍实体或物品；没有则返回 None。"""
     for entity, entity_pos in entities or ():
-        if entity_pos == pos and not getattr(entity, "is_dead", False):
+        if entity_pos[:2] == pos[:2] and not getattr(entity, "is_dead", False):
             if obstacle_info(entity) is not None:
                 return entity
     for item, item_pos in ground_items or ():
-        if item_pos == pos and obstacle_info(item) is not None:
+        if item_pos[:2] == pos[:2] and obstacle_info(item) is not None:
             return item
     return None

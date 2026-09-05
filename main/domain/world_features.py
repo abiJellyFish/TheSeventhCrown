@@ -19,9 +19,9 @@ class TwigMixin:
     # 树枝生成（阶段8）
     # ═══════════════════════════════════════════════════
 
-    def _twig_landing_spots(self, tree_pos: tuple[int, int]) -> list[tuple[int, int]]:
+    def _twig_landing_spots(self, tree_pos: tuple[int, int] | tuple[int, int, int]) -> list[tuple[int, int]]:
         """树周围曼哈顿距离≤3的有效落地格。"""
-        tx, ty = tree_pos
+        tx, ty = tree_pos[:2]
         spots = []
         for dx in range(-3, 4):
             for dy in range(-3, 4):
@@ -39,7 +39,7 @@ class TwigMixin:
         """统计树周围 ground_items 中已有树枝数量。"""
         spots = self._twig_landing_spots(tree_pos)
         count = 0
-        for item, (ic, ir) in self.ground_items:
+        for item, (ic, ir, iz) in self.ground_items:
             if item.name == "树枝" and (ic, ir) in spots:
                 count += item.count
         return count
@@ -50,7 +50,10 @@ class TwigMixin:
         items = resolve_items([{"name": "树枝", "count": 1}])
         if items:
             from domain.item_actions import place_on_ground
-            place_on_ground(self.ground_items, items[0], *pos)
+            place_on_ground(
+                self.ground_items, items[0], pos[0], pos[1],
+                self.surface_height_at(pos),
+            )
             self.invalidate_spatial_cache()
 
     def _seed_twigs_at(self, tree_pos: tuple[int, int]) -> None:
@@ -76,4 +79,3 @@ class TwigMixin:
     def _regrow_twigs(self) -> None:
         """每3000钟摆重生树枝。"""
         self._seed_twigs()
-

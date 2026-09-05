@@ -18,8 +18,67 @@ class LightLevel(Enum):
     BRIGHT = auto()
 
 
+def compute_fov_3d(
+    layers: dict[int, Grid[bool]],
+    origin: tuple[int, int, int],
+    radius: int,
+    facing: tuple[int, int] | None = None,
+) -> set[tuple[int, int, int]]:
+    """计算三维球形视野，并逐格检查各高度层透明度。"""
+    ox, oy, oz = origin
+    if radius < 0:
+        raise ValueError("视野半径不能为负数")
+    visible = {(ox, oy, oz)}
+    for z, grid in layers.items():
+        for col in range(grid.width):
+            for row in range(grid.height):
+                if not grid[col, row]:
+                    continue
+                dx, dy, dz = col - ox, row - oy, z - oz
+                if dx * dx + dy * dy + dz * dz > radius * radius:
+                    continue
+                if facing is not None and max(abs(dx), abs(dy)) > 1:
+                    from domain.movement import is_back_sector
+                    if is_back_sector(facing, dx, dy):
+                        continue
+                if _line_of_sight_3d(layers, origin, (col, row, z)):
+                    visible.add((col, row, z))
+    return visible
+
+
+def _line_of_sight_3d(
+    layers: dict[int, Grid[bool]],
+    start: tuple[int, int, int],
+    end: tuple[int, int, int],
+) -> bool:
+    steps = max(abs(end[index] - start[index]) for index in range(3))
+    if steps == 0:
+        return True
+    visited: set[tuple[int, int, int]] = set()
+    for step in range(1, steps):
+        ratio = step / steps
+        point = tuple(
+            int(start[index] + (end[index] - start[index]) * ratio)
+            for index in range(3)
+        )
+        if point in visited:
+            continue
+        visited.add(point)
+        grid = layers.get(point[2])
+        if grid is None:
+            continue
+        if not grid.within_bounds(point[0], point[1]):
+            return False
+        if not grid[point[0], point[1]]:
+            return False
+    return True
+
+
 def _line_of_sight(
-    grid: Grid[bool], x0: int, y0: int, x1: int, y1: int
+    grid: Grid[bool], x0: int, y0: int, x1: int, y1: int,
+    surface_heights: Grid[int] | None = None, origin_z: int = 0,
+    target_z: int | None = None,
+    height_walls: set[tuple[int, int, int]] | None = None,
 ) -> bool:
     """射线检测：从 (x0,y0) 到 (x1,y1) 是否有视线。
     终点格始终可见（墙本身可以看到），但沿途有墙则被阻挡。
@@ -43,7 +102,42 @@ def _line_of_sight(
             return True  # 到达终点，始终可见
         if not grid[col, row]:
             return False  # 中途被墙挡住
+        sight_z = origin_z
+        if target_z is not None:
+            sight_z += (target_z - origin_z) * i / dist
+        ray_z = math.ceil(sight_z)
+        if height_walls and (col, row, ray_z) in height_walls:
+            return False
+        if (
+            surface_heights is not None
+            and surface_heights[col, row] > ray_z
+        ):
+            peak = surface_heights[col, row]
+            cavity = height_walls and (
+                (col, row, peak) in height_walls
+                or any(
+                    (col, row, mid) in height_walls
+                    for mid in range(ray_z + 1, peak)
+                )
+            )
+            if not cavity:
+                return False
     return True
+
+
+def _horizontal_or_slope_target(
+    origin_z: int, peak: int | None, col: int, row: int,
+    height_walls: set[tuple[int, int, int]] | None,
+) -> int | None:
+    """室外坡地朝最高地表插值；被高度墙隔开的列保持水平视线。"""
+    if peak is None:
+        return None
+    if not height_walls:
+        return peak
+    low, high = (origin_z, peak) if origin_z <= peak else (peak, origin_z)
+    if any((col, row, mid) in height_walls for mid in range(low + 1, high + 1)):
+        return None
+    return peak
 
 
 def compute_fov(
@@ -54,6 +148,9 @@ def compute_fov(
     has_darkvision: bool = False,
     darkvision_range: int = 0,
     facing: tuple[int, int] | None = None,
+    surface_heights: Grid[int] | None = None,
+    origin_z: int = 0,
+    height_walls: set[tuple[int, int, int]] | None = None,
 ) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
     """计算视野内可见格子集合，返回 (fov_bright, fov_dim)。
 
@@ -82,19 +179,21 @@ def compute_fov(
 
     cell_light = light_grid[ox, oy]
 
-    # 确定有效视野半径
-    if cell_light == LightLevel.DARK:
-        if not has_darkvision:
-            return set(), set()
+    # 黑暗且无黑暗视觉：仍可见自身与相邻一圈；光源只扩大半径
+    if cell_light == LightLevel.DARK and not has_darkvision:
+        use_radius = 1
+    elif cell_light == LightLevel.DARK:
         use_radius = darkvision_range
     else:
-        use_radius = radius  # BRIGHT or DIM
+        use_radius = radius
 
     fov_bright: set[tuple[int, int]] = set()
     fov_dim: set[tuple[int, int]] = set()
 
     # 起点始终明亮（如果起点不是 DARK 或者有黑暗视觉且起点视为 DIM）
-    if cell_light == LightLevel.BRIGHT:
+    if cell_light == LightLevel.BRIGHT or (
+        cell_light == LightLevel.DARK and not has_darkvision
+    ):
         fov_bright.add((ox, oy))
     elif cell_light == LightLevel.DIM:
         if has_darkvision:
@@ -115,14 +214,21 @@ def compute_fov(
                 continue
             if not grid.within_bounds(col, row):
                 continue
-            # 欧几里得距离检查（圆形视野）
-            if (col - ox) ** 2 + (row - oy) ** 2 > use_radius ** 2:
-                continue
             # 相邻一圈：始终可见（含身后），豁免身后扇区排除与视线阻挡
             adjacent = max(abs(col - ox), abs(row - oy)) <= 1
+            # 欧几里得距离检查（圆形视野）；相邻格跳过，否则黑暗半径 1 会丢掉对角
+            if not adjacent and (col - ox) ** 2 + (row - oy) ** 2 > use_radius ** 2:
+                continue
             if facing is not None and not adjacent and is_back_sector(facing, col - ox, row - oy):
                 continue
-            if not adjacent and not _line_of_sight(grid, ox, oy, col, row):
+            peak = (
+                surface_heights[col, row] if surface_heights is not None else None
+            )
+            if not adjacent and not _line_of_sight(
+                grid, ox, oy, col, row, surface_heights, origin_z,
+                _horizontal_or_slope_target(origin_z, peak, col, row, height_walls),
+                height_walls,
+            ):
                 continue
             # 相邻一圈恒为明亮
             if adjacent:

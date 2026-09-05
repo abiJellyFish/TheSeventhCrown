@@ -20,7 +20,9 @@ class BehaviorEngine:
         for name in comp_names:
             comp = COMPONENTS.get(name)
             if comp is None:
-                continue
+                raise ValueError(
+                    f"行为组件未注册: {name} (实体: {getattr(npc, 'name', id(npc))})"
+                )
             match = True
             for cond_val in comp.conditions.values():
                 if cond_val not in state_keys:

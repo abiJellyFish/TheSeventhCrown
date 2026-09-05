@@ -1,11 +1,12 @@
 """命令路由表 —— 攻击方式/战技/特殊行动的输入解析。"""
 import random
 from domain.entity import Entity, Weapon, are_hostile
-from domain.dice import roll_d20, roll_adv_dice, resolve_adv_auto
+from domain.dice import roll_d20, roll_adv_dice, resolve_adv_auto, check_total
 from domain.combat.attack import hit_check, reduce_tenacity, resolve_attack, miss_message, cover_message, compute_attack_adv
 from domain.combat.cover import resolve_cover_line, terrain_cover_info
 from domain.movement import Terrain
 from domain.classes import action_conditions_met
+from domain.pendulum import spend_ap_or_pendulum
 
 
 class ActionMenuMixin:
@@ -43,11 +44,9 @@ class ActionMenuMixin:
 
         # 火把点燃/熄灭 — 无需目标选择，直接结算
         if mode in ("torch_ignite", "torch_extinguish"):
-            if self._state.in_combat and p.ap < 10:
+            if not spend_ap_or_pendulum(self._state, p, 10):
                 self._log("AP 不足")
                 return
-            if self._state.in_combat:
-                p.ap -= 10
             self._on_torch_action(weapon, mode)
             self._end_pending_attack(abandoned=False)
             self._refresh()
@@ -55,17 +54,15 @@ class ActionMenuMixin:
 
         # 火把点火地表 — 进入相邻格选择（max_range=1）
         if mode == "torch_ignite_surface":
-            if self._state.in_combat and p.ap < 10:
-                self._log("AP 不足")
-                return
             self._state.combat_phase = "ranged_target"
             self._state.observe_mode = False
             self._state.pending_attack = self._preserve_from_reaction({
                 "mode": "torch_ignite_surface",
                 "weapon": weapon,
                 "max_range": 1,
+                "target_z": self._state.controlled_entity.z,
             })
-            self._state.observe_cursor = self._state.controlled_entity_pos
+            self._state.observe_cursor = self._state.controlled_entity_pos[:2]
             self._log("选择相邻一格点火 (方向键移动, Enter确认, '取消)")
             self._refresh()
             return
@@ -226,13 +223,13 @@ class ActionMenuMixin:
                 self._log(f"{m['name']}! 伤害+{bonus}")
             elif effect == "disarm":
                 dc = pa.get("attack_roll", 0)
-                t_roll = roll_d20() + target.stat_adjust("str")
+                t_roll = check_total(target, roll_d20(), target.stat_adjust("str"))
                 if t_roll < dc:
                     self._log(f"缴械成功! {target.name} 的武器被打落")
                 else:
                     self._log(f"{target.name} 握紧了武器")
             elif effect == "knockdown":
-                t_roll = roll_d20() + target.stat_adjust("dex")
+                t_roll = check_total(target, roll_d20(), target.stat_adjust("dex"))
                 if t_roll < pa.get("attack_roll", 0):
                     if not target.has_status("prone"):
                         target.add_status("prone")
@@ -327,23 +324,19 @@ class ActionMenuMixin:
         if action_key == "削韧":
             self._log(f"削韧: {target.name} 韧性被削减")
         elif action_key == "重整旗鼓":
-            if self._state.in_combat and p.ap < 10:
+            if not spend_ap_or_pendulum(self._state, p, 10):
                 self._log("AP 不足")
                 self._refresh()
                 return
-            if self._state.in_combat:
-                p.ap -= 10
             p.tenacity = min(p.max_tenacity, p.tenacity + 3)
             self._log("重整旗鼓: 自身韧性恢复 3 点")
         elif action_key == "扫腿":
-            if self._state.in_combat and p.ap < 20:
+            if not spend_ap_or_pendulum(self._state, p, 20):
                 self._log("AP 不足")
                 self._refresh()
                 return
-            if self._state.in_combat:
-                p.ap -= 20
             dc = pa.get("attack_roll", 0)
-            if roll_d20() + target.stat_adjust("dex") < dc:
+            if check_total(target, roll_d20(), target.stat_adjust("dex")) < dc:
                 target.add_status("prone")
                 self._log(f"扫腿成功: {target.name} 倒地")
             else:

@@ -37,7 +37,12 @@ class KeybindMixin:
 
     def on_key(self, event) -> None:
         """上下文感知的按键分发：只有当前面板显示的键才触发。"""
-        key = event.key
+        key = {
+            "left_square_bracket": "[",
+            "right_square_bracket": "]",
+            "bracketleft": "[",
+            "bracketright": "]",
+        }.get(event.key, event.key)
         state = self._state
 
         # ── 0. Escape：输入框唤醒时关闭它；瞄准阶段取消瞄准；否则无操作 ──
@@ -70,6 +75,11 @@ class KeybindMixin:
         if self._input_bar and self._input_bar.has_focus:
             return
 
+        if key == "T" and state and not state.interact_phase:
+            self.action_toggle_combat_mode()
+            event.stop()
+            return
+
         # ── 2. 合并活跃视图的按键集（当前页面显示什么才允许触发什么）──
         if state is None:
             return
@@ -95,6 +105,10 @@ class KeybindMixin:
     def _dispatch_key(self, key: str) -> None:
         """根据按键分发到对应的 action 方法。"""
         actions = {
+            "tab": self.action_switch_party,
+            "semicolon": self.action_party_select,
+            ";": self.action_party_select,
+            "T": self.action_toggle_combat_mode,
             "0": self.action_interact,
             "5": self.action_5,
             "N": self.action_show_actions_menu,
@@ -115,18 +129,70 @@ class KeybindMixin:
             "K": self.action_cooking,
             "Y": self.action_alchemy,
             "H": self.action_height_view,
+            "]": self.action_climb_up,
+            "[": self.action_climb_down,
+            "L": self.action_release,
             "M": self.action_map_overview,
             "E": self.action_system_menu,
             "enter": self._confirm_ranged_target,
             "apostrophe": self.action_cancel_ranged_target,
-            "/": self.action_rotate_target,
-            "slash": self.action_rotate_target,
+            "1": lambda: self.action_rotate_target("XY"),
+            "2": lambda: self.action_rotate_target("XZ"),
+            "3": lambda: self.action_rotate_target("YZ"),
         }
         handler = actions.get(key)
         if handler:
             handler()
         else:
             self._act_log.add(f" {key} 功能待定")
+
+    def action_switch_party(self) -> None:
+        """Tab：切换到下一名存活小队成员。"""
+        target = self._state.next_controlled()
+        if target is None:
+            self._act_log.add("小队没有存活成员")
+            return
+        self._act_log.add(f"现在控制 {target.name}")
+        self.refresh_all()
+
+    def action_party_select(self) -> None:
+        """;：打开多选小队成员移动界面。"""
+        if self._state is None or self._state.interact_phase:
+            return
+        self._state.interact_phase = "party_select"
+        self.refresh_all()
+
+    def action_toggle_combat_mode(self) -> None:
+        """T：由玩家手动切换探索模式与轮转模式。"""
+        if self._state.combat_phase != "idle":
+            return
+        self._state.in_combat = not self._state.in_combat
+        if self._state.in_combat:
+            for member in self._state.party:
+                if not member.is_dead and not any(
+                    participant is member
+                    for participant in self._state.combat_initiative
+                ):
+                    self._state.combat_initiative.append(member)
+            controlled = self._state.controlled_entity
+            if controlled is not None:
+                self._state.combat_turn_index = (
+                    self._state.combat_initiative.index(controlled)
+                )
+            self._state.combat_turn_entity = self._state.controlled_entity
+            self._act_log.add("进入轮转模式")
+        else:
+            status = (
+                "参战中"
+                if any(
+                    not any(member is participant for member in self._state.party)
+                    for participant in self._state.combat_initiative
+                )
+                else "未参战"
+            )
+            self._state.combat_turn_entity = None
+            self._act_log.add(f"进入探索模式（{status}）")
+        self.refresh_all()
 
     def action_roll_extinguish(self) -> None:
         """打滚：消耗20AP，进入倒地；若灼烧则一并扑灭火焰。随时可发动。"""
@@ -196,7 +262,7 @@ class KeybindMixin:
             self._handle_ground_item_menu(int(key))
             return True
         if ip == "talking":
-            if key == "T":
+            if key == "t":
                 target = getattr(self._state, 'interact_target', None)
                 c = target.creature if target else None
                 if c and not are_hostile(c, self._state.controlled_entity) \
@@ -207,6 +273,21 @@ class KeybindMixin:
                 return True
             if key == "Q":
                 self._interact_ask_quest()
+                return True
+            if key == "R":
+                target = getattr(self._state, "interact_target", None)
+                creature = target.creature if target else None
+                if creature is not None:
+                    from domain.recruitment import attempt_recruit
+                    from domain.faction import get_attitude
+                    attitude = get_attitude(creature, self._state.controlled_entity)
+                    cost = 5 if creature.name == "商人" or creature.shop_id else 0
+                    result = attempt_recruit(self._state, creature,
+                                             attitude=attitude, cost=cost)
+                    self._act_log.add(result.message)
+                    if result.success:
+                        self._state.interact_phase = ""
+                    self.refresh_all()
                 return True
             if key == "D":
                 self._interact_deliver_quest()
@@ -233,6 +314,32 @@ class KeybindMixin:
             self._cancel_interact(); return True
         if ip == "steal_caught" and key == "0":
             self._handle_steal_caught(0); return True
+        if ip == "party_select":
+            if key == "0":
+                self._cancel_interact()
+                return True
+            if key == "enter":
+                self._state.interact_phase = ""
+                count = len(self._state.selected_party_members)
+                if count > 1:
+                    self._act_log.add(f"已选择 {count} 名成员共同移动")
+                self.refresh_all()
+                return True
+            if key in ("1", "2", "3", "4"):
+                idx = int(key) - 1
+                members = [m for m in self._state.party if not m.is_dead]
+                if idx >= len(members):
+                    return True
+                member = members[idx]
+                if member is self._state.controlled_entity:
+                    return True
+                member_id = id(member)
+                if member_id in self._state.selected_party_members:
+                    self._state.selected_party_members.discard(member_id)
+                else:
+                    self._state.selected_party_members.add(member_id)
+                self.refresh_all()
+                return True
         return False
 
     # ── 命令包装器（供 VIEW_DEFS 的 commands 查表调用）──
@@ -256,22 +363,16 @@ class KeybindMixin:
                 else:
                     from domain.combat.shape import weapon_melee_reach
                     max_range = weapon_melee_reach(weapon, self._state.controlled_entity)
-            pc, pr = self._state.controlled_entity_pos
+            pc, pr = self._state.controlled_entity_pos[:2]
             oc, oro = self._state.observe_cursor
             nc, nr = oc + dc, oro + dr
             if 0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height:
-                from domain.combat.shape import shape_cells, shape_from_pending_attack
+                from domain.combat.shape import shape_from_pending_attack
+                from domain.combat.target_phase import aim_position_allowed
                 shape = shape_from_pending_attack(pa)
-                cells = shape_cells((nc, nr), shape)
-                in_range = all(
-                    max(abs(c - pc), abs(r - pr)) <= max_range
-                    for c, r in cells
-                )
-                in_bounds = all(
-                    0 <= c < self._state.map.width and 0 <= r < self._state.map.height
-                    for c, r in cells
-                )
-                if in_range and in_bounds:
+                target_z = int(pa.get("target_z", self._state.active_z))
+                anchor = (nc, nr, target_z)
+                if aim_position_allowed(self._state, anchor, shape, max_range):
                     self._state.observe_cursor = (nc, nr)
                     self.refresh_all()
             return
@@ -279,7 +380,7 @@ class KeybindMixin:
             oc, oro = self._state.observe_cursor
             nc, nr = oc + dc, oro + dr
             if 0 <= nc < self._state.map.width and 0 <= nr < self._state.map.height:
-                if (nc, nr) in self._state.fov_cache:
+                if self._state.is_xy_in_fov((nc, nr)):
                     self._state.observe_cursor = (nc, nr)
                     self.refresh_all()
             return
@@ -289,8 +390,16 @@ class KeybindMixin:
         # 交互流程中允许方向键移动，移动后复用当前交互目标的范围检查
         if self._state.interact_phase:
             ip = self._state.interact_phase
-            col, row = self._state.controlled_entity_pos
+            col, row = self._state.controlled_entity_pos[:2][:2]
             nc, nr = col + dc, row + dr
+            if self._state.in_combat:
+                halved = self._state.controlled_entity.has_status("prone") or self._state.controlled_entity.has_status("hiding")
+                move_cost = _move_ap_cost(self._state.controlled_entity, halved=halved)
+                if self._state.controlled_entity.ap < move_cost:
+                    self._act_log.add("AP 不足")
+                    return
+            else:
+                move_cost = 0
             moved = (
                 self._coordinator.move((nc, nr))
                 if self._coordinator is not None
@@ -298,8 +407,7 @@ class KeybindMixin:
             )
             if moved:
                 if self._state.in_combat:
-                    halved = self._state.controlled_entity.has_status("prone") or self._state.controlled_entity.has_status("hiding")
-                    self._state.controlled_entity.ap -= _move_ap_cost(self._state.controlled_entity, halved=halved)
+                    self._state.controlled_entity.ap -= move_cost
                 elif self._state.slow_mode:
                     self._state.clock.tick_action(1.0)
                 self._last_move = (dc, dr)
@@ -320,7 +428,7 @@ class KeybindMixin:
                         target_pos = self._state.get_entity_pos(self._state.steal_target)
                     else:
                         target_pos = getattr(target, "pos", None)
-                    px, py = self._state.controlled_entity_pos
+                    px, py = self._state.controlled_entity_pos[:2]
                     target_still_valid = True
                     if target is not None and ip != "stealing":
                         target_still_valid = any(
@@ -344,19 +452,39 @@ class KeybindMixin:
         if self._state.combat_phase != "idle":
             self._act_log.add("当前无法移动")
             return
-        if self._state.in_combat and self._state.controlled_entity.ap <= 0:
-            self._act_log.add("AP 不足"); return
-        col, row = self._state.controlled_entity_pos
+        if self._state.in_combat:
+            halved = self._state.controlled_entity.has_status("prone") or self._state.controlled_entity.has_status("hiding")
+            move_cost = _move_ap_cost(self._state.controlled_entity, halved=halved)
+            if self._state.controlled_entity.ap < move_cost:
+                self._act_log.add("AP 不足")
+                return
+        else:
+            move_cost = 0
+        col, row = self._state.controlled_entity_pos[:2]
         nc, nr = col + dc, row + dr
+        leader = self._state.controlled_entity
+        is_group = (
+            not self._state.in_combat
+            and self._state.interact_phase == ""
+            and leader is not None
+            and len(self._state.selected_party_members) > 1
+        )
+        old_time = None
+        if is_group:
+            old_time = self._state.clock.pendulum_count + self._state.clock.pendulum_acc_ticks / self._state.clock.scale
         moved = (
             self._coordinator.move((nc, nr))
             if self._coordinator is not None
             else self._state.move_player(nc, nr)
         )
         if moved:
+            if is_group:
+                new_time = self._state.clock.pendulum_count + self._state.clock.pendulum_acc_ticks / self._state.clock.scale
+                delta = new_time - old_time
+                if delta > 0:
+                    self._state.move_selected_followers(leader, delta)
             if self._state.in_combat:
-                halved = self._state.controlled_entity.has_status("prone") or self._state.controlled_entity.has_status("hiding")
-                self._state.controlled_entity.ap -= _move_ap_cost(self._state.controlled_entity, halved=halved)
+                self._state.controlled_entity.ap -= move_cost
             elif self._state.slow_mode:
                 self._state.clock.tick_action(1.0)
             self._last_move = (dc, dr)
@@ -380,24 +508,34 @@ class KeybindMixin:
             self._confirm_ranged_target()
             self.refresh_all()
 
-    def action_rotate_target(self) -> None:
-        """[[/]] 旋转多格光标：以右上格为圆心顺时针旋转一格。
-        旋转后所有格须仍在射程与视野内，否则拒绝旋转。"""
+    def action_rotate_target(self, plane: str | None = None) -> None:
+        """旋转多格光标；1/2/3 分别选择 XY/XZ/YZ 平面。"""
         st = self._state
         if not st or st.combat_phase != "ranged_target":
             return
         pa = st.pending_attack or {}
-        from domain.combat.shape import rotate_shape, shape_cells, shape_from_pending_attack
+        from domain.combat.shape import (
+            is_contiguous_shape, rotate_shape_3d, shape_cells,
+            shape_from_pending_attack,
+        )
         shape = shape_from_pending_attack(pa)
         if shape.is_single:
             return
-        new_shape, shift = rotate_shape(shape)
+        selected_plane = plane or pa.get("target_rotation_plane", "XY")
+        new_shape = rotate_shape_3d(shape, selected_plane)
+        if not is_contiguous_shape(new_shape):
+            self._act_log.add("旋转后范围不连续，无法旋转")
+            self.refresh_all()
+            return
+        shift = (0, 0, 0)
         ac, ar = st.observe_cursor
         new_anchor = (ac + shift[0], ar + shift[1])
-        cells = shape_cells(new_anchor, new_shape)
+        target_z = pa.get("target_z", st.active_z)
+        anchor = (new_anchor[0], new_anchor[1], target_z)
+        cells = shape_cells(anchor, new_shape)
         max_range = pa.get("max_range", 1)
-        pc, pr = st.controlled_entity_pos
-        for (c, r) in cells:
+        pc, pr = st.controlled_entity_pos[:2]
+        for c, r, *_ in cells:
             if not (0 <= c < st.map.width and 0 <= r < st.map.height):
                 self._act_log.add("旋转后超出地图边界，无法旋转")
                 self.refresh_all()
@@ -408,8 +546,9 @@ class KeybindMixin:
                 return
         pa["target_offsets"] = list(new_shape.offsets)
         pa["target_rotation"] = new_shape.rotation_steps
+        pa["target_rotation_plane"] = selected_plane
         st.observe_cursor = new_anchor
-        self._act_log.add("旋转了瞄准方向")
+        self._act_log.add(f"旋转平面: {selected_plane}，方向: {new_shape.rotation_steps}/8")
         self.refresh_all()
 
     def action_cancel_ranged_target(self) -> None:
@@ -491,12 +630,84 @@ class KeybindMixin:
 
     # ── Observe ──
 
+    def action_climb_up(self) -> None:
+        if self._state.combat_phase == "ranged_target":
+            self._switch_target_height(1)
+            return
+        if self._state.observe_mode:
+            self._switch_observe_height(1)
+            return
+        if self._run_game_action(lambda: self._state.climb_player(1)):
+            self._act_log.add("向高处攀爬一层")
+        else:
+            self._act_log.add("没有符合条件的高处地表")
+        self.refresh_all()
+
+    def action_climb_down(self) -> None:
+        if self._state.combat_phase == "ranged_target":
+            self._switch_target_height(-1)
+            return
+        if self._state.observe_mode:
+            self._switch_observe_height(-1)
+            return
+        if self._run_game_action(lambda: self._state.climb_player(-1)):
+            self._act_log.add("向低处攀爬一层")
+        else:
+            self._act_log.add("没有符合条件的低处地表")
+        self.refresh_all()
+
+    def action_release(self) -> None:
+        if self._run_game_action(self._state.release_player):
+            self._act_log.add("松手")
+        else:
+            self._act_log.add("无法松手")
+        self.refresh_all()
+
+    def _switch_observe_height(self, direction: int) -> None:
+        levels = self._state.target_surface_levels_in_fov(
+            self._state.observe_cursor
+        )
+        if not levels:
+            return
+        current = self._state.observe_z
+        if current is None:
+            current = levels[0]
+        candidates = [z for z in levels if z > current] if direction > 0 else [
+            z for z in levels if z < current
+        ]
+        if candidates:
+            self._state.observe_z = min(candidates) if direction > 0 else max(candidates)
+            self.refresh_all()
+
+    def _switch_target_height(self, direction: int) -> None:
+        """在瞄准阶段切换当前光标坐标的目标高度：自由 ±1 并统一校验。"""
+        pa = self._state.pending_attack or {}
+        if not pa:
+            return
+        from domain.combat.shape import shape_from_pending_attack
+        from domain.combat.target_phase import aim_position_allowed
+        shape = shape_from_pending_attack(pa)
+        current = int(pa.get("target_z", self._state.active_z))
+        candidate = current + direction
+        anchor = (*self._state.observe_cursor, candidate)
+        max_range = pa.get("max_range", 1)
+        if aim_position_allowed(self._state, anchor, shape, max_range):
+            pa["target_z"] = candidate
+            self.refresh_all()
+
     def action_toggle_observe(self) -> None:
         self._state.observe_mode = not self._state.observe_mode
         if self._state.observe_mode:
-            self._state.observe_cursor = self._state.controlled_entity_pos
-            self._act_log.add("观察模式 — 方向键移动光标, X退出")
-        else: self._act_log.add("退出观察模式")
+            self._state.observe_cursor = self._state.controlled_entity_pos[:2]
+            self._state.observe_z = None
+            self._act_log.add("观察模式 — 方向键移动光标, X退出, [/]切换高度层")
+        else:
+            self._state.observe_z = None
+            player = self._state.controlled_entity
+            if player is not None:
+                self._state.active_z = player.z
+                self._state.set_active_z(player.z)
+            self._act_log.add("退出观察模式")
         self.refresh_all()
 
     # ── Interact（重构）──
@@ -633,23 +844,25 @@ class KeybindMixin:
         p = self._state.controlled_entity
         action_key = action.get("key", "")
         max_range = action.get("max_range", 1)
-        # 跳跃距离 = (速度等级 + 力量调整值) × 2（D19，阶段7 完整规则）
-        if action_key == "jump":
+        # 跳跃距离 = 速度等级 + 力量调整值
+        if action_key in ("jump", "high_jump"):
             if (p.has_status("prone") or p.has_status("hiding")
                     or p.has_status("incapacitated")):
                 self._act_log.add("倒地/躲藏/失能状态下无法跳跃")
                 self.refresh_all()
                 return
-            max_range = (p.speed + p.stat_adjust("str")) * 2
+            if action_key == "jump":
+                max_range = p.effective_speed + p.stat_adjust("str")
         self._state.observe_mode = False
         self._state.interact_phase = ""
         self._state.pending_attack = {
             "mode": "action", "action": action_key,
             "action_name": action.get("name", "动作"),
             "max_range": max_range,
+            "target_z": self._state.controlled_entity.z,
         }
         self._state.combat_phase = "ranged_target"
-        self._state.observe_cursor = self._state.controlled_entity_pos
+        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._act_log.add(f"选择 {action.get('name', '动作')} 目标 — 范围:{max_range}  移动  确认  取消")
         self._close_input()
         self.refresh_all()
@@ -687,6 +900,11 @@ class KeybindMixin:
         判定已在瞄准确认阶段完成，此处仅施加结果（_apply_shove）+ 破坏隐匿 + 扣费，不重复判定/掷骰。"""
         def execute():
             actor = self._state.controlled_entity
+            action = self._state._find_action(actor, action_key)
+            cost_ap = action.get("cost_ap", 0) if action else 0
+            if self._state.in_combat and actor.ap < cost_ap:
+                self._act_log.add("AP 不足")
+                return
             if action_key == "shove":
                 self._state._apply_shove(actor, target, target_pos, result)
             self._state._break_stealth_in_view(actor)
@@ -705,7 +923,7 @@ class KeybindMixin:
         """Enter 确认动作瞄准目标：范围允许即可选自身/空地（目标合法性由 _do_* 校验）。
         推撞（shove）特殊处理：先进入二选一面板（撞倒 / 推开），由用户选定后再执行。"""
         oc, orow = self._state.observe_cursor
-        pc, pr = self._state.controlled_entity_pos
+        pc, pr = self._state.controlled_entity_pos[:2]
         rng = pa.get("max_range", 1)
         if max(abs(oc - pc), abs(orow - pr)) > rng:
             self._act_log.add("目标超出了范围")
@@ -728,6 +946,14 @@ class KeybindMixin:
                 self.refresh_all()
                 return
             if outcome == "fail":
+                action = self._state._find_action(self._state.controlled_entity, "shove")
+                cost_ap = action.get("cost_ap", 0) if action else 0
+                if self._state.in_combat and self._state.controlled_entity.ap < cost_ap:
+                    self._act_log.add("AP 不足")
+                    self._state.combat_phase = "idle"
+                    self._state.pending_attack = {}
+                    self.refresh_all()
+                    return
                 self._state._break_stealth_in_view(self._state.controlled_entity)
                 self._state._spend_action(self._state.controlled_entity, "shove")
                 self._act_log.add("推搡失败，没能撼动对方")
@@ -772,8 +998,9 @@ class KeybindMixin:
             self.refresh_all()
             return
         self._state.combat_phase = "idle"
+        target_z = int(pa.get("target_z", self._state.active_z))
         self._state.pending_attack = {}
-        self._run_action(action_key, target=target, target_pos=(oc, orow))
+        self._run_action(action_key, target=target, target_pos=(oc, orow, target_z))
 
     def action_char_panel(self):
         if self._right_panel.view_mode == "character":
@@ -813,6 +1040,7 @@ class KeybindMixin:
                 "system": "default",
                 "manual": "system",
                 "title": "manual",
+                "guide": "manual",
                 "quest_detail": "quests",
                 "inventory": "default",
                 "character": "default",
@@ -861,7 +1089,11 @@ class KeybindMixin:
         self._wake_input()
 
     def action_alchemy(self): self._act_log.add("炼药 功能待定")
-    def action_height_view(self): self._act_log.add("高度 功能待定")
+    def action_height_view(self):
+        self._state.height_view = not getattr(self._state, "height_view", False)
+        label = "开启" if self._state.height_view else "关闭"
+        self._act_log.add(f"{label}高度显示")
+        self.refresh_all()
     def action_map_overview(self): self._act_log.add("地图 功能待定")
     def action_system_menu(self):
         """E 键：默认面板 ↔ 思绪面板；其余视图走返回链。"""

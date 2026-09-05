@@ -33,8 +33,8 @@ from textual.widgets import Input
 
 _SYSTEM_ACTIONS = {
     1: ("手册",    "manual"),
-    2: ("封存记忆", "stub"),
-    3: ("回想记忆", "stub"),
+    2: ("封存记忆", "save"),
+    3: ("回想记忆", "load"),
     4: ("入眠",    "exit"),
     5: ("主标题",  "title"),
     6: ("设置",    "stub"),
@@ -288,6 +288,10 @@ class CommandMixin:
             self._right_panel.view_mode = "manual"
             self._wake_input()
             self.refresh_all()
+        elif action == "save":
+            self.app.open_save_slots()
+        elif action == "load":
+            self.app.open_load_slots()
         elif action == "exit":
             self.app.exit()
         elif action == "title":
@@ -305,6 +309,8 @@ class CommandMixin:
         elif num == 2:
             self._right_panel.view_mode = "quests"
             self._right_panel._quests_back = "manual"
+        elif num == 3:
+            self._right_panel.view_mode = "guide"
         else:
             self._act_log.add(f"无效选项: {cmd}")
             return
@@ -331,6 +337,31 @@ class CommandMixin:
         cmd = event.value.strip()
         self._input_bar.value = ""
         if not cmd:
+            self._sync_input()
+            return
+
+        if cmd == "store":
+            self._save_manager.save(self._state, slot="quicksave")
+            self._act_log.add("快速存档：已保存")
+            self._sync_input()
+            return
+        if cmd == "read":
+            loaded = self._save_manager.load(self._state, slot="quicksave")
+            self._act_log.add("快速读档：已恢复" if loaded else "快速读档：没有存档")
+            self.refresh_all()
+            self._sync_input()
+            return
+        if cmd == "kill":
+            p = self._state.controlled_entity
+            if p is None or p.is_dead:
+                self._act_log.add("没有可执行自尽的目标")
+                self._sync_input()
+                return
+            if p.hp > 1:
+                p.hp = 1
+            p.add_status("流血")
+            self._act_log.add(f"{p.name} 自伤至 1 点生命并陷入流血")
+            self.refresh_all()
             self._sync_input()
             return
 

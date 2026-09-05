@@ -10,6 +10,18 @@
 import random
 
 
+def finalize_check(total: int, creature=None) -> int:
+    """应用检定状态修正；震慑使最终检定点数减半。"""
+    if creature is not None and creature.has_status("震慑"):
+        return total // 2
+    return total
+
+
+def check_total(creature, roll: int, adjust: int = 0) -> int:
+    """计算包含状态修正的检定总点数。"""
+    return finalize_check(roll + adjust, creature)
+
+
 def roll_adv_dice(advantage: int = 0, disadvantage: int = 0) -> list[int]:
     """掷 D20 原始骰面列表，不做自动选择（供玩家 UI 面板选择点数）。
 
@@ -55,7 +67,7 @@ def roll_2d6() -> int:
     return random.randint(1, 6) + random.randint(1, 6)
 
 
-def check_dc(adjust: int, dc: int) -> tuple[bool, int]:
+def check_dc(adjust: int, dc: int, creature=None) -> tuple[bool, int]:
     """DC 检定：D20 + 调整值 vs DC。
 
     Args:
@@ -66,5 +78,5 @@ def check_dc(adjust: int, dc: int) -> tuple[bool, int]:
         (是否成功, D20 自然结果)
     """
     roll = random.randint(1, 20)
-    total = roll + adjust
+    total = check_total(creature, roll, adjust)
     return (total >= dc), roll
