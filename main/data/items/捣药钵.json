@@ -1,0 +1,12 @@
+{
+  "name": "捣药钵",
+  "item_type": {
+    "tool": true
+  },
+  "weight": 1.0,
+  "price": {
+    "gp": 6
+  },
+  "description": "6GP，1kg。所有所需原材料减少1份（最低1份）",
+  "effect": "material"
+}

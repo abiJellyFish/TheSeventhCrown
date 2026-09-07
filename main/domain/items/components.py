@@ -26,14 +26,27 @@ class WeaponComponent:
     target_shape: str = ""                 # 多格目标形状（如 "1x3"）；空 = 单格
 
 
+ARMOR_TENACITY_DEFAULTS = {
+    "clothing": 1,
+    "light": 2,
+    "medium": 5,
+    "heavy": 10,
+    "shield": 3,
+}
+
+
 @dataclass
 class ArmorComponent:
     """护甲组件。提供 AC/韧性的物品挂载。"""
-    armor_type: str = "light"              # "light" | "heavy" | "shield" | "clothing"
+    armor_type: str = "light"              # "light" | "medium" | "heavy" | "shield" | "clothing"
     slot: str = "chest"                    # "chest" | "arms" | "legs" | "head" | "full_body"
     ac_bonus: int = 0
-    tenacity_bonus: int = 0
+    tenacity_bonus: int | None = None
     str_requirement: int = 8
+
+    def __post_init__(self):
+        if self.tenacity_bonus is None:
+            self.tenacity_bonus = ARMOR_TENACITY_DEFAULTS.get(self.armor_type, 0)
 
 
 @dataclass

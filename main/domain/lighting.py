@@ -59,6 +59,17 @@ class LightMixin:
         self._sky_block_z = grid
         self._sky_cache_version = version
 
+    def _effective_sky(self):
+        """覆盖值优先；否则按钟摆推导天光。"""
+        from domain.calendar import sky_light
+
+        env = getattr(self, "environment_light", None)
+        if env is not None:
+            return env
+        clock = getattr(self, "clock", None)
+        pendulum_count = getattr(clock, "pendulum_count", 0) if clock is not None else 0
+        return sky_light(pendulum_count)
+
     def light_at(self, col: int, row: int, z: int):
         """(x,y,z) 的合成光照：天光（被更高实心地表挡住则无）叠三维立方体光源。"""
         from domain.combat.shape import is_in_reach
@@ -66,8 +77,7 @@ class LightMixin:
 
         self._ensure_sky_cache()
         if self._sky_block_z[col, row] <= z:
-            env = getattr(self, "environment_light", None)
-            level = env if env is not None else LightLevel.BRIGHT
+            level = self._effective_sky()
         else:
             level = LightLevel.DARK
         cell = (col, row, z)
@@ -89,19 +99,18 @@ class LightMixin:
 
         if z is None:
             z = self._observer_light_z()
-        env = getattr(self, "environment_light", None)
+        sky = self._effective_sky()
         key = (
             self.map.width,
             self.map.height,
             z,
-            env,
+            sky,
             getattr(self, "_light_version", 0),
             getattr(self, "_terrain_version", 0),
         )
         if getattr(self, "_light_cache_key", None) == key:
             return self._light_grid_cache
         self._ensure_sky_cache()
-        sky = env if env is not None else LightLevel.BRIGHT
         lg = Grid[LightLevel](self.map.width, self.map.height, LightLevel.DARK)
         block = self._sky_block_z
         for row in range(self.map.height):

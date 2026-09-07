@@ -5,7 +5,9 @@
     "gp": 6
   },
   "description": "鞣制皮革制成的轻甲，提供躯干防护",
-  "item_type": "armor",
+  "item_type": {
+    "armor": true
+  },
   "armor": {
     "armor_type": "light",
     "slot": "chest",

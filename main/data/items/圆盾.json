@@ -5,7 +5,9 @@
     "gp": 2
   },
   "description": "木制圆盾，提供全身格挡防护",
-  "item_type": "armor",
+  "item_type": {
+    "armor": true
+  },
   "armor": {
     "armor_type": "shield",
     "slot": "full_body",
@@ -20,7 +22,9 @@
     "damage_type": "bludgeoning",
     "attack_stat": "str",
     "ap_cost": 20,
-    "properties": ["versatile"],
+    "properties": [
+      "versatile"
+    ],
     "melee": {
       "damage": "1d6"
     }

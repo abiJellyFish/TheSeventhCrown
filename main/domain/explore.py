@@ -116,8 +116,8 @@ class ExploreMixin:
             if not self.is_in_fov(pos):
                 continue
             if not self.spot_memo.get(pos, False):
-                from domain.dice import roll_d20, check_total
-                roll = check_total(observer, roll_d20(), observer.stat_adjust("wis"))
+                from domain.checks import ability_check
+                roll = ability_check(observer, "wis")
                 if roll >= trap.dc:
                     self.spot_memo[pos] = True
                     trap.discovered = True

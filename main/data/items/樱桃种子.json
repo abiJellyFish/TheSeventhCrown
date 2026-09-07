@@ -1,6 +1,8 @@
 {
   "name": "樱桃种子",
-  "item_type": "seed",
+  "item_type": {
+    "seed": true
+  },
   "weight": 0.01,
   "price": {
     "cp": 1
@@ -9,7 +11,10 @@
   "render_char": ",",
   "render_color": "rgb(255,160,160)",
   "crop": {
-    "suitable_terrain": ["plain", "grass"],
+    "suitable_terrain": [
+      "plain",
+      "grass"
+    ],
     "growth_days": 3,
     "water_need": 1,
     "wither_limit": 5,

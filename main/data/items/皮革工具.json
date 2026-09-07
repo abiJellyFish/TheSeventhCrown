@@ -1,0 +1,12 @@
+{
+  "name": "皮革工具",
+  "item_type": {
+    "tool": true
+  },
+  "weight": 3.0,
+  "price": {
+    "gp": 2
+  },
+  "description": "2GP，3kg，制作时间减半",
+  "effect": "material"
+}

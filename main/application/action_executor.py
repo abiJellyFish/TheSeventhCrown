@@ -51,6 +51,7 @@ class ActionExecutor:
                 surface_layers=getattr(state, "world_layers", None),
                 actor_z=position[2],
                 can_fly=actor.is_hovering or actor.fly_speed > 0,
+                height_walls=getattr(state, "dungeon_wall_cells", None),
             ):
                 return False
             if actor is state.controlled_entity:
@@ -75,6 +76,8 @@ class ActionExecutor:
                 if item.durability <= 0:
                     state.ground_items.remove(item_entry)
                     state.invalidate_spatial_cache()
+                from domain.combat.tenacity import reset_attack_streak
+                reset_attack_streak(actor)
                 state.state_version += 1
                 return True
             if target.is_dead:
@@ -91,6 +94,14 @@ class ActionExecutor:
                 grid=state.map,
                 ground_items=getattr(state, "ground_items", []),
             )
+            from domain.classes import available_abilities
+            from domain.combat.tenacity import settle_attack_tenacity
+            tenacity_action = (not result["hit"]) and "削韧" in available_abilities(actor)
+            settle_attack_tenacity(
+                actor, target, weapon, result["roll"],
+                tenacity_action=tenacity_action,
+                combat_state=state,
+            )
             if result["damage"]:
                 state.emit_event(damage_dealt(
                     id(actor), id(target), result["damage"], result["damage_type"],
@@ -102,14 +113,20 @@ class ActionExecutor:
         if isinstance(action, HideAction):
             result = state._do_hide(actor)
             if result:
+                from domain.combat.tenacity import reset_attack_streak
+                reset_attack_streak(actor)
                 state.state_version += 1
             return result
         if isinstance(action, StandAction):
             result = state._do_stand(actor)
             if result:
+                from domain.combat.tenacity import reset_attack_streak
+                reset_attack_streak(actor)
                 state.state_version += 1
             return result
         if isinstance(action, WaitAction):
+            from domain.combat.tenacity import reset_attack_streak
+            reset_attack_streak(actor)
             state.state_version += 1
             return True
         if isinstance(action, StatusAction):
@@ -160,7 +177,8 @@ class ActionExecutor:
             if not getattr(item, "can_pickup", True):
                 raise ValueError("物品不可拾取")
             state.ground_items.remove(entry)
-            actor.inventory.append(item)
+            from domain.loot import grant_item
+            grant_item(actor, item, state)
             state.emit_event(item_picked_up(id(actor), item.name, action.position))
             state.invalidate_spatial_cache()
             state.state_version += 1
@@ -197,6 +215,10 @@ class ActionExecutor:
                 amount = int(item.amount)
             except (ValueError, TypeError):
                 amount = 2000
+            quality = getattr(item, "quality", "") or ""
+            if quality:
+                from domain.craft.quality import scale_value
+                amount = scale_value(amount, quality)
             actor.food_value = min(15000, actor.food_value + amount)
             if item.count > 1:
                 item.count -= 1
@@ -246,7 +268,8 @@ class ActionExecutor:
             if berry is None:
                 return False
             berry.count = random.randint(2, 5)
-            actor.inventory.append(berry)
+            from domain.loot import grant_item
+            grant_item(actor, berry, state)
             state.harvested_bushes[action.position] = state.clock.pendulum_count + 6
             state.state_version += 1
             return True

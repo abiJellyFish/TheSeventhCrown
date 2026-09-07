@@ -1,10 +1,17 @@
-"""休息系统 —— 短休/长休 + 舒适加成。"""
+"""休息系统 —— 短休/长休 + 舒适加成。效应在完整结束后额外结算。"""
 
 from domain.entity import Entity
+from domain.entity.status import (
+    STATUS_SUFFOCATING,
+    apply_sleep,
+    effective_max_hp,
+    raise_exhaustion,
+    set_exhaustion_level,
+)
 from domain.grid import Grid
 from domain.obstacle import is_full_obstacle
 from domain.movement import Terrain
-from domain.pendulum import PendulumClock
+from domain.pendulum import AP_PER_PENDULUM, PendulumClock
 
 SHORT_REST_PENDULUMS = 300
 LONG_REST_PENDULUMS = 1500
@@ -46,58 +53,151 @@ def is_comfortable(pos: tuple[int, int], terrain_map: Grid[Terrain],
     return wall_count >= 2
 
 
+def _restore_amount(current: int, maximum: int, fraction: float, multiplier: int) -> int:
+    if maximum <= 0:
+        return 0
+    return int(maximum * fraction * multiplier)
+
+
+def _apply_rest_effects(creature: Entity, hp_fraction: float, mp_fraction: float,
+                        multiplier: int, clear_all_exhaustion: bool,
+                        skip_exhaustion: bool) -> dict:
+    """完整休息结束后的额外恢复。不改理智/心灵。"""
+    hp_restore = _restore_amount(
+        creature.hp, effective_max_hp(creature), hp_fraction, multiplier
+    )
+    mp_restore = _restore_amount(creature.mp, creature.max_mp, mp_fraction, multiplier)
+    courage_restore = _restore_amount(
+        creature.courage, creature.effective_max_courage, hp_fraction, multiplier
+    )
+    tenacity_restore = _restore_amount(
+        creature.tenacity, creature.tenacity_cap(), hp_fraction, multiplier
+    )
+    creature.hp = min(effective_max_hp(creature), creature.hp + hp_restore)
+    creature.mp = min(creature.max_mp, creature.mp + mp_restore)
+    creature.courage = min(creature.effective_max_courage, creature.courage + courage_restore)
+    creature.tenacity = min(creature.tenacity_cap(), creature.tenacity + tenacity_restore)
+    if not skip_exhaustion:
+        if clear_all_exhaustion:
+            set_exhaustion_level(creature, 0)
+        else:
+            raise_exhaustion(creature, -1)
+    return {
+        "name": creature.name,
+        "hp_restored": hp_restore,
+        "mp_restored": mp_restore,
+        "courage_restored": courage_restore,
+        "tenacity_restored": tenacity_restore,
+    }
+
+
 def _rest(player: Entity, clock: PendulumClock, pendulums: int,
           hp_fraction: float, mp_fraction: float,
           terrain_map: Grid[Terrain] | None = None,
           pos: tuple[int, int] | tuple[int, int, int] | None = None,
-          ground_items=None) -> dict:
-    """休息通用逻辑：短休/长休差异仅钟摆数和恢复比例。"""
+          ground_items=None,
+          resters: list[Entity] | None = None,
+          in_rotation: bool = False,
+          is_engaged=None) -> dict:
+    """先推进时间（自然恢复照常），完整结束后才给休息效应。"""
+    resters = list(resters) if resters else [player]
     comfort = False
-    was_stunned = player.has_status("震慑")
     if terrain_map and pos:
         comfort = is_comfortable(pos[:2], terrain_map, ground_items=ground_items)
-
     multiplier = 2 if comfort else 1
-    hp_restore = int(player.max_hp * hp_fraction * multiplier)
-    mp_restore = int(player.max_mp * mp_fraction * multiplier)
+    snapshots = []
+    stunned = []
+    from domain.combat.tenacity import reset_attack_streak
+    for creature in resters:
+        reset_attack_streak(creature)
+        snapshots.append((
+            creature,
+            creature.food_value == 0,
+            creature.has_status(STATUS_SUFFOCATING),
+        ))
+        if creature.has_status("震慑"):
+            stunned.append(creature)
+        creature._resting = True
+        creature._interrupted = False
+        apply_sleep(creature)
 
-    player.hp = min(player.max_hp, player.hp + hp_restore)
-    player.mp = min(player.max_mp, player.mp + mp_restore)
-
-    # 清除上一次行动残留的打断标记（倒地/受伤等），仅休息期间的新伤害才打断
-    player._interrupted = False
     interrupted = False
-    # 批量推进钟摆，减少每钟摆的调度开销，同时保留中断检查
     remaining = pendulums
+    elapsed = 0
     batch = 10
     while remaining > 0:
         step = min(batch, remaining)
         clock.tick_action(cost=float(step))
-        if player._interrupted:
-            player._interrupted = False
+        elapsed += step
+        if in_rotation:
+            drain = int(step) * AP_PER_PENDULUM
+            for creature in resters:
+                creature.ap = max(0, creature.ap - drain)
+        if any(creature._interrupted for creature in resters):
+            interrupted = True
+            break
+        if is_engaged is not None and any(is_engaged(creature) for creature in resters):
             interrupted = True
             break
         remaining -= step
-    if was_stunned and not interrupted and pendulums == LONG_REST_PENDULUMS:
-        player.remove_status("震慑")
 
-    return {"hp_restored": hp_restore, "mp_restored": mp_restore,
-            "comfort": comfort, "interrupted": interrupted}
+    for creature in resters:
+        creature._resting = False
+        creature.remove_status("睡眠")
+
+    members = []
+    if not interrupted:
+        clear_all = pendulums == LONG_REST_PENDULUMS
+        for creature, hungry, suffocating in snapshots:
+            members.append(_apply_rest_effects(
+                creature, hp_fraction, mp_fraction, multiplier,
+                clear_all_exhaustion=clear_all,
+                skip_exhaustion=hungry or suffocating,
+            ))
+        if clear_all:
+            for creature in stunned:
+                creature.remove_status("震慑")
+    else:
+        members = [{
+            "name": creature.name,
+            "hp_restored": 0,
+            "mp_restored": 0,
+            "courage_restored": 0,
+            "tenacity_restored": 0,
+        } for creature in resters]
+
+    first = members[0] if members else {
+        "hp_restored": 0, "mp_restored": 0,
+        "courage_restored": 0, "tenacity_restored": 0,
+    }
+    return {
+        "hp_restored": first["hp_restored"],
+        "mp_restored": first["mp_restored"],
+        "courage_restored": first.get("courage_restored", 0),
+        "tenacity_restored": first.get("tenacity_restored", 0),
+        "comfort": comfort,
+        "interrupted": interrupted,
+        "elapsed": elapsed,
+        "planned": pendulums,
+        "members": members,
+    }
 
 
 def short_rest(player: Entity, clock: PendulumClock,
                terrain_map: Grid[Terrain] | None = None,
                pos: tuple[int, int] | None = None,
-               ground_items=None) -> dict:
-    """短休：300 钟摆，恢复 50% HP/MP。"""
+               ground_items=None, **kwargs) -> dict:
+    """短休：300 钟摆，结束后额外恢复 50% 勇气/生命/精神力/韧性。"""
     return _rest(player, clock, SHORT_REST_PENDULUMS, 0.5, 0.5,
-                 terrain_map=terrain_map, pos=pos, ground_items=ground_items)
+                 terrain_map=terrain_map, pos=pos, ground_items=ground_items,
+                 **kwargs)
 
 
 def long_rest(player: Entity, clock: PendulumClock,
               terrain_map: Grid[Terrain] | None = None,
               pos: tuple[int, int] | None = None,
-              ground_items=None) -> dict:
-    """长休：1500 钟摆，恢复 100% HP/MP。"""
+              ground_items=None, **kwargs) -> dict:
+    """长休：1500 钟摆，结束后额外恢复全部勇气/生命/精神力/韧性。"""
     return _rest(player, clock, LONG_REST_PENDULUMS, 1.0, 1.0,
-                 terrain_map=terrain_map, pos=pos, ground_items=ground_items)
+                 terrain_map=terrain_map, pos=pos, ground_items=ground_items,
+                 **kwargs)

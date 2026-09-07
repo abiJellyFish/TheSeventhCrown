@@ -1,10 +1,15 @@
 {
   "name": "篝火",
-  "item_type": "structure",
+  "item_type": {
+    "structure": true
+  },
   "weight": 0,
   "description": "永久火源，可照明和点燃相邻物体。",
   "stack_limit": 1,
   "can_pickup": false,
+  "traits": [
+    "fire_immune"
+  ],
   "render_char": "=",
   "render_color": "red",
   "light": {

@@ -6,7 +6,9 @@
   "render_char": "o",
   "render_color": "#888888",
   "description": "一块石头，可以投掷或用作临时武器",
-  "item_type": "weapon",
+  "item_type": {
+    "weapon": true
+  },
   "weapon": {
     "weapon_type": "melee",
     "category": "simple",

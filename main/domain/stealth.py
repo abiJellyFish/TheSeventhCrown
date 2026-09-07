@@ -150,12 +150,12 @@ class StealthMixin:
 
     def _passive_spot(self, observer: Entity, target: Entity) -> bool:
         """被动感知检定：d20+感知调整 vs DC。返回 True=发现（移除隐匿）。"""
-        from domain.dice import roll_d20, check_total
+        from domain.checks import ability_check
         if target.has_status("hiding"):
             dc = target.temp_traits.get("hide_dc", self.PASSIVE_SPOT_DC)
         else:
             dc = 10 + target.stat_adjust("dex")
-        roll = check_total(observer, roll_d20(), observer.stat_adjust("wis"))
+        roll = ability_check(observer, "wis")
         return roll >= dc
 
     def _is_hidden_to(self, observer: Entity, target: Entity,

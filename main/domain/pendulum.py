@@ -1,7 +1,7 @@
 """钟摆时间系统 —— 全局时间推进、定时事件。
 
 核心概念：
-- SCALE: 时间精度单位
+- SCALE: 时间精度单位。10 AP = 1 钟摆。
 - pendulum_count: 已完成的整数钟摆数
 - pendulum_acc_ticks: 当前钟摆内碎片累积
 
@@ -11,6 +11,8 @@
 import heapq
 import math
 from collections.abc import Callable
+
+AP_PER_PENDULUM = 10
 
 
 class PendulumClock:
@@ -24,6 +26,8 @@ class PendulumClock:
         self._timed_events: list[tuple[int, Callable[[], None]]] = []
         # NPC 结算回调（由 GameState 注册）
         self._on_advance_npcs: Callable[[float], None] | None = None
+        # 回调期间禁止嵌套 tick：NPC 起身等会再调 tick_action，叠在休息/等待上
+        self._advancing = False
 
     # ---- 核心推进 ----
 
@@ -39,19 +43,28 @@ class PendulumClock:
         """移动路径推进：acc += ceil(SCALE / maxS)。返回本次触发的钟摆数。"""
         if maxS <= 0:
             raise ValueError("movement speed must be positive")
+        if self._advancing:
+            return 0
         delta_ticks = math.ceil(self.scale / maxS)
         self.pendulum_acc_ticks += delta_ticks
-        # 按 tick 比例通知 NPC
-        if self._on_advance_npcs:
-            self._on_advance_npcs(delta_ticks / self.scale)  # 转为钟摆单位
-        return self._drain()
+        return self._notify_and_drain(delta_ticks / self.scale)
 
     def tick_action(self, cost: float) -> int:
         """行动路径推进：acc += cost * SCALE。返回本次触发的钟摆数。"""
+        if self._advancing:
+            return 0
         self.pendulum_acc_ticks += int(cost * self.scale)
-        if self._on_advance_npcs:
-            self._on_advance_npcs(cost)
-        return self._drain()
+        return self._notify_and_drain(cost)
+
+    def _notify_and_drain(self, npc_delta: float) -> int:
+        """通知 NPC 后再 drain。嵌套 tick 在 _advancing 期间直接忽略。"""
+        self._advancing = True
+        try:
+            if self._on_advance_npcs:
+                self._on_advance_npcs(npc_delta)
+            return self._drain()
+        finally:
+            self._advancing = False
 
     def tick_combat_round(self) -> int:
         """战斗一轮结束后推进 6 钟摆。不影响移动累积的 ticks。"""

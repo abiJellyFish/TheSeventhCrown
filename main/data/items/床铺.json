@@ -1,6 +1,8 @@
 {
   "name": "床铺",
-  "item_type": "structure",
+  "item_type": {
+    "structure": true
+  },
   "weight": 0,
   "description": "舒适的床铺。",
   "stack_limit": 1,

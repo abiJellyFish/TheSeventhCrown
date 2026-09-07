@@ -1,0 +1,12 @@
+{
+  "id": "spring_herbs",
+  "craft": "alchemy",
+  "output": {"name": "一包草药", "count": 1},
+  "required": {"春之草": 3},
+  "time_pendulums": 1,
+  "tools": [
+    {"name": "捣药钵", "category": "alchemy_tools", "time_factor": 1.0, "material_minus": 1}
+  ],
+  "require_tool": false,
+  "discovery_needed": 5
+}

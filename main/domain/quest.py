@@ -76,9 +76,10 @@ def complete_quest(player, quest: Quest) -> bool:
                 break
     # 发放奖励物品
     from domain.trade import load_item
+    from domain.loot import grant_item
     for name in quest.reward_items:
         item = load_item(name)
         if item is not None:
-            player.inventory.append(item)
+            grant_item(player, item)
     player.gp += quest.reward_gp
     return True

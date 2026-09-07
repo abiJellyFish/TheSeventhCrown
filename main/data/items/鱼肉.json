@@ -1,0 +1,14 @@
+{
+  "name": "鱼肉",
+  "item_type": {
+    "consumable": true
+  },
+  "effect": "restore_food",
+  "amount": "300",
+  "ap_cost": 1,
+  "weight": 0.1,
+  "price": {
+    "sp": 1
+  },
+  "description": "紧实鲜嫩的肉块，食用恢复300饮食值"
+}

@@ -8,5 +8,7 @@
     "cp": 1
   },
   "description": "颜色鲜艳的小颗浆果，食用恢复饮食值",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true
+  }
 }

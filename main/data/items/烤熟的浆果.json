@@ -8,5 +8,7 @@
     "cp": 5
   },
   "description": "烤熟的浆果，甜味更浓了",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true
+  }
 }

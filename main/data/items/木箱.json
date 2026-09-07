@@ -1,6 +1,8 @@
 {
   "name": "木箱",
-  "item_type": "container",
+  "item_type": {
+    "container": true
+  },
   "weight": 0,
   "description": "可以存放物品的木箱。",
   "durability": 40,

@@ -1,6 +1,8 @@
 {
   "name": "纸张",
-  "item_type": "material",
+  "item_type": {
+    "material": true
+  },
   "weight": 0.0,
   "price": {
     "sp": 5

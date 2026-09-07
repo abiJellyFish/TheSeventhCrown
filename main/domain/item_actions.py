@@ -5,6 +5,7 @@
 
 from collections import deque
 from domain.grid import DIRS_8, PASSABLE_TERRAINS
+from domain.items.item import item_type_key
 
 MAX_TILE_SPACE = 0
 
@@ -22,6 +23,10 @@ _EFFECT_LABELS: dict[str, str] = {
     "restore_mp":   "饮用(回蓝)",
     "restore_food": "食用",
     "start_fire":   "点燃",
+    "climb_speed":  "使用",
+    "fly_speed":    "使用",
+    "hover":        "使用",
+    "revive":       "使用",
 }
 
 _TYPE_ACTIONS: dict[str, list[str]] = {
@@ -53,8 +58,11 @@ def get_item_actions(item) -> list[str]:
     actions: list[str] = []
 
     # 按 item_type 查表
-    item_type = getattr(item, 'item_type', 'misc')
-    type_actions = _TYPE_ACTIONS.get(item_type, [])
+    types = getattr(item, "item_type", {}) or {}
+    type_actions: list[str] = []
+    for name in _TYPE_ACTIONS:
+        if types.get(name):
+            type_actions.extend(_TYPE_ACTIONS[name])
     if getattr(item, "accessory", False) and "穿戴" not in type_actions:
         type_actions = ["穿戴"]
     actions.extend(type_actions)
@@ -63,17 +71,23 @@ def get_item_actions(item) -> list[str]:
     name_actions = _NAME_ACTIONS.get(getattr(item, 'name', ''), [])
     actions.extend(name_actions)
 
-    # 消耗品：根据 effect 字段显示具体名称
+    # 消耗品：只列出已实现效果，材料/任务等标签不生成「使用」
     effect = getattr(item, 'effect', '')
-    if effect:
-        actions.append(_EFFECT_LABELS.get(effect, "使用"))
+    label = _EFFECT_LABELS.get(effect)
+    if label:
+        actions.append(label)
     elif getattr(item, 'food_restore', 0) > 0:
-        # 可恢复饮食值但没有 effect 字段的物品（预留）
         actions.append("食用")
 
     # 阅读文本物品（长老的提示等，P1 3.4）
     if getattr(item, 'read_text', ''):
         actions.append("阅读")
+
+    from domain.craft.disassemble import can_disassemble
+    if getattr(item, "unfinished", False):
+        actions.append("继续制作")
+    if can_disassemble(item):
+        actions.append("拆解")
 
     # 所有物品通用操作
     actions.extend(_TERMINAL_ACTIONS)
@@ -230,21 +244,22 @@ def place_on_ground(ground_items: list, item, col: int, row: int, z: int = 0) ->
     """
     import copy
     occupied = {
-        (existing.name, existing.item_type)
+        (existing.name, item_type_key(existing))
         for existing, position in ground_items
         if position[:2] == (col, row)
         and (len(position) < 3 or position[2] == z)
     }
-    if occupied and (item.name, item.item_type) not in occupied:
+    if occupied and (item.name, item_type_key(item)) not in occupied:
         raise ValueError(f"地面物品不能同格：({col}, {row})")
 
     remaining = item.count
     unit_weight = item.weight / remaining if remaining else 0
+    from domain.loot import stack_key
+    item_key = stack_key(item)
     for existing, position in ground_items:
         if (position[:2] == (col, row)
                 and (len(position) < 3 or position[2] == z)
-                and existing.name == item.name
-                and existing.item_type == item.item_type):
+                and stack_key(existing) == item_key):
             capacity = max(0, getattr(existing, "stack_limit", 99) - existing.count)
             added = min(capacity, remaining)
             existing.count += added
@@ -305,6 +320,7 @@ def copy_item_with_count(item, count: int, weight: float):
         item,
         count=count,
         weight=weight,
+        item_type=dict(item.item_type),
         weapon=_copy.deepcopy(item.weapon) if item.weapon is not None else None,
         armor=_copy.deepcopy(item.armor) if item.armor is not None else None,
         light=_copy.deepcopy(item.light) if item.light is not None else None,
@@ -326,14 +342,13 @@ GROUND_ITEM_RENDER: dict[str, dict] = {
     "seed":       {"char": ",", "color": "rgb(255,160,160)"},
 }
 
-_ITEM_TYPE_LABELS: dict[str, str] = {
-    "weapon": "武器",
-    "armor": "护甲",
-    "consumable": "消耗",
-    "material": "材料",
-    "misc": "杂项",
-    "spellbook": "法术书",
-}
+
+def ground_item_render(item) -> dict:
+    types = getattr(item, "item_type", {}) or {}
+    for name, info in GROUND_ITEM_RENDER.items():
+        if types.get(name):
+            return info
+    return GROUND_ITEM_RENDER["misc"]
 
 
 def get_ground_items_at(ground_items: list, col: int, row: int) -> list:
@@ -355,7 +370,7 @@ def get_ground_items_at(ground_items: list, col: int, row: int) -> list:
             if rc:
                 render_info = {"char": rc, "color": rcol or "white"}
             else:
-                render_info = GROUND_ITEM_RENDER.get(item.item_type, GROUND_ITEM_RENDER["misc"])
+                render_info = ground_item_render(item)
             result.append({
                 "char": render_info["char"],
                 "color": render_info["color"],

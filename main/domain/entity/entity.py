@@ -13,7 +13,7 @@ from domain.ai.components import DEFAULT_BEHAVIOR
 from domain.items import Item, Weapon, Armor
 from domain.items.factory import ItemFactory
 from domain.faction import (
-    are_hostile, get_attitude, is_ally, adjust_favor,
+    are_hostile, get_attitude, is_ally, adjust_favor, make_hostile,
     default_favor, get_favor, set_favor, FACTION_RELATIONS,
 )
 from domain.entity.rules import size_rank, SIZE_RANK, stat_adjust, normalize_damage_type, BLUNT_CONVERT
@@ -22,7 +22,14 @@ from domain.entity_components import (
     AllyComponent, ClassComponent, InventoryComponent, ObstacleComponent,
 )
 from domain.obstacle import ObstacleType, normalize_obstacle_type, obstacle_defaults
-from domain.entity.status import StatusEffect
+from domain.entity.status import (
+    StatusEffect,
+    STATUS_POISONED,
+    STATUS_EXHAUSTED,
+    STATUS_SUFFOCATING,
+    STATUS_SLEEP,
+    effective_max_hp as exhaustion_max_hp,
+)
 
 
 # ═══════════════════════════════════════════════════
@@ -109,10 +116,20 @@ class Entity:
     max_hp: int = 30
     tenacity: int = 10
     max_tenacity: int = 10
+    attack_streak: int = 0
+    pending_tenacity_bonus: int = 0
+    _tenacity_regen_acc: float = 0.0
     ap: int = 60
     max_ap: int = 60
-    courage: int = 0
-    max_courage: int = 0
+    courage: int = 10
+    max_courage: int = 10
+    sanity: int = 100
+    max_sanity: int = 100
+    mind: int = 100
+    max_mind: int = 100
+    exhaustion_level: int = 0
+    starve_pendulums: float = 0.0
+    _resting: bool = False
     speed: float = 1                      # 速度等级 (格子/钟摆)
     ac_base: int = 8                      # 天生 AC（不含敏捷）
     char: str = "?"                       # 地图显示字符（ASCII 单个字符）
@@ -145,6 +162,10 @@ class Entity:
     statuses: list[StatusEffect] = field(default_factory=list)
     armor_experience: dict[str, float] = field(default_factory=dict)
     armor_training_progress: dict[str, float] = field(default_factory=dict)
+    craft_experience: dict[str, float] = field(default_factory=dict)
+    tool_experience: dict[str, float] = field(default_factory=dict)
+    known_recipes: list[str] = field(default_factory=list)
+    recipe_attempts: dict[str, int] = field(default_factory=dict)
 
     # ── 组件容器（按需挂载，None=未挂载）──
     _control: ControlComponent | None = None
@@ -177,7 +198,8 @@ class Entity:
     @hp.setter
     def hp(self, value: int) -> None:
         old = getattr(self, "_hp", 0)
-        value = max(0, min(int(value), self.max_hp))
+        cap = exhaustion_max_hp(self)
+        value = max(0, min(int(value), cap))
         self._hp = value
         # 生命恢复（增加）→ 清除濒死/昏迷（D24：恢复任何生命值即解除）
         if value > old and not getattr(self, "_reviving", False):
@@ -185,13 +207,17 @@ class Entity:
             if ds is not None:
                 ds.reset()
             if getattr(self, "statuses", None) is not None:
+                was_dying = self.has_status(STATUS_DYING)
                 self.remove_status(STATUS_DYING)
                 self.remove_status(STATUS_COMATOSE)
                 self.remove_status(STATUS_BLEEDING)
                 self._bleeding_pendulums = 0
-        if hasattr(self, "statuses") and value < self.max_hp * 0.2:
+                if was_dying and getattr(self, "exhaustion_level", 0) >= 10:
+                    from domain.entity.status import raise_exhaustion
+                    raise_exhaustion(self, -1)
+        if hasattr(self, "statuses") and value < cap * 0.2:
             self._enter_wounded()
-        elif hasattr(self, "statuses") and value >= self.max_hp * 0.2:
+        elif hasattr(self, "statuses") and value >= cap * 0.2:
             self._leave_wounded()
 
     @property
@@ -384,6 +410,11 @@ class Entity:
         if self._class is None:
             self._class = ClassComponent()
         self._class.class_levels = value
+
+    @property
+    def character_level(self) -> int:
+        from domain.character_level import character_level as total
+        return total(self)
 
     @property
     def class_experience(self) -> dict[str, float]:
@@ -658,41 +689,54 @@ class Entity:
         """检查是否有指定名称的状态。"""
         return any(s.name == name for s in self.statuses)
 
-    def add_status(self, name: str, duration: int | None = None) -> None:
-        """添加状态。若已存在则刷新 duration。"""
-        if name == STATUS_BLEEDING:
-            self.statuses.append(StatusEffect(name=name, duration=duration))
+    def add_status(self, name: str, duration: int | None = None, *,
+                   end_event: str | None = None, rounds_left: int | None = None) -> None:
+        """追加一条独立状态。力竭/重伤/浴血仍保持单实例。"""
+        unique = {STATUS_EXHAUSTED, STATUS_WOUNDED, STATUS_BLOODIED}
+        if name in unique and self.has_status(name):
             return
-        for s in self.statuses:
-            if s.name == name:
-                if duration is not None:
-                    s.duration = duration
-                # 失能/不可移动顺带清除回避（阶段7 D19）
-                if name in ("incapacitated", "不可移动"):
-                    self.remove_status("dodge")
-                return
-        self.statuses.append(StatusEffect(name=name, duration=duration))
-        # 失能/不可移动顺带清除回避（阶段7 D19）
-        if name in ("incapacitated", "不可移动"):
+        self.statuses.append(StatusEffect(
+            name=name, duration=duration, end_event=end_event, rounds_left=rounds_left,
+        ))
+        if name in ("incapacitated", STATUS_IMMOBILE):
             self.remove_status("dodge")
-        # 倒地打断进行中的多钟摆动作；主动打滚等已完成动作不遗留打断标记
+        if name == STATUS_IMMOBILE:
+            self.remove_status(STATUS_DISENGAGED)
         if name == "prone" and self._action_remaining_cost > 0:
             self._interrupted = True
-        # 昏迷：进入时重置自然清醒累积（重新累计 1500 钟摆）
         if name == STATUS_COMATOSE:
             self._comatose_pendulums = 0.0
             self.add_status(STATUS_INCAPACITATED)
             self.add_status(STATUS_PRONE)
             self.add_status(STATUS_IMMOBILE)
+        if name == STATUS_SLEEP:
+            self.add_status(STATUS_INCAPACITATED)
+
+    def _drop_named_status(self, name: str, count: int) -> None:
+        """按条数移除同名状态实例，不影响其余来源。"""
+        if count <= 0:
+            return
+        kept = []
+        dropped = 0
+        for effect in self.statuses:
+            if effect.name == name and dropped < count:
+                dropped += 1
+                continue
+            kept.append(effect)
+        self.statuses = kept
 
     def remove_status(self, name: str) -> None:
-        """移除状态。"""
-        self.statuses = [s for s in self.statuses if s.name != name]
+        """移除该名称的全部实例。睡眠按条数配对清掉级联失能。"""
+        dropped = sum(1 for item in self.statuses if item.name == name)
+        self.statuses = [item for item in self.statuses if item.name != name]
         if name == STATUS_BLEEDING:
             self._bleeding_pendulums = 0
-        # 失去昏迷 → 清空自然清醒累积（1500 钟摆累计中断）
         if name == STATUS_COMATOSE:
             self._comatose_pendulums = 0.0
+        if name == STATUS_SLEEP:
+            self._drop_named_status(STATUS_INCAPACITATED, dropped)
+        if name == STATUS_IMMOBILE and getattr(self, "exhaustion_level", 0) >= 9:
+            self.add_status(STATUS_IMMOBILE)
 
     def _enter_wounded(self) -> None:
         """进入重伤；仅从阈值外首次进入时投掷一次重伤结果。"""
@@ -718,7 +762,14 @@ class Entity:
         self.remove_status(STATUS_WOUNDED)
         self.remove_status(STATUS_BLOODIED)
         self.remove_status(STATUS_WET)
-        self.remove_status(STATUS_INCAPACITATED)
+        self.statuses = [
+            s for s in self.statuses
+            if not (
+                s.name == STATUS_INCAPACITATED
+                and s.duration is None
+                and s.end_event is None
+            )
+        ]
         self.remove_status(STATUS_IMMOBILE)
         self.remove_status(STATUS_BLEEDING)
         self._bleeding_pendulums = 0
@@ -734,6 +785,13 @@ class Entity:
     @property
     def effective_max_courage(self) -> int:
         return self.max_courage // 2 if self.has_status(STATUS_WOUNDED) else self.max_courage
+
+    def tenacity_cap(self) -> int:
+        bonus = 0
+        for item in self.equipment.values():
+            if item is not None and getattr(item, "armor", None) is not None:
+                bonus += item.tenacity_bonus or 0
+        return self.max_tenacity + bonus
 
     @property
     def effective_vision_range(self) -> int:
@@ -828,11 +886,13 @@ class Entity:
         """恢复生命。恢复后自动清除濒死/昏迷（由 hp setter 统一处理）。"""
         if self._is_dead:
             return
-        self.hp = min(self.max_hp, self.hp + amount)
+        self.hp = min(exhaustion_max_hp(self), self.hp + amount)
 
     def revive(self, hp: int | None = None) -> None:
         """复活：恢复半血，清死亡豁免并施加震慑。"""
+        from domain.entity.status import set_exhaustion_level
         self._is_dead = False
+        set_exhaustion_level(self, 0)
         self.remove_status(STATUS_DYING)
         self._get_death_saves().reset()
         self._reviving = True
@@ -843,11 +903,27 @@ class Entity:
             self.remove_status(STATUS_PRONE)
             self.remove_status(STATUS_IMMOBILE)
             self.add_status(STATUS_STUNNED)
+            from domain.loot import reset_loot_table
+            reset_loot_table(self)
         finally:
             self._reviving = False
 
+    def expire_status_effect(self, effect) -> None:
+        """移除一条状态实例；击破失能到期时回满韧性。"""
+        self.statuses = [item for item in self.statuses if item is not effect]
+        if effect.name == "incapacitated":
+            self.tenacity = self.tenacity_cap()
+        if effect.name == STATUS_SLEEP:
+            self._drop_named_status(STATUS_INCAPACITATED, 1)
+        if effect.name == "攀爬药效":
+            self.climb_speed = 0
+        elif effect.name == "飞行药效":
+            self.fly_speed = 0
+        elif effect.name == "悬浮药效":
+            self.is_hovering = False
+
     def tick_statuses(self, delta: float = 1.0) -> list[str]:
-        """推进状态；流血按完整 6 钟摆结算一次。"""
+        """推进状态；流血按完整 6 钟摆结算一次。每条独立到期。"""
         from domain.combat.attack import roll_dice
         expired = []
         full = int(delta)
@@ -857,9 +933,8 @@ class Entity:
                 self._bleeding_pendulums -= 6
                 for _ in range(sum(s.name == STATUS_BLEEDING for s in self.statuses)):
                     self.take_damage(roll_dice(1, 4), "physical")
-        for s in self.statuses:
+        for s in list(self.statuses):
             if s.duration is not None:
-                # 灼烧：本钟摆仍燃烧 → 先结算火焰伤害，再扣计时
                 if s.name == "灼烧" and s.duration > 0 and full > 0:
                     fire_traits = self.temp_traits.get("fire", {})
                     burn_mult = fire_traits.get("burn_mult", 1.0)
@@ -870,16 +945,12 @@ class Entity:
                     self.take_damage(total_dmg, "fire")
                 s.duration -= full
                 if s.duration <= 0:
-                    expired.append(s.name)
-        for name in expired:
-            self.remove_status(name)
-            if name == "攀爬药效":
-                self.climb_speed = 0
-            elif name == "飞行药效":
-                self.fly_speed = 0
-            elif name == "悬浮药效":
-                self.is_hovering = False
-        return expired
+                    expired.append(s)
+        names = []
+        for effect in expired:
+            names.append(effect.name)
+            self.expire_status_effect(effect)
+        return names
 
     # ---- AI 字段 ----
     template_name: str = ""               # AI 行为模板名
@@ -941,8 +1012,13 @@ class Entity:
         max_tenacity: int = 10,
         ap: int = 60,
         max_ap: int = 60,
-        courage: int = 0,
-        max_courage: int = 0,
+        courage: int = 10,
+        max_courage: int = 10,
+        sanity: int = 100,
+        max_sanity: int = 100,
+        mind: int = 100,
+        max_mind: int = 100,
+        exhaustion_level: int = 0,
         speed: int = 1,
         ac_base: int = 8,
         char: str = "?",
@@ -968,6 +1044,10 @@ class Entity:
         statuses: list | None = None,
         armor_experience: dict[str, float] | None = None,
         armor_training_progress: dict[str, float] | None = None,
+        craft_experience: dict[str, float] | None = None,
+        tool_experience: dict[str, float] | None = None,
+        known_recipes: list[str] | None = None,
+        recipe_attempts: dict[str, int] | None = None,
         # 组件字段（兼容旧构造方式，通过 property setter 挂载组件）
         controlled: bool = False,
         inventory: list | None = None,
@@ -1025,10 +1105,20 @@ class Entity:
         self.hp = hp
         self.tenacity = tenacity
         self.max_tenacity = max_tenacity
+        self.attack_streak = 0
+        self.pending_tenacity_bonus = 0
+        self._tenacity_regen_acc = 0.0
         self.ap = ap
         self.max_ap = max_ap
         self.max_courage = max(0, int(max_courage))
         self.courage = max(0, min(int(courage), self.max_courage))
+        self.max_sanity = max(0, int(max_sanity))
+        self.sanity = max(0, min(int(sanity), self.max_sanity))
+        self.max_mind = max(0, int(max_mind))
+        self.mind = max(0, min(int(mind), self.max_mind))
+        self.exhaustion_level = max(0, int(exhaustion_level))
+        self.starve_pendulums = 0.0
+        self._resting = False
         self.speed = speed
         self.ac_base = ac_base
         self.char = char
@@ -1049,16 +1139,24 @@ class Entity:
         self.actions = actions if actions is not None else []
         self.traits = traits if traits is not None else []
         self.loot = loot if loot is not None else {}
+        self.loot_rolled = False
+        self.loot_drops = []
         self.shop_id = shop_id
         self.shop_gold = shop_gold
         # 尸体武器：每生物独立的尸体物品（普通双手武器）。None 表示无尸体。
         self.corpse = ItemFactory.create_weapon(corpse) if corpse else None
         if self.corpse is not None:
-            self.corpse.item_type = "corpse"
+            self.corpse.item_type = {"corpse": True}
             self.corpse.stack_limit = 1
         self.statuses = statuses if statuses is not None else []
         self.armor_experience = dict(armor_experience or {})
         self.armor_training_progress = dict(armor_training_progress or {})
+        self.craft_experience = dict(craft_experience or {})
+        self.tool_experience = dict(tool_experience or {})
+        self.known_recipes = (
+            list(known_recipes) if known_recipes is not None else ["hide_boots"]
+        )
+        self.recipe_attempts = dict(recipe_attempts or {})
         self.temp_traits = dict(temp_traits) if temp_traits else {}
         self._oa_suspended = False
         self._reviving = False
@@ -1205,6 +1303,26 @@ class Entity:
             self.weapon_experience[category] = (
                 self.weapon_experience.get(category, 0.0) + amount
             )
+
+    def grant_craft_exp(self, kind: str, amount: float = 0.1) -> None:
+        from domain.craft.skills import grant_craft_exp as _grant
+        _grant(self, kind, amount)
+
+    def grant_tool_exp(self, category: str, amount: float = 0.1) -> None:
+        from domain.craft.skills import grant_tool_exp as _grant
+        _grant(self, category, amount)
+
+    def tool_proficiency_level(self, category: str) -> int:
+        from domain.craft.skills import tool_proficiency_level as _level
+        return _level(self, category)
+
+    def tool_expertise_level(self, category: str) -> int:
+        from domain.craft.skills import tool_expertise_level as _level
+        return _level(self, category)
+
+    def craft_level(self, kind: str) -> int:
+        from domain.craft.skills import craft_level as _level
+        return _level(self, kind)
 
     def weapon_proficiency_level(self, category: str) -> int:
         """返回指定武器类别的熟练项等级（0~5）。"""
@@ -1354,8 +1472,13 @@ class Entity:
             max_tenacity=data.get("max_tenacity", 10),
             ap=data.get("ap", 6),
             max_ap=data.get("max_ap", 6),
-            courage=data.get("courage", 0),
-            max_courage=data.get("max_courage", 0),
+            courage=data.get("courage", data.get("max_courage", 10)),
+            max_courage=data.get("max_courage", 10),
+            sanity=data.get("sanity", data.get("max_sanity", 100)),
+            max_sanity=data.get("max_sanity", 100),
+            mind=data.get("mind", data.get("max_mind", 100)),
+            max_mind=data.get("max_mind", 100),
+            exhaustion_level=data.get("exhaustion_level", 0),
             speed=data.get("speed", 1),
             ac_base=data.get("ac_base", data.get("ac", 8)),
             char=data.get("char") or data.get("key", "?")[0].lower(),
@@ -1375,8 +1498,13 @@ class Entity:
             corpse=data.get("corpse"),
             statuses=[StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in data.get("statuses", [])],
             armor_experience=data.get("armor_experience", {}),
+            craft_experience=data.get("craft_experience", {}),
+            tool_experience=data.get("tool_experience", {}),
+            known_recipes=data.get("known_recipes"),
+            recipe_attempts=data.get("recipe_attempts", {}),
             temp_traits=data.get("temperature", {}),
         )
+        creature.starve_pendulums = float(data.get("starve_pendulums", 0.0))
 
         # 数据驱动挂载组件
         # 1. 物品栏组件（有 inventory 或 equipment 字段则挂载）

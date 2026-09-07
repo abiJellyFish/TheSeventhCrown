@@ -10,7 +10,7 @@ from domain.combat.shape import weapon_melee_reach, shape_cells, shape_from_pend
 
 
 def aim_position_allowed(state, anchor, shape, max_range):
-    """瞄准光标位置的统一校验：全部格在射程与地图内、全部格可瞄准、非整体在高度墙。"""
+    """瞄准光标位置的统一校验：全部格在射程与地图内。不看视野、不看墙。"""
     pc, pr = state.controlled_entity_pos[:2]
     cells = shape_cells(anchor, shape)
     for c, r, _ in cells:
@@ -18,9 +18,52 @@ def aim_position_allowed(state, anchor, shape, max_range):
             return False
         if max(abs(c - pc), abs(r - pr)) > max_range:
             return False
-    if not all(state.is_targetable_cell(cell) for cell in cells):
+    return True
+
+
+def find_legal_aim_anchor(state, shape, max_range, target_z):
+    """在射程内找一个整块形状合法的锚格；先试自身格，再按距离近到远。"""
+    origin = state.controlled_entity_pos
+    if origin is None:
+        return None
+    pc, pr = origin[:2]
+    width = state.map.width
+    height = state.map.height
+    candidates = []
+    reach = max(0, int(max_range))
+    for col in range(max(0, pc - reach), min(width, pc + reach + 1)):
+        for row in range(max(0, pr - reach), min(height, pr + reach + 1)):
+            if max(abs(col - pc), abs(row - pr)) > reach:
+                continue
+            candidates.append((col, row))
+    candidates.sort(
+        key=lambda pos: (max(abs(pos[0] - pc), abs(pos[1] - pr)), abs(pos[0] - pc) + abs(pos[1] - pr))
+    )
+    for col, row in candidates:
+        anchor = (col, row, target_z)
+        if aim_position_allowed(state, anchor, shape, max_range):
+            return anchor
+    return None
+
+
+def activate_aim(state) -> bool:
+    """根据 pending_attack 把光标放到合法锚格并进入瞄准。找不到则返回 False。"""
+    pending = state.pending_attack or {}
+    max_range = pending.get("max_range", 1)
+    target_z = int(pending.get(
+        "target_z",
+        state.controlled_entity.z if state.controlled_entity is not None else 0,
+    ))
+    found = find_legal_aim_anchor(
+        state, shape_from_pending_attack(pending), max_range, target_z,
+    )
+    if found is None:
         return False
-    return not all(state.is_height_wall(cell[:2], cell[2]) for cell in cells)
+    state.observe_cursor = found[:2]
+    pending["target_z"] = found[2]
+    state.observe_mode = False
+    state.combat_phase = "ranged_target"
+    return True
 
 
 @dataclass(frozen=True)
@@ -90,9 +133,6 @@ class TargetPhaseMixin:
     def _enter_target_phase(self, weapon) -> None:
         """进入光标瞄准阶段（近战/远程统一）。只看范围，不看视野。"""
         reach = self._weapon_max_range(weapon, self._state.controlled_entity)
-        self._state.observe_mode = False
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
         self._state.pending_attack["max_range"] = reach
         self._state.pending_attack["target_z"] = self._state.controlled_entity.z
         # 多格形状（武器 target_shape，如 "1x3"；缺省单格）
@@ -105,6 +145,11 @@ class TargetPhaseMixin:
         self._state.pending_attack["target_mode"] = (
             "area" if self._state.pending_attack.get("sweep_selected") else "target"
         )
+        if not activate_aim(self._state):
+            self._log("无法找到合适的目标")
+            self._refresh()
+            self._wake()
+            return
         tip = " [1]XY水平 [2]XZ横向 [3]YZ纵向旋转" if shape_spec else ""
         self._log(
             f"选择目标 — 范围:{reach}格{tip} [方向键]移动光标 [Enter]确认 [']取消")
@@ -167,18 +212,22 @@ class TargetPhaseMixin:
         pa["target_pos"] = target_pos
         pa["target_z"] = target_z
         pa["target"] = target
+        if target is None and not pa.get("multi_cells"):
+            pa["hit_air"] = True
         if isinstance(target, Entity) and target.has_status("shield"):
             event = {
                 "kind": "shield", "trigger": "target_selected",
                 "attacker": self._state.controlled_entity,
                 "target": target, "registered_at": len(self._state.pending_reactions),
             }
-            self._state.pending_reactions.append(event)
-            self._state.interact_phase = "reaction"
-            self._state.emit_reaction_required()
-            self._refresh()
-            self._wake()
-            return
+            from domain.combat.opportunity import reaction_can_fire
+            if reaction_can_fire(target, event):
+                self._state.pending_reactions.append(event)
+                self._state.interact_phase = "reaction"
+                self._state.emit_reaction_required()
+                self._refresh()
+                self._wake()
+                return
         self.execute_attack_roll()
         self._refresh()
 

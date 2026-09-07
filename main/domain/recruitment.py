@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 
-from domain.dice import roll_d20, check_total
+from domain.checks import ability_check
 from domain.entity import Entity
 from domain.faction import get_attitude
 
@@ -27,12 +27,11 @@ def attempt_recruit(state, target: Entity, *, attitude: str | None = None,
     if target_attitude not in ("友好", "冷漠"):
         return RecruitmentResult(False, 0, 0, "目标态度不适合招募")
     if len(state.party) >= state.max_party_size:
-        return RecruitmentResult(False, 0, 0, "队伍已满")
-    player_roll = check_total(
-        player, roll_d20(advantage=1 if target_attitude == "友好" else 0),
-        player.stat_adjust("cha")
+        return RecruitmentResult(False, 0, 0, "小队已满，先遣散成员后招募")
+    player_roll = ability_check(
+        player, "cha", extra_adv=1 if target_attitude == "友好" else 0
     )
-    target_roll = check_total(target, roll_d20(), target.stat_adjust("cha"))
+    target_roll = ability_check(target, "cha")
     if player_roll <= target_roll:
         return RecruitmentResult(False, player_roll, target_roll, "魅力检定失败")
     if player.gp < cost:

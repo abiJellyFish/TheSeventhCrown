@@ -1,9 +1,17 @@
 {
   "name": "法术书_塑能",
-  "item_type": "spellbook",
+  "item_type": {
+    "spellbook": true
+  },
   "weight": 1.0,
-  "price": {"gp": 10},
-  "spellbook": {"spells": ["魔法飞弹"]},
+  "price": {
+    "gp": 10
+  },
+  "spellbook": {
+    "spells": [
+      "魔法飞弹"
+    ]
+  },
   "description": "记载塑能法术的魔法书。持有后可装备到法术书栏，从中记忆法术",
   "render_char": "b",
   "render_color": "magenta"

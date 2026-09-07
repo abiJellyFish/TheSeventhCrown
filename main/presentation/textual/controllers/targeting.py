@@ -3,7 +3,7 @@ import json
 import os
 import random
 from domain.game_state import GameState
-from domain.entity import Entity, Weapon, are_hostile, adjust_favor
+from domain.entity import Entity, Weapon, make_hostile, are_hostile
 import domain.entity as ent
 from domain.movement import Terrain, find_path
 from domain.fov import LightLevel, compute_fov
@@ -29,7 +29,7 @@ from domain.item_actions import (get_item_actions, find_placeable_tile,
     place_on_ground, remove_from_inventory as item_remove_from_inventory,
     copy_item_with_count, get_throw_range, get_throw_max_range,
     tile_space_used, MAX_TILE_SPACE)
-from domain.loot import _add_to_inventory
+from domain.loot import grant_item
 from presentation.textual.fov import _update_fov
 
 
@@ -82,7 +82,12 @@ class TargetingMixin:
             return
         position = pa.get("target_choice_position")
         is_revive = pa.get("spell", {}).get("effect", {}).get("type") == "revive"
-        current = self._state.get_damageables_at(*position, include_dead=is_revive)
+        target_z = int(pa.get("target_z", self._state.active_z))
+        if position is not None and len(position) > 2:
+            target_z = position[2]
+        current = self._state.get_damageables_at(
+            position[0], position[1], z=target_z, include_dead=is_revive
+        )
         target = candidates[index]
         is_special_target = target is None or isinstance(target, SurfaceTarget)
         if not is_special_target and target not in current:
@@ -170,7 +175,8 @@ class TargetingMixin:
                 self._act_log.add("目标超出了射程")
                 self.refresh_all()
                 return
-            candidates = self._state.get_damageables_at(oc, orow)
+            target_z = int(pa.get("target_z", self._state.active_z))
+            candidates = self._state.get_damageables_at(oc, orow, z=target_z)
             if len(candidates) > 1:
                 self._begin_target_choice(candidates, (oc, orow), "spell_multi")
                 return
@@ -192,7 +198,11 @@ class TargetingMixin:
             return
         # ── 单目标模式 ──
         if pa and pa.get("mode") == "throw":
-            candidates = self._state.get_damageables_at(*self._state.observe_cursor)
+            target_z = int(pa.get("target_z", self._state.active_z))
+            cursor = self._state.observe_cursor
+            candidates = self._state.get_damageables_at(
+                cursor[0], cursor[1], z=target_z
+            )
             if len(candidates) > 1:
                 self._begin_target_choice(
                     candidates, self._state.observe_cursor, "throw"
@@ -269,6 +279,7 @@ class TargetingMixin:
             self._cast_spell(spell, target, target_pos=(oc, orow))
             return
         from domain.combat.shape import shape_cells, shape_from_pending_attack
+        from domain.combat.cover import redirect_blocked_shape
         shape = shape_from_pending_attack(pa)
         target_z = int(pa["target_z"]) if "target_z" in pa else (
             self._state.surface_height_at((oc, orow))
@@ -283,11 +294,24 @@ class TargetingMixin:
             self._act_log.add("法术影响范围超出射程或地图边界")
             self.refresh_all()
             return
+        is_damage = effect.get("type") == "damage"
+        if is_damage:
+            origin = self._state.controlled_entity_pos
+            cells, blocker, pos = redirect_blocked_shape(
+                self._state, origin, cells, shape,
+                ignore=(self._state.controlled_entity,),
+            )
+            if blocker is not None:
+                oc, orow = pos[0], pos[1]
+                target_z = pos[2]
+                anchor = pos
+                pa["target_z"] = target_z
+                pa["target_pos"] = pos[:2]
         if not shape.is_single:
             target_mode = spell.get("target_mode")
             if target_mode not in ("target", "area"):
                 target_mode = "area" if spell.get("effect", {}).get("area") else "target"
-            if target_mode == "target" and self._state.fov_cache and any(
+            if not is_damage and target_mode == "target" and self._state.fov_cache and any(
                 not self._state.is_in_fov(cell)
                 or not self._state.is_exposed_surface(cell)
                 for cell in cells
@@ -295,7 +319,7 @@ class TargetingMixin:
                 self._act_log.add("目标不在当前视野或被遮挡")
                 self.refresh_all()
                 return
-            if target_mode == "area":
+            if not is_damage and target_mode == "area":
                 cells = [
                     cell for cell in cells
                     if self._state.is_in_fov(cell)
@@ -320,7 +344,7 @@ class TargetingMixin:
             pa["affected_cells"] = cells
             self._cast_spell(spell, targets, target_pos=(oc, orow))
             return
-        if not self._state.is_targetable_cell((oc, orow, target_z)):
+        if not is_damage and not self._state.is_targetable_cell((oc, orow, target_z)):
             self._act_log.add("目标不在当前视野或被遮挡")
             self.refresh_all()
             return
@@ -421,7 +445,7 @@ class TargetingMixin:
             return
         empty = load_item("空玻璃瓶")
         if empty:
-            _add_to_inventory(player, empty)
+            grant_item(player, empty, self._state)
         apply_wet_to_tile(self._state, (oc, orow))
         if self._state.in_combat:
             player.ap -= cost
@@ -475,7 +499,7 @@ class TargetingMixin:
             return
         water = load_item("一瓶水")
         if water:
-            _add_to_inventory(player, water)
+            grant_item(player, water, self._state)
         if self._state.in_combat:
             player.ap -= cost
         else:
@@ -657,7 +681,8 @@ class TargetingMixin:
             target = pa["target"]
         else:
             candidates = self._state.get_damageables_at(
-                trajectory_cursor[0], trajectory_cursor[1]
+                trajectory_cursor[0], trajectory_cursor[1],
+                z=int(pa.get("target_z", self._state.active_z)),
             )
             target = candidates[0] if candidates else None
         # 投掷 → 破坏隐匿
@@ -707,10 +732,9 @@ class TargetingMixin:
             # 有目标：命中检定，超正常射程带劣势
             dist = max(abs(cursor[0] - pc), abs(cursor[1] - pr))
             normal_range = pa.get("throw_range", 3)
-            if dist > normal_range:
-                roll = roll_d20(disadvantage=1)
-            else:
-                roll = roll_d20()
+            from domain.checks import KIND_ATTACK, resolve_check
+            extra = -1 if dist > normal_range else 0
+            roll, _ = resolve_check(attacker, KIND_ATTACK, extra_adv=extra)
             mod = attacker.stat_adjust("str")
             target_ac = target.total_ac("chest")
             if roll == 1 or (roll + mod < target_ac and roll != 20):
@@ -723,13 +747,13 @@ class TargetingMixin:
             else:
                 # 命中
                 # 命中后：检查视野 → 变敌对 + 进战斗（与近战/远程攻击逻辑一致）
-                if target is not attacker and target and not self._state.in_combat:
+                if target is not attacker and target:
                     target_pos = cursor
                     if (target_pos[0] - pc) ** 2 + (target_pos[1] - pr) ** 2 <= getattr(target, 'vision_range', 0) ** 2:
-                        if target.faction == "中立" or target.faction == "守序":
-                            adjust_favor(target, attacker, "敌对")
+                        if make_hostile(target, attacker, self._state.party):
                             self._act_log.add(f"{target.name} 被激怒，开始反击!")
-                        self._start_combat(target)
+                        if are_hostile(target, attacker):
+                            self._start_combat(target)
                 dmg = roll_damage(single, attacker, critical=(roll == 20))
                 dmg_type = normalize_damage_type(getattr(single, 'damage_type', 'bludgeoning'))
                 from domain.damageable import is_destroyed

@@ -57,6 +57,8 @@ class ActionResolverMixin:
             return "no_action"
         if not handler(actor, target=target, target_pos=target_pos):
             return "invalid"
+        from domain.combat.tenacity import reset_attack_streak
+        reset_attack_streak(actor)
         # 发动动作（躲藏/起身/转向除外）→ 破坏隐匿
         if action_key not in ("hide", "face", "stand"):
             self._break_stealth_in_view(actor)
@@ -95,15 +97,19 @@ class ActionResolverMixin:
         return True
 
     def _do_disengage(self, actor, target=None, target_pos=None) -> bool:
-        """撤离：本回合移动不触发借机攻击。"""
+        """撤离：本回合移动不触发借机攻击。不可移动时不能选择。"""
+        if actor.has_status("不可移动"):
+            if self.emit_log:
+                self.emit_log(f"{actor.name} 不可移动，无法撤离")
+            return False
         actor.add_status("disengaged")
         if self.emit_log:
             self.emit_log(f"{actor.name} 进入撤离状态")
         return True
 
     def _do_dodge(self, actor, target=None, target_pos=None) -> bool:
-        """回避：可见敌人攻击劣势、敏捷豁免优势。"""
-        if actor.has_status("incapacitated") or actor.speed <= 0:
+        """回避：可见敌人攻击劣势、敏捷豁免优势。不可移动时不能选择。"""
+        if actor.has_status("incapacitated") or actor.has_status("不可移动") or actor.speed <= 0:
             if self.emit_log:
                 self.emit_log(f"{actor.name} 无法回避")
             return False
@@ -116,7 +122,7 @@ class ActionResolverMixin:
         """躲藏（阶段4.6，阶段7.5 拆分起身）：
         未躲藏 → 敏捷检定定对抗值 hide_dc（满足隐匿条件时优势），清空旧配对，自动发现当前能看见自己的观察者。
         起身为独立动作 `_do_stand`；躲藏动作本身不算状态改变。"""
-        from domain.dice import roll_d20, check_total
+        from domain.checks import ability_check
         actor_pos = self.get_entity_pos(actor)
         if actor_pos is None:
             return False
@@ -129,8 +135,7 @@ class ActionResolverMixin:
                 self.emit_log(f"{actor.name} 处于倒地状态，无法躲藏")
             return False
         adv = 1 if self._stealth_conditions_met(actor_pos, actor_pos) else 0
-        roll = check_total(actor, roll_d20(advantage=adv, disadvantage=0),
-                           actor.stat_adjust("dex"))
+        roll = ability_check(actor, "dex", extra_adv=adv)
         actor.temp_traits["hide_dc"] = roll
         actor.add_status("hiding")
         # 保留视野外观察者的配对（Q5：躲藏不算状态改变），销毁重新能看见自己的配对
@@ -237,8 +242,8 @@ class ActionResolverMixin:
         for trap in self.traps:
             if self.spot_memo.get(trap.pos, False) or not self.is_in_fov(trap.pos):
                 continue
-            from domain.dice import roll_d20, check_total
-            roll = check_total(actor, roll_d20(), actor_wis)
+            from domain.checks import ability_check
+            roll = ability_check(actor, "wis")
             if roll >= trap.dc:
                 self.spot_memo[trap.pos] = True
                 trap.discovered = True
@@ -250,8 +255,8 @@ class ActionResolverMixin:
         for clue in list(self.clues):
             if clue.investigated or not self.is_in_fov(clue.pos):
                 continue
-            from domain.dice import roll_d20, check_total
-            roll = check_total(actor, roll_d20(), actor_int)
+            from domain.checks import ability_check
+            roll = ability_check(actor, "int")
             if roll >= clue.dc:
                 clue.investigated = True
                 if self.emit_log:
@@ -581,8 +586,8 @@ class ActionResolverMixin:
             return False
         if target.has_status("濒死"):
             # 急救：DC10 感知（医药）检定 → 稳定
-            from domain.dice import roll_d20, check_total
-            roll = check_total(actor, roll_d20(), actor.stat_adjust("wis"))
+            from domain.checks import ability_check
+            roll = ability_check(actor, "wis")
             if roll >= 10:
                 self.death_system.stabilize(target)
                 if self.emit_log:
@@ -608,28 +613,42 @@ class ActionResolverMixin:
 
     def _do_rest_short(self, actor, target=None, target_pos=None) -> bool:
         """短休。"""
-        if self.in_combat:
+        if self.is_engaged(actor):
             if self.emit_log:
-                self.emit_log("战斗中无法短休")
+                self.emit_log("参战中无法短休")
             return False
         from domain.rest import short_rest
         pos = self.get_entity_pos(actor)
-        r = short_rest(actor, self.clock, self.map, pos, self.ground_items)
+        r = short_rest(
+            actor, self.clock, self.map, pos, self.ground_items,
+            resters=[actor], in_rotation=self.in_combat,
+            is_engaged=self.is_engaged,
+        )
         if self.emit_log:
-            self.emit_log(f"{actor.name} 短休 (HP+{r['hp_restored']} MP+{r['mp_restored']})")
+            self.emit_log(
+                f"{actor.name} 短休 (经过 {r.get('elapsed', 0)} 钟摆 "
+                f"HP+{r['hp_restored']} MP+{r['mp_restored']})"
+            )
         return True
 
     def _do_rest_long(self, actor, target=None, target_pos=None) -> bool:
         """长休。"""
-        if self.in_combat:
+        if self.is_engaged(actor):
             if self.emit_log:
-                self.emit_log("战斗中无法长休")
+                self.emit_log("参战中无法长休")
             return False
         from domain.rest import long_rest
         pos = self.get_entity_pos(actor)
-        r = long_rest(actor, self.clock, self.map, pos, self.ground_items)
+        r = long_rest(
+            actor, self.clock, self.map, pos, self.ground_items,
+            resters=[actor], in_rotation=self.in_combat,
+            is_engaged=self.is_engaged,
+        )
         if self.emit_log:
-            self.emit_log(f"{actor.name} 长休 (HP+{r['hp_restored']} MP+{r['mp_restored']})")
+            self.emit_log(
+                f"{actor.name} 长休 (经过 {r.get('elapsed', 0)} 钟摆 "
+                f"HP+{r['hp_restored']} MP+{r['mp_restored']})"
+            )
         return True
 
 
@@ -664,6 +683,22 @@ def _weapon_ap_display(weapon) -> str:
     if "ammo" in props and not getattr(weapon, 'loaded', True):
         return f"装填1+攻击{weapon.weapon.ap_cost}AP (未装填)"
     return f"AP:{weapon.weapon.ap_cost}"
+
+
+def available_actions(actor) -> list[dict]:
+    """动作面板可见项：按状态过滤起身/回避/撤离。"""
+    immobile = actor.has_status("不可移动")
+    prone = actor.has_status("prone")
+    hiding = actor.has_status("hiding")
+    visible = []
+    for action in actor.actions:
+        key = action.get("key")
+        if key == "stand" and not prone and not hiding:
+            continue
+        if immobile and key in ("dodge", "disengage"):
+            continue
+        visible.append(action)
+    return visible
 
 
 def collect_actions(state) -> list[dict]:

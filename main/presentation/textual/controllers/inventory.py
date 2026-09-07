@@ -26,12 +26,21 @@ from domain.item_actions import (get_item_actions, find_placeable_position,
     place_on_ground, remove_from_inventory as item_remove_from_inventory,
     copy_item_with_count, get_throw_range, get_throw_max_range,
     tile_space_used, MAX_TILE_SPACE)
-from domain.loot import _add_to_inventory
+from domain.loot import _add_to_inventory, grant_item
 from presentation.textual.fov import _update_fov
 
 
 
 class InventoryMixin:
+
+    def _begin_aim(self, message: str) -> bool:
+        from domain.combat.target_phase import activate_aim
+        if not activate_aim(self._state):
+            self._act_log.add("无法找到合适的目标")
+            self._state.pending_attack = {}
+            return False
+        self._act_log.add(message)
+        return True
 
     def _use_item(self, cmd: str) -> None:
         """选择背包物品：I + 序号，推入物品交互菜单栈。"""
@@ -48,6 +57,8 @@ class InventoryMixin:
                     "inv_index": idx,
                     "options": [{"label": label, "action": label} for label in get_item_actions(item)],
                 })
+                if getattr(self, "_right_panel", None) is not None:
+                    self._right_panel._page_offset = 0
             else:
                 self._act_log.add("物品序号无效")
         except (ValueError, IndexError):
@@ -212,6 +223,7 @@ class InventoryMixin:
                       "chest": "躯干", "arms": "双臂", "legs": "双腿", "spellbook": "法术书"}
         slot_name = slot_names.get(slot, slot)
         self._act_log.add(f"{self._pn} 卸下了 {item.name}（{slot_name}）")
+        p.tenacity = min(p.tenacity, p.tenacity_cap())
         self.refresh_all()
 
     UNEQUIP_SLOTS = {
@@ -287,6 +299,10 @@ class InventoryMixin:
                 val = roll_dice(count, sides)
             else:
                 val = 0
+        quality = getattr(item, "quality", "") or ""
+        if quality and val:
+            from domain.craft.quality import scale_value
+            val = scale_value(val, quality)
 
         if eff == "heal" and val > 0:
             p.hp = min(p.max_hp, p.hp + val)
@@ -429,10 +445,8 @@ class InventoryMixin:
                 "max_range": throw_max,
                 "target_z": self._state.controlled_entity.z,
             }
-            self._state.combat_phase = "ranged_target"
-            self._state.observe_mode = False
-            self._state.observe_cursor = self._state.controlled_entity_pos[:2]
-            self._act_log.add(f"选择投掷目标 — 射程:{throw_range}  移动  确认  取消")
+            if not self._begin_aim(f"选择投掷目标 — 射程:{throw_range}  移动  确认  取消"):
+                return
             stack.clear()  # 退出物品菜单，进入瞄准
             self._close_input()
             self.refresh_all()
@@ -566,9 +580,8 @@ class InventoryMixin:
             item.weight -= unit_weight * quantity
             picked = copy_item_with_count(item, quantity, unit_weight * quantity)
 
-        _add_to_inventory(player, picked)
+        grant_item(player, picked, self._state)
         self._state.invalidate_spatial_cache()
-        self._act_log.add(f"{self._pn} 捡起了 {picked.name}" + (f" x{quantity}" if quantity > 1 else ""))
         self.refresh_all()
 
     def _equip_to_specific_hand(self, item, hand: str) -> None:
@@ -659,10 +672,8 @@ class InventoryMixin:
             "max_range": spell["range"],
             "target_z": self._state.controlled_entity.z,
         }
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
-        self._act_log.add(f"选择 {item.name} 目标 — 范围:{spell['range']}格")
+        if not self._begin_aim(f"选择 {item.name} 目标 — 范围:{spell['range']}格"):
+            return
         self._close_input()
         self.refresh_all()
 
@@ -697,8 +708,6 @@ class InventoryMixin:
             if not self._is_bright_or_near_light():
                 self._act_log.add("光线不足，无法聚焦阳光生火")
                 return
-            self._state.combat_phase = "ranged_target"
-            self._state.observe_mode = False
             self._state.pending_attack = {
                 "mode": "ignite_surface",
                 "item": item,
@@ -706,8 +715,8 @@ class InventoryMixin:
                 "max_range": 1,
                 "target_z": self._state.controlled_entity.z,
             }
-            self._state.observe_cursor = self._state.controlled_entity_pos[:2]
-            self._act_log.add("选择相邻一格生火 (方向键移动, Enter确认, '取消)")
+            if not self._begin_aim("选择相邻一格生火 (方向键移动, Enter确认, '取消)"):
+                return
             self.refresh_all()
             return
 
@@ -728,8 +737,11 @@ class InventoryMixin:
             stat = dc_check.get("stat", "con")
             dc_val = dc_check.get("dc", 15)
             on_fail = dc_check.get("on_fail", "")
+            from domain.checks import ability_check
             adjust = player.stat_adjust(stat)
-            success, roll = check_dc(adjust, dc_val)
+            total = ability_check(player, stat)
+            success = total >= dc_val
+            roll = total - adjust
             if not success:
                 self._act_log.add(f"体质检定失败 (d20+{adjust}={roll+adjust} vs DC{dc_val})")
                 if on_fail:
@@ -750,8 +762,7 @@ class InventoryMixin:
         if becomes:
             result_item = self._load_item_by_name(becomes)
             if result_item is not None:
-                _add_to_inventory(player, result_item)
-                self._act_log.add(f"  获得了 {becomes}")
+                grant_item(player, result_item, self._state)
 
     def _on_torch_action(self, item, mode: str) -> None:
         """火把点燃/熄灭回调（由 CombatFlow 的动作处理触发）。"""
@@ -783,10 +794,8 @@ class InventoryMixin:
             "max_range": 1,
             "target_z": self._state.controlled_entity.z,
         }
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
-        self._act_log.add(f"选择种植位置 — 相邻格  移动  确认  取消")
+        if not self._begin_aim("选择种植位置 — 相邻格  移动  确认  取消"):
+            return
         self._close_input()
         self.refresh_all()
 
@@ -799,10 +808,8 @@ class InventoryMixin:
             "max_range": 1,
             "target_z": self._state.controlled_entity.z,
         }
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
-        self._act_log.add("选择倒水位置 — 相邻格  移动  确认  取消")
+        if not self._begin_aim("选择倒水位置 — 相邻格  移动  确认  取消"):
+            return
         self._close_input()
         self.refresh_all()
 
@@ -815,10 +822,8 @@ class InventoryMixin:
             "max_range": 1,
             "target_z": self._state.controlled_entity.z,
         }
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_mode = False
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
-        self._act_log.add("选择取水位置 — 相邻水域  移动  确认  取消")
+        if not self._begin_aim("选择取水位置 — 相邻水域  移动  确认  取消"):
+            return
         self._close_input()
         self.refresh_all()
 
@@ -829,6 +834,18 @@ class InventoryMixin:
             self._act_log.add(text)
         else:
             self._act_log.add("这张纸上什么也没有写")
+
+    def _action_disassemble(self, item, inv_index: int) -> None:
+        from domain.craft.disassemble import disassemble
+        try:
+            disassemble(self._state, self._state.controlled_entity, item)
+        except ValueError as exc:
+            self._act_log.add(str(exc))
+            return
+        self.refresh_all()
+
+    def _action_continue_make(self, item, inv_index: int) -> None:
+        self._open_craft_continue(item)
 
     # 物品操作 → 方法映射表
     _ITEM_ACTION_HANDLERS = {
@@ -844,6 +861,8 @@ class InventoryMixin:
         "使用": _action_use_consumable,
         "点燃": _action_use_consumable,
         "阅读": _action_read,
+        "拆解": _action_disassemble,
+        "继续制作": _action_continue_make,
     }
 
     # ── 捡起交互 ──

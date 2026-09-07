@@ -72,8 +72,37 @@ class CombatFlow(TargetPhaseMixin, DualWieldMixin, AttackRollMixin, ActionMenuMi
         return data
 
     def _end_pending_attack(self, *, abandoned: bool = False) -> None:
-        from_rx = bool((self._state.pending_attack or {}).get("from_reaction"))
+        pa = self._state.pending_attack or {}
+        from_rx = bool(pa.get("from_reaction"))
+        if not abandoned:
+            self._settle_pending_tenacity(pa)
         self._state.combat_phase = "idle"
         self._state.pending_attack = {}
         if from_rx:
             self._state.finish_player_reaction(abandoned=abandoned)
+
+    def _settle_pending_tenacity(self, pa: dict) -> None:
+        from domain.combat.tenacity import (
+            note_entity_attack, reset_attack_streak, settle_attack_tenacity,
+        )
+        attacker = self._state.controlled_entity
+        target = pa.get("target")
+        weapon = pa.get("weapon")
+        mode = pa.get("mode", "")
+        if mode in ("torch_ignite", "torch_extinguish", "torch_ignite_surface"):
+            reset_attack_streak(attacker)
+            return
+        attacked_entity = pa.get("hit_entity") or isinstance(target, Entity)
+        if not attacked_entity:
+            reset_attack_streak(attacker)
+            return
+        if not isinstance(target, Entity):
+            note_entity_attack(attacker)
+            return
+        settle_attack_tenacity(
+            attacker, target, weapon, pa.get("attack_roll", 0),
+            tenacity_action=False,
+            combat_state=self._state,
+            consume_extra=not pa.get("extra_consumed"),
+            note_combo=True,
+        )

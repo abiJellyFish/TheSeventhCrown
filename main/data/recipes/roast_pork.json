@@ -1,0 +1,12 @@
+{
+  "id": "roast_pork",
+  "craft": "cook",
+  "output": {"name": "烤兽肉", "count": 1},
+  "required": {"一磅野猪肉": 1},
+  "time_pendulums": 1,
+  "tools": [
+    {"name": "火堆", "category": "", "time_factor": 1.0}
+  ],
+  "require_tool": true,
+  "discovery_needed": 1
+}

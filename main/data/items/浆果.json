@@ -8,5 +8,7 @@
     "cp": 2
   },
   "description": "多汁的浆果，可以在灌木丛中找到",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true
+  }
 }

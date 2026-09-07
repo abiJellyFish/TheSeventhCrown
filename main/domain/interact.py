@@ -12,9 +12,9 @@ from domain.movement import Terrain
 
 
 class InteractType(Enum):
-    TALK = auto()        # 交谈
-    LOOT = auto()        # 搜刮尸体（旧：直接搜刮，现尸体走 CORPSE 面板）
-    CORPSE = auto()      # 尸体面板（搜刮 / 捡起，尸体=每生物武器物品）
+    TALK = auto()        # 生物个人交互面板
+    LOOT = auto()        # 搜刮子面板
+    CORPSE = auto()      # 尸体个人交互面板
     PICK = auto()        # 采摘（灌木）
     REST = auto()        # 休息（床）
     OPEN = auto()        # 开门/关门
@@ -61,7 +61,7 @@ def _visible_at_height(state, pos: tuple[int, int, int]) -> bool:
 
 
 def _detect_creatures(state) -> list[InteractTarget]:
-    """检测相邻格生物：活着 → TALK，死亡 → CORPSE（尸体面板：搜刮/捡起）。"""
+    """检测相邻格生物：死亡 → CORPSE，睡眠 → TALK，其余活物 → TALK。"""
     pc, pr = _observer_xyz(state)[:2]
     results = []
     for creature, (ec, er, ez) in state.entities:
@@ -71,24 +71,31 @@ def _detect_creatures(state) -> list[InteractTarget]:
             continue
         if not _visible_at_height(state, (ec, er, ez)):
             continue
+        pos = (ec, er)
         if creature.is_dead:
             results.append(InteractTarget(
                 label=f"{creature.name}的尸体",
                 interact_type=InteractType.CORPSE,
-                pos=(ec, er), creature=creature,
+                pos=pos, creature=creature,
             ))
         elif creature.has_status("濒死"):
             results.append(InteractTarget(
                 label=f"{creature.name}（濒死）",
                 interact_type=InteractType.TALK,
-                pos=(ec, er), creature=creature,
+                pos=pos, creature=creature,
                 extra={"dying": True},
+            ))
+        elif creature.has_status("睡眠"):
+            results.append(InteractTarget(
+                label=f"{creature.name}（睡眠）",
+                interact_type=InteractType.TALK,
+                pos=pos, creature=creature,
             ))
         else:
             results.append(InteractTarget(
                 label=creature.name,
                 interact_type=InteractType.TALK,
-                pos=(ec, er), creature=creature,
+                pos=pos, creature=creature,
                 extra={},
             ))
     return results
@@ -206,3 +213,61 @@ def scan_interact_targets(state) -> list[InteractTarget]:
     for detector in _DETECTORS:
         targets.extend(detector(state))
     return targets
+
+
+def item_interact_options(state, target) -> list[tuple[str, str]]:
+    """物品个人面板选项。尸体走此面板：捡起、搜刮。"""
+    items = target.extra.get("items", []) if target is not None else []
+    creature = getattr(target, "creature", None)
+    if creature is not None and getattr(creature, "is_dead", False):
+        return [("pickup", "捡起"), ("loot", "搜刮")]
+    options = []
+    if any(getattr(item, "chest_data", None) is not None for item in items):
+        options.append(("open", "打开"))
+    if any("灌木" in getattr(item, "name", "") for item in items):
+        options.append(("pick", "采摘"))
+    can_pickup = any(
+        getattr(getattr(item, "obstacle_type", None), "value",
+                getattr(item, "obstacle_type", None)) != "full"
+        and getattr(item, "can_pickup", True)
+        for item in items
+    )
+    if can_pickup:
+        options.append(("pickup", "捡起"))
+    return options
+
+
+def creature_interact_options(state, creature) -> list[tuple[str, str]]:
+    """对象个人面板选项：(id, 标签)。能显示的才列入。"""
+    from domain.faction import are_hostile, get_attitude
+    from domain.quest import quests_by_giver
+
+    if creature is None or getattr(creature, "is_dead", False):
+        return []
+    player = getattr(state, "controlled_entity", None)
+
+    options = [("talk", "交谈")]
+    beast = getattr(creature, "body_type", "") == "beast"
+    if player is not None and not beast and not are_hostile(creature, player):
+        options.append(("trade", "交易"))
+    if (
+        player is not None
+        and not beast
+        and not getattr(creature, "party_member", False)
+        and get_attitude(creature, player) in ("友好", "冷漠")
+    ):
+        hint = "（需要5GP）" if (
+            creature.name == "商人" or getattr(creature, "shop_id", "")
+        ) else ""
+        options.append(("recruit", f"招募{hint}"))
+    if not beast:
+        options.append(("ask_quest", "询问委托"))
+        giver_quests = [
+            quest.name for quest in quests_by_giver(creature.name)
+            if quest.name in getattr(state, "active_quests", ())
+        ]
+        if giver_quests:
+            options.append(("deliver_quest", "交付任务"))
+    if creature.has_status("睡眠"):
+        options.append(("loot", "搜刮"))
+    return options

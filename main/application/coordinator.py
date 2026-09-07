@@ -78,14 +78,17 @@ class ApplicationCoordinator:
         return None
 
     def _position_is_visible(self, position) -> bool:
-        """判断日志位置是否在玩家当前视野内。"""
+        """判断日志位置是否在玩家或盟友视野内。"""
+        living = [member for member in self.game.party if not member.is_dead]
+        if not living and self.game.controlled_entity is None:
+            return True
         if position is None:
-            return True
-        if self.game.controlled_entity is None:
-            return True
-        player_position = self.game.controlled_entity_pos
+            return False
         pos3 = (*position[:2], position[2]) if len(position) == 3 else (*position, self.game.active_z)
-        return pos3[:2] == player_position[:2] or self.game.is_in_fov(pos3)
+        player_position = self.game.controlled_entity_pos
+        if player_position is not None and pos3[:2] == player_position[:2]:
+            return True
+        return pos3 in self.game.party_log_fov()
 
     def _entity_position_by_id(self, entity_id: int):
         """按稳定的运行时实体 ID 查找事件位置。"""

@@ -9,13 +9,28 @@ from domain.grid import Grid
 from domain.dice import roll_2d6, roll_d20
 from domain.movement import Terrain, can_enter, find_path
 from domain.obstacle import obstacle_at
-from domain.ai.components import COMPONENTS
+from domain.ai.components import COMPONENTS, is_gear_item
 from domain.pendulum import PendulumClock
 from domain.explore import _move_ap_cost
+from domain.entity.status import apply_sleep, movement_speed_halved, STATUS_SLEEP
 from domain.action import (
     AttackAction, DoorAction, EatAction, EquipAction, HarvestAction, LootAction,
     MoveAction, PickupAction, StatusAction,
 )
+
+
+def _npc_should_advance(creature) -> bool:
+    """失能的 NPC 默认不推进；动作倒计时中仍需进入循环。"""
+    if getattr(creature, "_action_remaining_cost", 0) > 0:
+        return True
+    if creature.has_status("incapacitated"):
+        return False
+    return True
+
+
+def _clear_sleep(creature) -> None:
+    if creature.has_status(STATUS_SLEEP):
+        creature.remove_status(STATUS_SLEEP)
 
 
 class NpcBehaviorMixin:
@@ -40,7 +55,7 @@ class NpcBehaviorMixin:
         ctx = {"food_adjacent": False, "food_visible": False,
                "prey_nearby": False, "threat_nearby": False,
                "food_tiles": [], "prey_targets": [],
-               "nearby_items": [],
+               "nearby_items": [], "nearby_gear": [], "nearby_misc": [],
                "enemy_adjacent": False, "enemy_visible": False}
 
         # 复用状态空间索引，避免每个 NPC 重复扫描全部地面物品。
@@ -120,8 +135,13 @@ class NpcBehaviorMixin:
             for item, item_position in item_by_position.get(position, ())
             if getattr(item, "can_pickup", True)
         ]
-        ctx["items_nearby"] = bool(nearby_items)
+        nearby_gear = [(item, pos) for item, pos in nearby_items if is_gear_item(item)]
+        nearby_misc = [(item, pos) for item, pos in nearby_items if not is_gear_item(item)]
         ctx["nearby_items"] = nearby_items
+        ctx["nearby_gear"] = nearby_gear
+        ctx["nearby_misc"] = nearby_misc
+        ctx["gear_nearby"] = bool(nearby_gear)
+        ctx["misc_items_nearby"] = bool(nearby_misc)
 
         # 相邻格门状态
         door_nearby = False
@@ -192,7 +212,7 @@ class NpcBehaviorMixin:
         速度→tick 统一走 _move_ap_cost：curS_ticks 每钟摆推进 SCALE ticks，
         整除 ticks_per_grid 得 crossed 格，余数留在 curS_ticks。全程整数运算。"""
         SCALE = 10
-        halved = creature.has_status("hiding") or creature.has_status("prone")
+        halved = movement_speed_halved(creature)
         ticks_per_grid = _move_ap_cost(creature, halved=halved)
 
         creature.curS_ticks += SCALE
@@ -360,10 +380,8 @@ class NpcBehaviorMixin:
         )
         if special is not None:
             from domain.events import LogCategory
-            from domain.dice import check_total
-            save_roll = check_total(
-                hunt_target, roll_d20(), hunt_target.stat_adjust("dex")
-            )
+            from domain.checks import saving_throw
+            _, save_roll = saving_throw(hunt_target, "dex")
             if save_roll < 12:
                 hunt_target.add_status("prone")
                 self.emit_log(
@@ -419,8 +437,8 @@ class NpcBehaviorMixin:
                         hunter.food_value = min(max_food, hunter.food_value + val)
                         taken.append(f"{item.name}(食用)")
                     else:
-                        hunter.inventory.append(item)
-                        taken.append(f"{item.name} x{item.count}")
+                        from domain.loot import grant_item
+                        grant_item(hunter, item, self)
             elif key.startswith("dc_"):
                 dc = int(key.split("_")[1])
                 refs = [{"name": e["name"], "count": e.get("amount", e.get("count", 1))}
@@ -435,8 +453,8 @@ class NpcBehaviorMixin:
                         hunter.food_value = min(max_food, hunter.food_value + val)
                         taken.append(f"{item.name}(食用)")
                     else:
-                        hunter.inventory.append(item)
-                        taken.append(f"{item.name} x{item.count}")
+                        from domain.loot import grant_item
+                        grant_item(hunter, item, self)
         hunt_target.inventory.clear()
         if taken and self.emit_log:
             # 猎人或目标在 FOV 内才记录
@@ -473,8 +491,6 @@ class NpcBehaviorMixin:
                             item_id=id(item),
                             position=pos[:2],
                         ))
-                        if self.emit_log and self.is_in_fov((ec, er)):
-                            self.emit_log(f"{creature.name} 捡起了地上的{item.name}")
                         return
 
     def _npc_eat_from_inventory(self, creature, ec, er, ctx) -> None:
@@ -633,7 +649,7 @@ class NpcBehaviorMixin:
         pass
 
     def _npc_rest(self, creature, ec, er, ctx) -> None:
-        pass  # 原地不动，cost 由 _action_remaining_cost 消耗
+        apply_sleep(creature)
 
     # ═══════════════════════════════════════════════════
     # 通用动作系统（阶段3：动作面板框架 + 控制组件重构）
@@ -642,10 +658,18 @@ class NpcBehaviorMixin:
 
 
     def _npc_pickup(self, creature, ec, er, ctx):
-        """捡取相邻及自身格的所有物品（复用 _scan_context 缓存的 nearby_items）。"""
-        for item, pos in ctx.get("nearby_items", []):
+        """捡取相邻武器/护甲。"""
+        self._npc_take_ground_items(creature, ec, er, ctx.get("nearby_gear", []))
+
+    def _npc_pickup_misc(self, creature, ec, er, ctx):
+        """捡取相邻非武器/护甲物品。"""
+        self._npc_take_ground_items(creature, ec, er, ctx.get("nearby_misc", []))
+
+    def _npc_take_ground_items(self, creature, ec, er, items):
+        """捡取给定列表；野兽只处理地上食物。"""
+        for item, pos in items:
             if (item, pos) not in self.ground_items:
-                continue  # 已被其他生物捡走
+                continue
             if creature.body_type == "beast":
                 if getattr(item, 'effect', '') == 'restore_food':
                     self._try_execute_action(PickupAction(
@@ -668,8 +692,6 @@ class NpcBehaviorMixin:
                     item_id=id(item),
                     position=pos[:2],
                 ))
-                if self.emit_log and self.is_in_fov((ec, er)):
-                    self.emit_log(f"{creature.name} 捡起了{item.name}")
                 self._auto_equip_npc(creature, item)
 
     def _auto_equip_npc(self, creature, item):
@@ -718,7 +740,7 @@ class NpcBehaviorMixin:
     def _npc_evaluate_and_dispatch_impl(self, creature, ec, er, ctx: dict = None) -> None:
         """评估并分发一个动作。不可达目标会移除重试（最多3轮）。
         ctx: 可选的预建 _scan_context 结果，传入时跳过重复扫描。"""
-        if creature.is_dead or creature.has_status("濒死"):
+        if creature.is_dead or creature.has_status("濒死") or creature.has_status("incapacitated"):
             return
         if ctx is None:
             ctx = self._scan_context(creature, ec, er)
@@ -735,8 +757,10 @@ class NpcBehaviorMixin:
                 extra_keys.add("env:prey_nearby")
             if ctx["threat_nearby"]:
                 extra_keys.add("env:threat_nearby")
-            if ctx.get("items_nearby"):
-                extra_keys.add("env:items_nearby")
+            if ctx.get("gear_nearby"):
+                extra_keys.add("env:gear_nearby")
+            if ctx.get("misc_items_nearby"):
+                extra_keys.add("env:misc_items_nearby")
             for item in creature.inventory:
                 if getattr(item, 'effect', '') == 'restore_food':
                     extra_keys.add("env:has_food")
@@ -831,7 +855,7 @@ class NpcBehaviorMixin:
                             if not in_combat_action:
                                 rest = creature._cached_path
                                 if rest:
-                                    halved = creature.has_status("hiding") or creature.has_status("prone")
+                                    halved = movement_speed_halved(creature)
                                     tpg = _move_ap_cost(creature, halved=halved)
                                     creature._action_remaining_cost = max(
                                         comp.cost, -(-(len(rest) - 1) * tpg // 10))
@@ -863,7 +887,7 @@ class NpcBehaviorMixin:
                     # 6.4：动作时长 = 路径时长（仅非战斗钟摆模型）。战斗走 AP 分支，
                     # 逐轮重评估（接近后切换攻击），不设钟摆 cost。
                     if not in_combat_action:
-                        halved = creature.has_status("hiding") or creature.has_status("prone")
+                        halved = movement_speed_halved(creature)
                         tpg = _move_ap_cost(creature, halved=halved)
                         path_ticks = -(-(len(path) - 1) * tpg // 10)  # ceil(grids * ticks/grid / 10)
                         creature._action_remaining_cost = max(comp.cost, path_ticks)
@@ -946,7 +970,10 @@ class NpcBehaviorMixin:
             return None
 
         elif action == "flee":
-            pc, pr = self.controlled_entity_pos[:2]
+            controlled_pos = self.controlled_entity_pos
+            if controlled_pos is None:
+                return None
+            pc, pr = controlled_pos[:2]
             dx = -1 if pc > ec else (1 if pc < ec else random.choice([-1, 1]))
             dy = -1 if pr > er else (1 if pr < er else random.choice([-1, 1]))
             target = (ec + dx * 5, er + dy * 5)
@@ -1018,14 +1045,14 @@ class NpcBehaviorMixin:
 
         受到伤害（_interrupted）时立即清除标记并重新评估，不继续原动作。
         """
-        if creature.is_dead or creature.has_status("濒死"):
+        if creature.is_dead or creature.has_status("濒死") or creature.has_status("incapacitated"):
             return
         pos = self.get_entity_pos(creature)
         if pos is None:
             return
         ec, er = pos[:2]
         while creature.ap > 0:
-            if creature.is_dead or creature.has_status("濒死"):
+            if creature.is_dead or creature.has_status("濒死") or creature.has_status("incapacitated"):
                 break
             # 打断检查：受到伤害 → 清除标记，丢弃缓存动作并重新评估
             if getattr(creature, '_interrupted', False):
@@ -1067,6 +1094,14 @@ class NpcBehaviorMixin:
         if self.controlled_entity is not None and id(self.controlled_entity) not in entity_ids:
             self.controlled_entity.advance_armor_training(delta)
         self._tick_all_statuses(delta)
+        from domain.combat.tenacity import tick_tenacity_regen
+        seen = set()
+        for creature, _ in self.entities:
+            tick_tenacity_regen(creature, delta)
+            seen.add(id(creature))
+        p = self.controlled_entity
+        if p is not None and id(p) not in seen:
+            tick_tenacity_regen(p, delta)
         self._check_daily_domain_talents()
         self._tick_daily_crops()
         self._tick_mp_regen(delta)
@@ -1098,8 +1133,9 @@ class NpcBehaviorMixin:
                 (c, p) for c, p in self.entities
                 if not c.controlled
                 and not any(member is c for member in self.party)
+                and not getattr(c, "_resting", False)
                 and not c.is_dead
-                and not c.has_status("不可移动")
+                and _npc_should_advance(c)
             ],
             key=lambda x: (-x[0].speed, x[0].uid)
         )
@@ -1136,6 +1172,7 @@ class NpcBehaviorMixin:
                         creature._action_remaining_cost = 0
                         creature._cached_path = None
                         creature._path_target = None
+                        _clear_sleep(creature)
                     else:
                         creature._action_remaining_cost = max(0, creature._action_remaining_cost - 1.0)
                         # 11.1：忙碌 = 执行中，路径每钟摆续走（不重新评估）
@@ -1155,6 +1192,8 @@ class NpcBehaviorMixin:
                                 if self.emit_reaction_required:
                                     self.emit_reaction_required()
                                 return
+                        if creature._action_remaining_cost <= 0:
+                            _clear_sleep(creature)
                         ctx_cache.pop(id(creature), None)
                         continue
 
@@ -1217,7 +1256,7 @@ class NpcBehaviorMixin:
         """每天结束时为符合条件的类人生物进行一次领域天赋检定。"""
         if self.clock.pendulum_count <= 0 or self.clock.pendulum_count % 5000 != 0:
             return
-        from domain.dice import check_dc
+        from domain.checks import ability_check
 
         for creature, _ in self.entities:
             if not self._needs_domain_talent_check(creature):
@@ -1225,10 +1264,7 @@ class NpcBehaviorMixin:
             for domain in ("evocation", "abjuration"):
                 if domain in creature.domain_talents:
                     continue
-                success, _ = check_dc(
-                    creature.stat_adjust("int"), 30, creature=creature
-                )
-                if success:
+                if ability_check(creature, "int") >= 30:
                     creature.grant_domain_exp(domain, 1)
                     self.emit_log(f"{creature.name} 启发了{domain}领域魔法天赋")
 

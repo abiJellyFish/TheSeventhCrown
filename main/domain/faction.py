@@ -61,6 +61,18 @@ def adjust_favor(a: "Entity", b: "Entity", level: str) -> None:
             set_favor(a, b, FAVOR_NEUTRAL + 1)
 
 
+def make_hostile(target, aggressor, party=()) -> bool:
+    """将 target 对 aggressor 变为敌对。小队成员之间无效。成功返回 True。"""
+    if target is None or aggressor is None or target is aggressor:
+        return False
+    if party and target in party and aggressor in party:
+        return False
+    if are_hostile(target, aggressor):
+        return False
+    adjust_favor(target, aggressor, "敌对")
+    return True
+
+
 def are_hostile(a: "Entity", b: "Entity") -> bool:
     """两生物是否敌对。显式态度优先，否则按好感度（<= FAVOR_HOSTILE）判定。"""
     if a is b:

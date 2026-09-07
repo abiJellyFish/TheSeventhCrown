@@ -45,12 +45,30 @@ def default_melee_weapon(creature):
                   damage_type="bludgeoning", attack_stat="str", ap_cost=10)
 
 
-def list_available_reactions(reactor) -> list[dict]:
-    items = []
-    if reactor.has_status("shield"):
-        items.append({"kind": "shield", **REACTION_DEFS["shield"]})
-    items.append({"kind": "opportunity_attack", **REACTION_DEFS["opportunity_attack"]})
-    return items
+def list_available_reactions(reactor, kind: str = "opportunity_attack") -> list[dict]:
+    spec = REACTION_DEFS.get(kind)
+    if spec is None:
+        raise ValueError(f"unknown reaction kind: {kind}")
+    if kind == "shield" and not reactor.has_status("shield"):
+        return []
+    return [{"kind": kind, **spec}]
+
+
+def reaction_can_fire(reactor, event: dict) -> bool:
+    """当前事件是否可执行。做不到则不应入队或打开面板。"""
+    if reactor is None or getattr(reactor, "is_dead", False):
+        return False
+    kind = event.get("kind")
+    checkers = {
+        "opportunity_attack": lambda: (
+            reactor.ap >= weapon_ap_cost(default_melee_weapon(reactor))
+        ),
+        "shield": lambda: reactor.has_status("shield"),
+    }
+    check = checkers.get(kind)
+    if check is None:
+        raise ValueError(f"unknown reaction kind: {kind}")
+    return check()
 
 
 def collect_opportunity_reactors(state: "GameState", mover, from_pos, to_pos) -> list:

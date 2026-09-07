@@ -5,7 +5,9 @@
     "gp": 3
   },
   "description": "结实耐用的猪皮长靴，提供腿部防护",
-  "item_type": "armor",
+  "item_type": {
+    "armor": true
+  },
   "armor": {
     "armor_type": "clothing",
     "slot": "legs",

@@ -6,7 +6,9 @@
     "sp": 5
   },
   "description": "长剑，可单手或双手持用，制式武器",
-  "item_type": "weapon",
+  "item_type": {
+    "weapon": true
+  },
   "weapon": {
     "weapon_type": "melee",
     "category": "martial",

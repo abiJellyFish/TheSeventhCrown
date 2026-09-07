@@ -1,5 +1,6 @@
 """领域级濒死与死亡豁免系统。"""
 
+from domain.checks import KIND_SAVE, resolve_check
 from domain.dice import roll_d20
 
 
@@ -34,8 +35,11 @@ class DeathSaves:
         self.death_injury += damage
         self.failures += 2 if critical else 1
 
-    def roll_save(self) -> str:
-        roll = roll_d20()
+    def roll_save(self, creature=None) -> str:
+        if creature is None:
+            roll = roll_d20()
+        else:
+            roll, _ = resolve_check(creature, KIND_SAVE)
         if roll == 1:
             self.failures += 2
             return "crit_fail"
@@ -79,7 +83,7 @@ class DeathSystem:
             creature.death_saves.reset()
 
     def roll(self, creature) -> str:
-        result = creature._get_death_saves().roll_save()
+        result = creature._get_death_saves().roll_save(creature)
         if result == "crit_success":
             creature.hp = 1
             self._log(f"{creature.name} 挺了过来，恢复了意识")

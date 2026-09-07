@@ -8,12 +8,67 @@ from dataclasses import dataclass, field
 from domain.items.components import WeaponComponent, ArmorComponent, LightComponent, SpellbookComponent
 from domain.obstacle import ObstacleType, normalize_obstacle_type, obstacle_defaults
 
+ITEM_TYPE_LABELS: dict[str, str] = {
+    "weapon": "武器",
+    "armor": "护甲",
+    "accessory": "饰品",
+    "consumable": "消耗品",
+    "fragile": "易碎",
+    "material": "材料",
+    "tool": "工具",
+    "seed": "种子",
+    "spell_scroll": "卷轴",
+    "spellbook": "法术书",
+    "container": "容器",
+    "structure": "结构",
+    "obstacle": "障碍",
+    "misc": "杂项",
+    "corpse": "尸体",
+    "feature": "地形",
+}
+
+
+def normalize_item_type(value) -> dict[str, bool]:
+    """物品类型只存哈希表。构造时字符串立即转成表，存储形态不再切换。"""
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("item_type 不能为空")
+        return {value: True}
+    if isinstance(value, dict):
+        types = {key: True for key, flag in value.items() if flag}
+        if not types:
+            raise ValueError("item_type 不能为空")
+        if not all(isinstance(key, str) for key in types):
+            raise TypeError("item_type 键必须是字符串")
+        return types
+    raise TypeError(f"item_type 必须是哈希表: {type(value).__name__}")
+
+
+def item_type_key(item) -> tuple[str, ...]:
+    types = getattr(item, "item_type", {}) or {}
+    return tuple(sorted(name for name, flag in types.items() if flag))
+
+
+def format_item_type_labels(item) -> str:
+    types = getattr(item, "item_type", {}) or {}
+    labels = [
+        ITEM_TYPE_LABELS[name]
+        for name in ITEM_TYPE_LABELS
+        if types.get(name)
+    ]
+    labels.extend(
+        name for name, flag in types.items()
+        if flag and name not in ITEM_TYPE_LABELS
+    )
+    return "、".join(labels)
+
+
 # ═══════════════════════════════════════════════════
 @dataclass
 class Item:
     """物品基础数据容器（对齐 Entity 组件模式）。"""
     name: str
-    item_type: str = "misc"
+    item_type: dict[str, bool] = field(default_factory=lambda: {"misc": True})
     weight: float = 0.0
     price: dict = field(default_factory=dict)
     description: str = ""
@@ -28,6 +83,13 @@ class Item:
     needs_hit: bool = False               # 法术卷轴是否需要命中
     effect_data: dict = field(default_factory=dict)  # 法术卷轴效果定义
     traits: list[str] = field(default_factory=list)
+    quality: str = "普通"
+    unfinished: bool = False
+    craft_progress: int = 0
+    recipe_id: str = ""
+    craft_tool: str = ""
+    craft_required: int = 0
+    quality_traits: dict = field(default_factory=dict)
     durability: int = 20
     max_durability: int = 20
     flammable: bool = False
@@ -60,6 +122,9 @@ class Item:
     spellbook: SpellbookComponent | None = None
 
     def __post_init__(self):
+        from domain.craft.quality import QUALITIES
+
+        self.item_type = normalize_item_type(self.item_type)
         self.obstacle_type = normalize_obstacle_type(self.obstacle_type)
         if self.max_durability <= 0:
             self.max_durability = obstacle_defaults(self.obstacle_type)[0] or 20
@@ -69,6 +134,14 @@ class Item:
             self.stack_limit = 1 if self.is_obstacle else 99
         if self.obstacle_type is ObstacleType.FULL:
             self.can_pickup = False
+        if self.unfinished:
+            self.quality = ""
+            self.price = {}
+        elif self.quality not in QUALITIES:
+            raise ValueError(f"非法品质: {self.quality}")
+
+    def has_type(self, name: str) -> bool:
+        return bool(self.item_type.get(name))
 
     @property
     def is_obstacle(self) -> bool:
@@ -127,7 +200,13 @@ class Item:
     def slot(self): return self.armor.slot if self.armor else None
 
     @property
-    def ac_bonus(self): return self.armor.ac_bonus if self.armor else 0
+    def ac_bonus(self):
+        from domain.craft.quality import scale_value
+
+        base = self.armor.ac_bonus if self.armor else 0
+        if not self.quality:
+            return base
+        return scale_value(base, self.quality)
 
     @property
     def tenacity_bonus(self): return self.armor.tenacity_bonus if self.armor else 0
@@ -154,6 +233,13 @@ class Item:
             needs_hit=data.get("needs_hit", False),
             effect_data=data.get("effect", {}) if isinstance(data.get("effect"), dict) else {},
             traits=list(data.get("traits", [])),
+            quality=data.get("quality", "普通"),
+            unfinished=data.get("unfinished", False),
+            craft_progress=data.get("craft_progress", 0),
+            recipe_id=data.get("recipe_id", ""),
+            craft_tool=data.get("craft_tool", ""),
+            craft_required=data.get("craft_required", 0),
+            quality_traits=dict(data.get("quality_traits", {})),
             durability=data.get("durability", 0),
             max_durability=data.get("max_durability", data.get("durability", 0)),
             flammable=data.get("flammable", False),
@@ -175,7 +261,12 @@ class Item:
             render_char=data.get("render_char", ""),
             render_color=data.get("render_color", ""),
             can_pickup=data.get("can_pickup", True),
-            accessory=data.get("accessory", data.get("item_type") == "accessory"),
+            accessory=data.get(
+                "accessory",
+                bool(normalize_item_type(
+                    data.get("item_type", data.get("type", {"misc": True}))
+                ).get("accessory")),
+            ),
             equip_effect=data.get("equip_effect", {}),
             weapon=WeaponComponent(**data["weapon"]) if "weapon" in data else None,
             armor=ArmorComponent(**data["armor"]) if "armor" in data else None,

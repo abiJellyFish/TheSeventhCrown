@@ -3,8 +3,10 @@
 from rich.text import Text
 from textual.widgets import Static
 
+from domain.fov import LightLevel
 from domain.movement import Terrain
-from domain.item_actions import GROUND_ITEM_RENDER, get_ground_items_at
+from domain.item_actions import get_ground_items_at
+from domain.items.item import item_type_key
 from presentation.textual.view_models import GameViewModel
 
 
@@ -101,22 +103,18 @@ class MapView(Static):
         for row in range(oy, min(oy + vh, gmap.height)):
             for col in range(ox, min(ox + vw, gmap.width)):
                 exposed = self.state.exposed_surface((col, row))
-                in_bright = (
-                    exposed is not None
-                    and (col, row, exposed[0]) in self.state.fov_cache
-                )
-                in_dim = (col, row) in self.state.fov_dim
                 in_view = (col, row) in self.state.fov_bright | self.state.fov_dim
                 if not in_view:
                     text.append(" ")
                     continue
-                dim_style = " dim" if in_dim and not in_bright else ""
                 cur = " reverse" if (col, row) in cursor_cells else ""
                 display_z = (
                     self.state.observe_z
                     if self.state.observe_mode and self.state.observe_z is not None
                     else (exposed[0] if exposed is not None else self.state.controlled_entity.z)
                 )
+                cell_light = self.state.light_at(col, row, display_z)
+                dim_style = " dim" if cell_light is not LightLevel.BRIGHT else ""
                 if self.state.is_height_wall((col, row), display_z):
                     text.append("/", style=f"white{cur}{dim_style}")
                     continue
@@ -198,7 +196,7 @@ class MapView(Static):
                             # 统计不重复的 item_type
                             types_seen = set()
                             for g in ground_at:
-                                types_seen.add(g["item_type"])
+                                types_seen.add(item_type_key(g["item"]))
                             if len(types_seen) == 1:
                                 # 同类物品 -> 显示该类型字符
                                 ginfo = ground_at[0]

@@ -5,12 +5,14 @@
     "gp": 7
   },
   "description": "锻铁头盔，提供头部防护",
-  "item_type": "armor",
+  "item_type": {
+    "armor": true
+  },
   "armor": {
     "armor_type": "light",
     "slot": "head",
     "ac_bonus": 4,
-    "tenacity_bonus": 3,
+    "tenacity_bonus": 2,
     "str_requirement": 8
   }
 }

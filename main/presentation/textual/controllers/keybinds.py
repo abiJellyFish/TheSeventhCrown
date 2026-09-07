@@ -3,11 +3,11 @@ import json
 import os
 import random
 from domain.game_state import GameState, _move_ap_cost
-from domain.entity import Entity, Weapon, are_hostile
+from domain.entity.status import movement_speed_halved
+from domain.entity import Entity, Weapon
 import domain.entity as ent
 from domain.movement import find_path
 from domain.fov import LightLevel, compute_fov
-from domain.combat.initiative import roll_initiative
 from domain.combat.attack import (hit_check, roll_damage, reduce_tenacity,
     apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack,
     miss_message, cover_message, normalize_damage_type)
@@ -16,6 +16,7 @@ from domain.map.generation import build_world, build_dungeon
 from domain.dice import roll_d20, check_dc, roll_2d6
 from domain.ai.engine import BehaviorEngine
 from domain.rest import short_rest, long_rest
+from domain.pendulum import AP_PER_PENDULUM
 from infrastructure.loader import DataLoader, _load_dialogues, _load_scene_actions
 from infrastructure.save.database import SaveManager
 from domain.interact import InteractType, scan_interact_targets
@@ -45,30 +46,17 @@ class KeybindMixin:
         }.get(event.key, event.key)
         state = self._state
 
-        # ── 0. Escape：输入框唤醒时关闭它；瞄准阶段取消瞄准；否则无操作 ──
+        # ── 0. Escape：只关输入框（输入框不算面板）──
         if key == "escape":
-            if state and self._right_panel and self._right_panel.view_mode != "default":
-                self._right_view_back()
-                event.stop()
-                return
-            if state and state.item_menu_stack:
-                state.item_menu_stack.pop()
-                self._sync_input()
-                self.refresh_all()
-                event.stop()
-                return
             if self._input_bar and not self._input_bar.disabled:
                 self._close_input()
                 event.stop()
                 return
-            if state and state.combat_phase == "ranged_target":
-                self.action_cancel_ranged_target()
-                event.stop()
-                return
-            if state and state.interact_phase == "reaction":
-                self._cmd_reaction_input("A0")
-                event.stop()
-                return
+            return
+
+        if key == "apostrophe" and state:
+            self.action_cancel_ranged_target()
+            event.stop()
             return
 
         # ── 1. 输入栏聚焦时，所有按键均作为输入内容 ──
@@ -104,10 +92,19 @@ class KeybindMixin:
 
     def _dispatch_key(self, key: str) -> None:
         """根据按键分发到对应的 action 方法。"""
+        from presentation.textual.controllers.craft import is_craft_phase
+        if self._state and is_craft_phase(self._state.interact_phase):
+            if key == "enter":
+                self._craft_enter()
+                return
+            if key == "apostrophe":
+                self._craft_back()
+                return
         actions = {
             "tab": self.action_switch_party,
             "semicolon": self.action_party_select,
             ";": self.action_party_select,
+            "O": self.action_party_dismiss,
             "T": self.action_toggle_combat_mode,
             "0": self.action_interact,
             "5": self.action_5,
@@ -162,36 +159,54 @@ class KeybindMixin:
         self._state.interact_phase = "party_select"
         self.refresh_all()
 
+    def action_party_dismiss(self) -> None:
+        """O：打开遣散小队成员面板。"""
+        if self._state is None or self._state.interact_phase:
+            return
+        controlled = self._state.controlled_entity
+        if not any(member is not controlled for member in self._state.party):
+            self._act_log.add("没有可遣散的成员")
+            return
+        self._state.selected_dismiss_members = set()
+        self._state.interact_phase = "party_dismiss"
+        self.refresh_all()
+
     def action_toggle_combat_mode(self) -> None:
-        """T：由玩家手动切换探索模式与轮转模式。"""
+        """T：由玩家手动切换探索模式与轮转模式。小队同时切换。"""
         if self._state.combat_phase != "idle":
             return
-        self._state.in_combat = not self._state.in_combat
         if self._state.in_combat:
-            for member in self._state.party:
-                if not member.is_dead and not any(
-                    participant is member
-                    for participant in self._state.combat_initiative
-                ):
-                    self._state.combat_initiative.append(member)
-            controlled = self._state.controlled_entity
-            if controlled is not None:
-                self._state.combat_turn_index = (
-                    self._state.combat_initiative.index(controlled)
-                )
-            self._state.combat_turn_entity = self._state.controlled_entity
-            self._act_log.add("进入轮转模式")
-        else:
-            status = (
-                "参战中"
-                if any(
-                    not any(member is participant for member in self._state.party)
-                    for participant in self._state.combat_initiative
-                )
-                else "未参战"
+            if self._state.party_any_engaged():
+                self._act_log.add("仍有成员参战，无法进入探索模式")
+                return
+            from domain.combat.tenacity import (
+                convert_combat_break_to_explore, expire_combat_round_statuses,
             )
+            for creature in list(self._state.combat_initiative):
+                convert_combat_break_to_explore(creature)
+                expire_combat_round_statuses(creature)
+            if not getattr(self._state, "_combat_ticked", False):
+                self._state.clock.tick_combat_round()
+                self._state._advance_npcs(6.0, combatants=False)
+            self._state.in_combat = False
+            self._state.combat_initiative = []
             self._state.combat_turn_entity = None
-            self._act_log.add(f"进入探索模式（{status}）")
+            self._state._combat_ticked = False
+            self._act_log.add("进入探索模式")
+            self.refresh_all()
+            return
+        self._state.clear_group_move()
+        if self._state.interact_phase == "party_select":
+            self._state.interact_phase = ""
+        from domain.combat.initiative import enter_rotation
+        enter_rotation(self._state)
+        turn = self._state.combat_turn_entity
+        if turn in self._state.party:
+            self._state.set_controlled(turn)
+        self._state.clear_group_move()
+        self._act_log.add("进入轮转模式")
+        if turn is not None:
+            self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
         self.refresh_all()
 
     def action_roll_extinguish(self) -> None:
@@ -233,6 +248,9 @@ class KeybindMixin:
         ip = state.interact_phase
         if ip:
             views.append(self._INTERACT_VIEWS.get(ip, ip))
+            from presentation.textual.controllers.craft import is_craft_phase
+            if is_craft_phase(ip):
+                return views
         else:
             cp = state.combat_phase
             if cp != "idle":
@@ -243,7 +261,10 @@ class KeybindMixin:
         if state.item_menu_stack:
             views.append("right_item_menu")
         elif state.observe_mode:
-            views.append("right_observe")
+            if state.observe_log_id is not None:
+                views.append("right_observe_log")
+            else:
+                views.append("right_observe")
         else:
             rv = self._right_panel.view_mode if self._right_panel else "default"
             if rv != "default":
@@ -255,69 +276,22 @@ class KeybindMixin:
     def _try_interact_key(self, key: str) -> bool:
         """处理交互阶段专用按键。返回 True 表示已处理。"""
         ip = self._state.interact_phase
-        if ip == "menu" and key.isdigit():
+        if ip == "menu" and key.isdigit() and key != "0":
             self._handle_interact_menu_select(int(key))
             return True
-        if ip == "item_menu" and key.isdigit():
+        if ip == "item_menu" and key.isdigit() and key != "0":
             self._handle_ground_item_menu(int(key))
             return True
-        if ip == "talking":
-            if key == "t":
-                target = getattr(self._state, 'interact_target', None)
-                c = target.creature if target else None
-                if c and not are_hostile(c, self._state.controlled_entity) \
-                        and c.body_type != "beast":
-                    self._interact_trade_start()
-                else:
-                    self._act_log.add("对方不愿意与你交易")
-                return True
-            if key == "Q":
-                self._interact_ask_quest()
-                return True
-            if key == "R":
-                target = getattr(self._state, "interact_target", None)
-                creature = target.creature if target else None
-                if creature is not None:
-                    from domain.recruitment import attempt_recruit
-                    from domain.faction import get_attitude
-                    attitude = get_attitude(creature, self._state.controlled_entity)
-                    cost = 5 if creature.name == "商人" or creature.shop_id else 0
-                    result = attempt_recruit(self._state, creature,
-                                             attitude=attitude, cost=cost)
-                    self._act_log.add(result.message)
-                    if result.success:
-                        self._state.interact_phase = ""
-                    self.refresh_all()
-                return True
-            if key == "D":
-                self._interact_deliver_quest()
-                return True
-            if key == "0":
-                self._cancel_interact(); return True
-        if ip == "trading" and key == "0":
-            self._cancel_interact(); return True
-        if ip == "action_menu" and key == "0":
-            self._cancel_interact(); return True
-        if ip == "shove_choice" and key == "0":
-            self._cancel_shove_choice(); return True
-        if ip == "corpse":
-            if key == "1":
-                self._corpse_loot(); return True
-            if key == "2":
-                self._corpse_pickup(); return True
-            if key == "0":
-                self._cancel_interact(); return True
-        if ip == "reaction" and key in ("0", "escape"):
+        if ip == "target" and key.isdigit() and key != "0":
+            self._handle_creature_option(int(key))
+            return True
+        if ip == "looting" and key == "enter":
+            self._loot_take_selected()
+            return True
+        if ip == "reaction" and key == "apostrophe":
             self._cmd_reaction_input("A0")
             return True
-        if ip == "stealing" and key == "0":
-            self._cancel_interact(); return True
-        if ip == "steal_caught" and key == "0":
-            self._handle_steal_caught(0); return True
         if ip == "party_select":
-            if key == "0":
-                self._cancel_interact()
-                return True
             if key == "enter":
                 self._state.interact_phase = ""
                 count = len(self._state.selected_party_members)
@@ -338,6 +312,73 @@ class KeybindMixin:
                     self._state.selected_party_members.discard(member_id)
                 else:
                     self._state.selected_party_members.add(member_id)
+                self.refresh_all()
+                return True
+        if ip == "party_dismiss":
+            if key == "enter":
+                selected = [
+                    member for member in list(self._state.party)
+                    if id(member) in self._state.selected_dismiss_members
+                ]
+                if not selected:
+                    self._act_log.add("未选择成员")
+                    self.refresh_all()
+                    return True
+                names = []
+                for member in selected:
+                    if self._state.remove_party_member(member):
+                        names.append(member.name)
+                self._state.selected_dismiss_members = set()
+                self._state.interact_phase = ""
+                if names:
+                    self._act_log.add("已遣散 " + "、".join(names))
+                self.refresh_all()
+                return True
+            if key in ("1", "2", "3", "4"):
+                idx = int(key) - 1
+                members = list(self._state.party)
+                if idx >= len(members):
+                    return True
+                member = members[idx]
+                if member is self._state.controlled_entity:
+                    return True
+                member_id = id(member)
+                if member_id in self._state.selected_dismiss_members:
+                    self._state.selected_dismiss_members.discard(member_id)
+                else:
+                    self._state.selected_dismiss_members.add(member_id)
+                self.refresh_all()
+                return True
+        if ip == "rest_select":
+            if key == "enter":
+                members = [
+                    m for m in self._state.party
+                    if not m.is_dead and id(m) in self._state.selected_rest_members
+                ]
+                kind = self._state.pending_rest_kind
+                self._state.interact_phase = ""
+                self._state.pending_rest_kind = ""
+                if members:
+                    self._execute_party_rest(members, kind)
+                else:
+                    self._act_log.add("未选择休息成员")
+                    self.refresh_all()
+                return True
+            if key in ("1", "2", "3", "4"):
+                idx = int(key) - 1
+                members = [m for m in self._state.party if not m.is_dead]
+                if idx >= len(members):
+                    return True
+                member = members[idx]
+                if self._state.is_engaged(member):
+                    self._act_log.add(f"{member.name} 参战中，无法休息")
+                    return True
+                member_id = id(member)
+                if member_id in self._state.selected_rest_members:
+                    if member is not self._state.controlled_entity:
+                        self._state.selected_rest_members.discard(member_id)
+                else:
+                    self._state.selected_rest_members.add(member_id)
                 self.refresh_all()
                 return True
         return False
@@ -390,10 +431,13 @@ class KeybindMixin:
         # 交互流程中允许方向键移动，移动后复用当前交互目标的范围检查
         if self._state.interact_phase:
             ip = self._state.interact_phase
+            from presentation.textual.controllers.craft import is_craft_phase
+            if is_craft_phase(ip):
+                return
             col, row = self._state.controlled_entity_pos[:2][:2]
             nc, nr = col + dc, row + dr
             if self._state.in_combat:
-                halved = self._state.controlled_entity.has_status("prone") or self._state.controlled_entity.has_status("hiding")
+                halved = movement_speed_halved(self._state.controlled_entity)
                 move_cost = _move_ap_cost(self._state.controlled_entity, halved=halved)
                 if self._state.controlled_entity.ap < move_cost:
                     self._act_log.add("AP 不足")
@@ -453,7 +497,7 @@ class KeybindMixin:
             self._act_log.add("当前无法移动")
             return
         if self._state.in_combat:
-            halved = self._state.controlled_entity.has_status("prone") or self._state.controlled_entity.has_status("hiding")
+            halved = movement_speed_halved(self._state.controlled_entity)
             move_cost = _move_ap_cost(self._state.controlled_entity, halved=halved)
             if self._state.controlled_entity.ap < move_cost:
                 self._act_log.add("AP 不足")
@@ -462,11 +506,11 @@ class KeybindMixin:
             move_cost = 0
         col, row = self._state.controlled_entity_pos[:2]
         nc, nr = col + dc, row + dr
-        leader = self._state.controlled_entity
+        actor = self._state.controlled_entity
         is_group = (
             not self._state.in_combat
             and self._state.interact_phase == ""
-            and leader is not None
+            and actor is not None
             and len(self._state.selected_party_members) > 1
         )
         old_time = None
@@ -482,7 +526,7 @@ class KeybindMixin:
                 new_time = self._state.clock.pendulum_count + self._state.clock.pendulum_acc_ticks / self._state.clock.scale
                 delta = new_time - old_time
                 if delta > 0:
-                    self._state.move_selected_followers(leader, delta)
+                    self._state.move_selected_followers(actor, delta)
             if self._state.in_combat:
                 self._state.controlled_entity.ap -= move_cost
             elif self._state.slow_mode:
@@ -552,28 +596,96 @@ class KeybindMixin:
         self.refresh_all()
 
     def action_cancel_ranged_target(self) -> None:
-        """' 键取消远程瞄准。法术模式回到法术选择，投掷模式直接取消，远程攻击回到攻击选择。"""
-        if self._state and self._state.combat_phase == "ranged_target":
-            if (self._state.pending_attack or {}).get("target_choice_active"):
+        """' 键：所有面板回退。输入框不算面板。"""
+        from presentation.textual.controllers.craft import is_craft_phase
+        st = self._state
+        if st is None:
+            return
+        if st.observe_log_id is not None:
+            st.observe_log_id = None
+            self.refresh_all()
+            return
+        ip = st.interact_phase
+        if ip == "looting":
+            self._loot_panel_back()
+            return
+        if ip == "trading":
+            self._state.shop_data = None
+            if self._state.interact_target:
+                self._state.interact_phase = "target"
+                self.refresh_all()
+                return
+            self._cancel_interact()
+            return
+        if ip in ("chest_take_qty", "chest_store_qty"):
+            st.interact_phase = "chest"
+            self.refresh_all()
+            return
+        if ip and is_craft_phase(ip):
+            self._craft_back()
+            return
+        if ip == "reaction":
+            self._cmd_reaction_input("A0")
+            return
+        if ip == "shove_choice":
+            self._cancel_shove_choice()
+            return
+        if ip == "steal_caught":
+            self._handle_steal_caught(0)
+            return
+        if ip:
+            self._cancel_interact()
+            return
+        if st.combat_phase == "ranged_target":
+            if (st.pending_attack or {}).get("target_choice_active"):
                 self.cancel_target_choice()
                 return
-            if self._state.pending_attack and self._state.pending_attack.get("mode") == "throw":
-                self._state.combat_phase = "idle"
-                self._state.pending_attack = {}
+            if st.pending_attack and st.pending_attack.get("mode") == "throw":
+                st.combat_phase = "idle"
+                st.pending_attack = {}
                 self._act_log.add("取消投掷")
-            elif self._state.pending_attack and self._state.pending_attack.get("mode") == "spell":
-                self._state.combat_phase = "select_spell"
-                self._state.pending_attack = {"mode": "spell"}
-                self._act_log.add("法术：选择要施放的法术 — 输入 :A序号 确认, :A0 取消")
-                self._wake_input()
-            elif self._state.pending_attack and self._state.pending_attack.get("mode") in ("torch_ignite_surface", "ignite_surface"):
-                mode = self._state.pending_attack.get("mode")
-                self._state.combat_phase = "select_action" if mode == "torch_ignite_surface" else "idle"
-                self._state.pending_attack = {}
+            elif st.pending_attack and st.pending_attack.get("mode") == "spell":
+                if st.pending_attack.get("scroll_item") is not None:
+                    st.combat_phase = "idle"
+                    st.pending_attack = {}
+                    self._act_log.add("取消卷轴施法")
+                else:
+                    st.combat_phase = "select_spell"
+                    st.pending_attack = {"mode": "spell"}
+                    self._act_log.add("法术：选择要施放的法术 — 输入 :A序号 确认, ' 取消")
+                    self._wake_input()
+            elif st.pending_attack and st.pending_attack.get("mode") in ("torch_ignite_surface", "ignite_surface"):
+                mode = st.pending_attack.get("mode")
+                st.combat_phase = "select_action" if mode == "torch_ignite_surface" else "idle"
+                st.pending_attack = {}
                 self._act_log.add("取消点火" if mode == "torch_ignite_surface" else "取消生火")
             else:
                 self._combat_flow.cancel_ranged_target()
             self.refresh_all()
+            return
+        if st.combat_phase == "select_action":
+            self._combat_flow.handle_action_input("A0")
+            return
+        if st.combat_phase == "select_spell":
+            self._cmd_spell_input("A0")
+            return
+        if st.combat_phase == "select_cast_attr":
+            self._cmd_cast_attr_input("A0")
+            return
+        if st.combat_phase == "select_maneuver":
+            self._combat_flow.handle_maneuver_input("A0")
+            return
+        if st.combat_phase == "select_special":
+            self._combat_flow.handle_special_input("A0")
+            return
+        if st.item_menu_stack:
+            st.item_menu_stack.pop()
+            self._sync_input()
+            self.refresh_all()
+            return
+        if self._right_panel and self._right_panel.view_mode != "default":
+            self._right_view_back()
+            return
 
     def action_end_turn(self) -> None:
         """手动结束当前回合（Shift+Tab）。"""
@@ -631,6 +743,9 @@ class KeybindMixin:
     # ── Observe ──
 
     def action_climb_up(self) -> None:
+        from presentation.textual.controllers.craft import is_craft_phase
+        if self._state and is_craft_phase(self._state.interact_phase):
+            return
         if self._state.combat_phase == "ranged_target":
             self._switch_target_height(1)
             return
@@ -644,6 +759,9 @@ class KeybindMixin:
         self.refresh_all()
 
     def action_climb_down(self) -> None:
+        from presentation.textual.controllers.craft import is_craft_phase
+        if self._state and is_craft_phase(self._state.interact_phase):
+            return
         if self._state.combat_phase == "ranged_target":
             self._switch_target_height(-1)
             return
@@ -697,6 +815,7 @@ class KeybindMixin:
 
     def action_toggle_observe(self) -> None:
         self._state.observe_mode = not self._state.observe_mode
+        self._state.observe_log_id = None
         if self._state.observe_mode:
             self._state.observe_cursor = self._state.controlled_entity_pos[:2]
             self._state.observe_z = None
@@ -714,10 +833,8 @@ class KeybindMixin:
 
 
     def action_interact(self) -> None:
-        """按 0 交互：扫描可交互目标 → 单目标直接触发，多目标弹菜单。"""
-        # 已在交互阶段 → 按 0 离开
+        """按 0 交互：扫描可交互目标 → 弹菜单。"""
         if self._state.interact_phase:
-            self._cancel_interact()
             return
         targets = scan_interact_targets(self._state)
         if not targets:
@@ -732,24 +849,65 @@ class KeybindMixin:
     # ── Long Rest ──
 
     def action_long_rest(self) -> None:
-        if self._state.in_combat: self._act_log.add("战斗中无法长休"); return
-        def do_rest():
-            return long_rest(self._state.controlled_entity, self._state.clock,
-                             self._state.map, self._state.controlled_entity_pos,
-                             self._state.ground_items)
+        self._begin_rest("long")
+
+    def action_short_rest(self) -> None:
+        self._begin_rest("short")
+
+    def _begin_rest(self, kind: str) -> None:
+        """短休/长休入口：参战拒绝；多人打开休息面板。"""
+        actor = self._state.controlled_entity
+        if actor is None:
+            return
+        if self._state.is_engaged(actor):
+            self._act_log.add("参战中无法休息")
+            return
+        living = [m for m in self._state.party if not m.is_dead]
+        if len(living) > 1:
+            self._state.pending_rest_kind = kind
+            self._state.selected_rest_members = {id(actor)}
+            self._state.interact_phase = "rest_select"
+            self.refresh_all()
+            return
+        self._execute_party_rest([actor], kind)
+
+    def _execute_party_rest(self, members: list, kind: str) -> None:
+        rest_fn = short_rest if kind == "short" else long_rest
+        label = "短休" if kind == "short" else "长休"
         result = {}
+
+        def do_rest():
+            return rest_fn(
+                members[0], self._state.clock,
+                self._state.map, self._state.controlled_entity_pos,
+                self._state.ground_items,
+                resters=members,
+                in_rotation=self._state.in_combat,
+                is_engaged=self._state.is_engaged,
+            )
+
         def execute():
             result.update(
                 self._coordinator.execute_operation(do_rest)
                 if self._coordinator is not None
                 else do_rest()
             )
+            elapsed = result.get("elapsed", 0)
+            planned = result.get("planned", 0)
+            if result.get("interrupted"):
+                self._act_log.add(f"{label}被打断，经过 {elapsed} 钟摆（设定 {planned}）")
+                return True
             comfort = "，睡得很舒适" if result.get("comfort") else ""
-            self._act_log.add(
-                f"{self._pn} 长休 (HP+{result['hp_restored']} "
-                f"MP+{result['mp_restored']}){comfort}"
-            )
+            self._act_log.add(f"{label}结束，经过 {elapsed} 钟摆")
+            for entry in result.get("members", []):
+                self._act_log.add(
+                    f"{entry['name']} {label} "
+                    f"(HP+{entry['hp_restored']} MP+{entry['mp_restored']} "
+                    f"勇气+{entry['courage_restored']} "
+                    f"韧性+{entry['tenacity_restored']}){comfort}"
+                )
             return True
+
         if self._run_game_action(execute):
             self._post_action_update()
 
@@ -776,7 +934,14 @@ class KeybindMixin:
     # ── Wait ──
 
     def action_wait(self) -> None:
-        if self._state.in_combat: self._act_log.add("战斗中无法消磨时间"); return
+        actor = self._state.controlled_entity
+        if actor is not None and self._state.is_engaged(actor):
+            self._act_log.add("参战中无法消磨时间")
+            return
+        if self._state.in_combat:
+            if actor is None or actor.ap < AP_PER_PENDULUM:
+                self._act_log.add("AP 不足")
+                return
         def wait():
             accepted = (
                 self._coordinator.wait()
@@ -784,7 +949,10 @@ class KeybindMixin:
                 else True
             )
             if accepted:
-                self._state.clock.tick_action(1.0)
+                if self._state.in_combat and actor is not None:
+                    actor.ap = max(0, actor.ap - AP_PER_PENDULUM)
+                else:
+                    self._state.clock.tick_action(1.0)
             return accepted
         if self._run_game_action(wait):
             self._act_log.add("时间流逝...")
@@ -828,7 +996,7 @@ class KeybindMixin:
             self._act_log.add("没有任何可用动作")
             return
         self._state.interact_phase = "action_menu"
-        self._act_log.add("动作：输入 :N序号 执行, :N0 返回")
+        self._act_log.add("动作：输入 :N序号 执行, ' 取消")
         self._wake_input()
         self.refresh_all()
 
@@ -847,8 +1015,9 @@ class KeybindMixin:
         # 跳跃距离 = 速度等级 + 力量调整值
         if action_key in ("jump", "high_jump"):
             if (p.has_status("prone") or p.has_status("hiding")
-                    or p.has_status("incapacitated")):
-                self._act_log.add("倒地/躲藏/失能状态下无法跳跃")
+                    or p.has_status("incapacitated")
+                    or p.has_status("不可移动")):
+                self._act_log.add("倒地/躲藏/失能/不可移动状态下无法跳跃")
                 self.refresh_all()
                 return
             if action_key == "jump":
@@ -861,8 +1030,12 @@ class KeybindMixin:
             "max_range": max_range,
             "target_z": self._state.controlled_entity.z,
         }
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
+        from domain.combat.target_phase import activate_aim
+        if not activate_aim(self._state):
+            self._act_log.add("无法找到合适的目标")
+            self._state.pending_attack = {}
+            self.refresh_all()
+            return
         self._act_log.add(f"选择 {action.get('name', '动作')} 目标 — 范围:{max_range}  移动  确认  取消")
         self._close_input()
         self.refresh_all()
@@ -1041,6 +1214,9 @@ class KeybindMixin:
                 "manual": "system",
                 "title": "manual",
                 "guide": "manual",
+                "recipes": "manual",
+                "make_book": "manual",
+                "alch_book": "manual",
                 "quest_detail": "quests",
                 "inventory": "default",
                 "character": "default",
@@ -1059,6 +1235,10 @@ class KeybindMixin:
             self._right_panel.view_mode = "spellbook"
         self.refresh_all()
     def action_5(self):
+        actor = self._state.controlled_entity
+        if actor is not None and actor.has_status("不可移动"):
+            self._act_log.add(f"{actor.name} 不可移动，无法撤离")
+            return
         self._run_action("disengage", target=None, target_pos=None)
 
     def _maybe_open_reaction_panel(self) -> None:
@@ -1068,27 +1248,20 @@ class KeybindMixin:
         ev = st.pending_reactions[-1]
         if not getattr(ev.get("reactor"), "controlled", False):
             return
-        from domain.combat.opportunity import REACTION_DEFS
+        from domain.combat.opportunity import REACTION_DEFS, reaction_can_fire
+        if not reaction_can_fire(ev.get("reactor"), ev):
+            if self._act_log:
+                self._act_log.add("AP 不足，无法借机")
+            st.finish_player_reaction(abandoned=True)
+            self._maybe_open_reaction_panel()
+            return
         if st.interact_phase != "reaction":
             st.interact_phase = "reaction"
             spec = REACTION_DEFS.get(ev["kind"], REACTION_DEFS["opportunity_attack"])
             if self._act_log:
                 self._act_log.add(spec["log_player"])
-            self._wake_input()
-
-    def action_crafting(self): self._act_log.add("制作 功能待定")
-    def action_cooking(self):
-        """按 K 键进入烹饪：检测厨具 → 选择厨具 → 选择原材料。"""
-        tools = self._detect_cooking_tools()
-        has_campfire = any(t['type'] == 'campfire' for t in tools)
-        if not has_campfire and len(tools) == 1:
-            self._act_log.add("附近没有厨具，但你可以徒手处理食材")
-        self._cooking_tools = tools
-        self._state.interact_phase = "cooking_tools"
-        self.refresh_all()
         self._wake_input()
 
-    def action_alchemy(self): self._act_log.add("炼药 功能待定")
     def action_height_view(self):
         self._state.height_view = not getattr(self._state, "height_view", False)
         label = "开启" if self._state.height_view else "关闭"
@@ -1105,30 +1278,6 @@ class KeybindMixin:
 
     # ── Scene ──
 
-
-    # ── Rest ──
-
-    def action_short_rest(self) -> None:
-        if self._state.in_combat: self._act_log.add("战斗中无法休息"); return
-        def do_rest():
-            return short_rest(self._state.controlled_entity, self._state.clock,
-                              self._state.map, self._state.controlled_entity_pos,
-                              self._state.ground_items)
-        result = {}
-        def execute():
-            result.update(
-                self._coordinator.execute_operation(do_rest)
-                if self._coordinator is not None
-                else do_rest()
-            )
-            comfort = "，睡得很舒适" if result.get("comfort") else ""
-            self._act_log.add(
-                f"{self._pn} 短休 (HP+{result['hp_restored']} "
-                f"MP+{result['mp_restored']}){comfort}"
-            )
-            return True
-        if self._run_game_action(execute):
-            self._post_action_update()
 
     # ── Save ──
 

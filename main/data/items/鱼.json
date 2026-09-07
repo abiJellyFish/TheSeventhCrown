@@ -1,0 +1,14 @@
+{
+  "name": "鱼",
+  "item_type": {
+    "consumable": true
+  },
+  "effect": "restore_food",
+  "amount": "700",
+  "ap_cost": 1,
+  "weight": 0.5,
+  "price": {
+    "sp": 3
+  },
+  "description": "大海是一锅鲜活的鱼汤，食用恢复700饮食值"
+}

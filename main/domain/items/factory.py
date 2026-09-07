@@ -5,6 +5,7 @@ from domain.items.item import (
     Item,
     _ARMOR_COMPONENT_FIELDS,
     _WEAPON_COMPONENT_FIELDS,
+    normalize_item_type,
 )
 from domain.items.components import ArmorComponent, LightComponent, SpellbookComponent, WeaponComponent
 from domain.ports import RepositoryPort, get_repository
@@ -17,14 +18,14 @@ class ItemFactory:
     def create(data: dict) -> Item:
         if not isinstance(data, dict):
             raise TypeError("物品数据必须是字典")
-        item_type = data.get("item_type", data.get("type", "misc"))
+        item_type = normalize_item_type(data.get("item_type", data.get("type", {"misc": True})))
         weapon_data = data.get("weapon")
         armor_data = data.get("armor")
-        if weapon_data is None and item_type == "weapon":
+        if weapon_data is None and item_type.get("weapon"):
             weapon_data = {
                 key: data[key] for key in _WEAPON_COMPONENT_FIELDS if key in data
             }
-        if armor_data is None and item_type == "armor":
+        if armor_data is None and item_type.get("armor"):
             armor_data = {
                 key: data[key] for key in _ARMOR_COMPONENT_FIELDS if key in data
             }
@@ -45,6 +46,13 @@ class ItemFactory:
             needs_hit=data.get("needs_hit", False),
             effect_data=data.get("effect", {}) if isinstance(data.get("effect"), dict) else {},
             traits=list(data.get("traits", [])),
+            quality=data.get("quality", "普通"),
+            unfinished=data.get("unfinished", False),
+            craft_progress=data.get("craft_progress", 0),
+            recipe_id=data.get("recipe_id", ""),
+            craft_tool=data.get("craft_tool", ""),
+            craft_required=data.get("craft_required", 0),
+            quality_traits=dict(data.get("quality_traits", {})),
             durability=data.get("durability", 0),
             max_durability=data.get("max_durability", data.get("durability", 0)),
             obstacle_type=data.get("obstacle_type", ""),
@@ -60,7 +68,8 @@ class ItemFactory:
             read_text=data.get("read_text", ""),
             render_char=data.get("render_char", ""),
             render_color=data.get("render_color", ""),
-            accessory=data.get("accessory", item_type == "accessory"),
+            can_pickup=data.get("can_pickup", True),
+            accessory=data.get("accessory", bool(item_type.get("accessory"))),
             equip_effect=data.get("equip_effect", {}),
             weapon=WeaponComponent(**weapon_data) if weapon_data is not None else None,
             armor=ArmorComponent(**armor_data) if armor_data is not None else None,

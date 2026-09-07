@@ -1,0 +1,10 @@
+{
+  "id": "fish_fillet",
+  "craft": "cook",
+  "output": {"name": "鱼肉", "count": 3},
+  "required": {"鱼": 1},
+  "time_pendulums": 1,
+  "tools": [],
+  "require_tool": false,
+  "discovery_needed": 1
+}

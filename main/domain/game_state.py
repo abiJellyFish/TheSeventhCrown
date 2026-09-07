@@ -9,13 +9,14 @@ from domain.entity import Entity, Item, are_hostile, is_ally
 from domain.grid import Grid, DIRS_8
 from domain.layers import LayerMap, SurfaceCell
 from domain.dice import roll_2d6
-from domain.movement import Terrain, can_enter, find_path
+from domain.movement import Terrain, can_enter, find_path, higher_surface_fills_volume
 from domain.obstacle import is_full_obstacle
 from domain.ai.components import COMPONENTS
 from domain.pendulum import PendulumClock
 from domain.death import DeathSystem
 
 from domain.explore import Trap, Clue, _move_ap_cost, ExploreMixin
+from domain.entity.status import movement_speed_halved
 from domain.lighting import LightMixin
 from domain.ai.npc_runner import NpcBehaviorMixin
 from domain.actions import ActionResolverMixin
@@ -26,7 +27,7 @@ from domain.action_queue import ActionQueue
 from domain.stealth_state import StealthState
 from domain.ports import get_action_executor
 from domain.events import DomainEvent, log_event, reaction_required, state_changed, turn_changed
-from domain.damageable import is_destroyed
+from domain.damageable import is_destroyed, purge_container, purge_equipment, purge_item_list
 from domain.map.chunks import (
     DEFAULT_CHUNK_SIZE,
     ChunkCoord,
@@ -124,10 +125,13 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     combat_turn_entity: Entity | None = None
     combat_phase: str = "idle"              # 攻击流程状态机: "idle"|"select_action"|"ranged_target"|"select_maneuver"|"select_special"
     pending_attack: dict | None = None      # 当前攻击上下文 {"mode":..., "weapon":..., "attack_roll":None, "target":None}
+    pending_rest_kind: str = ""
+    selected_rest_members: set[int] = field(default_factory=set, repr=False)
+    selected_dismiss_members: set[int] = field(default_factory=set, repr=False)
 
     # 光照与视野
     light_map: Grid | None = None
-    environment_light: "LightLevel | None" = None  # 全局环境光照覆盖；None=天光 BRIGHT
+    environment_light: "LightLevel | None" = None  # 全局环境光照覆盖；None=按钟摆推导天光
     light_sources: dict = field(default_factory=dict)          # {(x,y,z): (radius, LightLevel)}
     _light_version: int = field(default=0, repr=False)
     _light_cache_key: tuple | None = field(default=None, repr=False)
@@ -135,6 +139,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     fov_bright: set = field(default_factory=set)               # 明亮视野格子
     fov_dim: set = field(default_factory=set)                  # 微光视野格子
     fov_cache: set = field(default_factory=set)                # Deprecated: 兼容旧引用，返回 fov_bright | fov_dim
+    fov_by_entity: dict = field(default_factory=dict, repr=False)
     _fov_cache_key: tuple | None = field(default=None, repr=False)
     maneuvers: list[dict] = field(default_factory=list)
 
@@ -142,6 +147,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     observe_mode: bool = False
     observe_cursor: tuple[int, int] = (0, 0)
     observe_z: int | None = None
+    observe_log_id: int | None = None
+    entity_logs: dict[int, list[str]] = field(default_factory=dict, repr=False)
     height_view: bool = False
 
     # 慢速模式
@@ -151,7 +158,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     knockout_mode: bool = False
 
     # 交互系统
-    interact_phase: str = ""              # "" | "menu" | "talking" | "trading"
+    interact_phase: str = ""              # "" | "menu" | "target" | "trading"
     interact_targets: list = field(default_factory=list)
     interact_target: object | None = None  # 当前交互目标 (InteractTarget)
     shop_data: dict | None = None         # 当前交易中的商店数据
@@ -161,6 +168,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     steal_stolen: list = field(default_factory=list)  # 本次会话已偷到物品
     steal_persuade_failures: int = 0       # 游说失败次数（3 次后敌对）
     steal_persuade_bonus: int = 0          # 游说难度累积加成（每次失败 +5）
+    loot_selected: set = field(default_factory=set)
+    loot_return_phase: str = ""
 
     # 委托系统（P1 3.4）
     active_quests: list[str] = field(default_factory=list)    # 已接取未完成任务名
@@ -169,6 +178,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
     # 物品系统
     ground_items: list = field(default_factory=list)  # list[tuple[Item, tuple[int,int,int]]]
     item_menu_stack: list[dict] = field(default_factory=list)  # 物品交互菜单栈
+    pending_craft: dict = field(default_factory=dict)
     _twig_regrow_at: int = 0               # 下次树枝重生钟摆数
 
     pending_reactions: list = field(default_factory=list)
@@ -213,6 +223,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             "forage": self._npc_move_to_food,
             "eat_food": self._npc_eat_food,
             "pickup": self._npc_pickup,
+            "pickup_misc": self._npc_pickup_misc,
             "hunt": self._npc_move_to_prey,  # 相邻攻击 + 不邻移动
             "collect": self._npc_collect,
             "eat_inventory": self._npc_eat_from_inventory,
@@ -274,6 +285,13 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         self.selected_party_members = {self.controlled_id} if self.controlled_id else set()
         self.state_version += 1
 
+    def clear_group_move(self) -> None:
+        """解除多选同行，恢复单独移动。"""
+        self.selected_party_members = (
+            {self.controlled_id} if self.controlled_id else set()
+        )
+        self._party_move_curS.clear()
+
     def add_party_member(self, creature: Entity) -> bool:
         """将场上实体加入小队；小队最多包含四名成员。"""
         if creature in self.party:
@@ -291,20 +309,23 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         return True
 
     def remove_party_member(self, creature: Entity) -> bool:
-        """移除盟友；玩家不能通过该接口移除。"""
-        if creature not in self.party or creature is self.party[0]:
+        """遣散小队成员；当前受控者不能移出队伍。"""
+        if creature not in self.party or creature is self.controlled_entity:
             return False
         self.party.remove(creature)
         creature.party_member = False
         creature.ally = False
         from domain.entity_components import AIComponent
         from domain.ai.components import DEFAULT_BEHAVIOR
+        creature._control = None
         creature._ai = AIComponent(
             behavior_table=list(DEFAULT_BEHAVIOR["components"]),
             behavior_overrides=dict(DEFAULT_BEHAVIOR["overrides"]),
         )
-        if creature is self.controlled_entity:
-            self.set_controlled(self.party[0])
+        entity_id = id(creature)
+        self.selected_party_members.discard(entity_id)
+        self._party_move_curS.pop(entity_id, None)
+        self.selected_dismiss_members.discard(entity_id)
         self.state_version += 1
         return True
 
@@ -406,7 +427,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             except Exception:
                 continue
 
-    def emit_log(self, message: str, category=None, position=None) -> None:
+    def emit_log(self, message: str, category=None, position=None,
+                 related_ids=None) -> None:
         """发布结构化日志；未指定分类时归入普通系统日志。"""
         from domain.events import LogCategory
         if category is None:
@@ -417,11 +439,49 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                 if any(term in message for term in combat_terms)
                 else LogCategory.SYSTEM
             )
-        if position is None:
-            source = getattr(self, "_log_context_entity", None)
-            if source is not None:
+        related: set[int] = set(related_ids or ())
+        source = getattr(self, "_log_context_entity", None)
+        if source is not None:
+            related.add(id(source))
+            if position is None:
                 position = self.get_entity_pos(source)
+        for creature, pos in self.entities:
+            if message.startswith(creature.name):
+                related.add(id(creature))
+                if position is None:
+                    position = pos
+        self._record_entity_logs(message, position, related)
         self.emit_event(log_event(message, category, position=position))
+
+    def _record_entity_logs(self, message: str, position, related: set[int]) -> None:
+        pos3 = None
+        if position is not None:
+            pos3 = position if len(position) == 3 else (*position, self.active_z)
+            occupant = self.get_entity_at(pos3[0], pos3[1], z=pos3[2])
+            if occupant is not None:
+                related.add(id(occupant))
+            for entity_id, cells in self.fov_by_entity.items():
+                if pos3 in cells:
+                    related.add(entity_id)
+        for entity_id in related:
+            bucket = self.entity_logs.setdefault(entity_id, [])
+            bucket.append(message)
+            if len(bucket) > 500:
+                self.entity_logs[entity_id] = bucket[-500:]
+
+    def party_log_fov(self) -> set[tuple[int, int, int]]:
+        """存活小队成员个人视野的并集；未计算时回退到渲染 fov_cache。"""
+        members = [member for member in self.party if member is not None and not member.is_dead]
+        cells: set[tuple[int, int, int]] = set()
+        for member in members:
+            for cell in self.fov_by_entity.get(id(member), ()):
+                cells.add(cell if len(cell) == 3 else (*cell[:2], self.active_z))
+        if cells:
+            return cells
+        fallback: set[tuple[int, int, int]] = set()
+        for cell in self.fov_cache:
+            fallback.add(cell if len(cell) == 3 else (*cell[:2], self.active_z))
+        return fallback
 
     def notify_entity_death(self, creature: Entity) -> None:
         """发布实体首次真正死亡的事件和日志。"""
@@ -619,8 +679,14 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         ]
 
     def is_height_wall(self, position: tuple[int, int], z: int) -> bool:
-        """判断坐标是否是生成地图登记的高度墙。"""
-        return (*position, z) in getattr(self, "dungeon_wall_cells", set())
+        """该格是否是实心体积：本层登记为高度墙，或被更高地表填实（空洞除外）。"""
+        layer = int(z)
+        walls = getattr(self, "dungeon_wall_cells", set()) or set()
+        if (*position, layer) in walls:
+            return True
+        return higher_surface_fills_volume(
+            position[0], position[1], layer, self.world_layers, walls
+        )
 
     def is_surface_edge(self, position: tuple[int, int], z: int) -> bool:
         """判断地表是否是高层地表与低层地表的边缘。"""
@@ -782,6 +848,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             surface_layers=self.world_layers,
             actor_z=target_z,
             can_fly=flying,
+            height_walls=getattr(self, "dungeon_wall_cells", None),
         ):
             return False
         has_target_surface = any(
@@ -813,9 +880,18 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         return True
 
     def release_player(self) -> bool:
-        """解除攀附并逐层下降至可站立地表。"""
+        """解除攀附并逐层下降至可站立地表。已在实心地表上则不下降。"""
         creature = self.controlled_entity
         if creature is None or creature.is_hovering or creature.fly_speed > 0:
+            return False
+        position = next(
+            (entity_position for entity, entity_position in self.entities
+             if entity is creature),
+            None,
+        )
+        if position is None:
+            return False
+        if self.surface_at(position[:2], creature.z, create=False).exists:
             return False
         return self.fall_player()
 
@@ -862,10 +938,11 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             from domain.combat.attack import roll_dice
             damage = roll_dice(distance - 1, 6)
             if landing.terrain is Terrain.WATER:
-                from domain.combat.attack import stat_check
+                from domain.checks import saving_throw
                 if save_ability not in {"str", "dex"}:
                     save_ability = "str" if creature.stat("str") >= creature.stat("dex") else "dex"
-                if stat_check(creature, save_ability) >= 15:
+                _, total = saving_throw(creature, save_ability)
+                if total >= 15:
                     damage //= 2
             creature.take_damage(damage, "bludgeoning")
             creature.add_status("prone")
@@ -1046,19 +1123,34 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         return result
 
     def remove_destroyed_ground_items(self) -> list:
-        """移除所有耐久归零的地面物品，并使空间缓存失效。"""
-        destroyed = [
-            item for item, _ in self.ground_items
-            if is_destroyed(item)
-        ]
-        if not destroyed:
-            return []
-        self.ground_items = [
-            entry for entry in self.ground_items
-            if entry[0] not in destroyed
-        ]
-        self.invalidate_spatial_cache()
+        """移除耐久归零的地面/背包/装备/箱内物品，并使空间缓存失效。"""
+        destroyed: list = []
+        kept_ground = []
+        for item, pos in self.ground_items:
+            destroyed.extend(purge_container(item))
+            if is_destroyed(item):
+                destroyed.append(item)
+            else:
+                kept_ground.append((item, pos))
+        self.ground_items = kept_ground
+        for creature in self._iter_item_holders():
+            destroyed.extend(purge_item_list(creature.inventory))
+            destroyed.extend(purge_item_list(creature.accessories))
+            destroyed.extend(purge_equipment(creature))
+        if destroyed:
+            self.invalidate_spatial_cache()
         return destroyed
+
+    def _iter_item_holders(self):
+        seen: set[int] = set()
+        for creature, _pos in self.entities:
+            cid = id(creature)
+            if cid in seen:
+                continue
+            seen.add(cid)
+            if getattr(creature, "_inventory", None) is None:
+                continue
+            yield creature
 
     def get_entity_pos(self, target: Entity) -> tuple[int, int, int] | None:
         """查找生物在地图上的三维坐标（含非当前活动层）。"""
@@ -1068,9 +1160,9 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         return next((pos for c, pos in self.entities if c is target), None)
 
     def check_combat_visibility(self, creature: Entity | None = None) -> bool:
-        """参战敌对实体均看不见该生物时返回 True，表示应退出战斗。
+        """参战敌对实体均看不见该生物时返回 True，表示应脱战。
 
-        只检查 combat_initiative 中的存活敌对实体，不修改状态。
+        先攻没有存活敌对时返回 False。只检查 combat_initiative，不修改状态。
         """
         if not self.in_combat:
             return False
@@ -1084,9 +1176,33 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             and not entity.is_dead
             and are_hostile(creature, entity)
         ]
-        if hostiles and any(can_see(self, enemy, creature) for enemy in hostiles):
+        if not hostiles:
+            return False
+        if any(can_see(self, enemy, creature) for enemy in hostiles):
             return False
         return True
+
+    def is_engaged(self, creature: Entity | None = None) -> bool:
+        """参战：该实体在先攻中，且先攻里有与其敌对的存活生物。"""
+        creature = creature or self.controlled_entity
+        if creature is None:
+            return False
+        if not any(participant is creature for participant in self.combat_initiative):
+            return False
+        return any(
+            other is not creature
+            and not other.is_dead
+            and are_hostile(creature, other)
+            for other in self.combat_initiative
+        )
+
+    def party_any_engaged(self) -> bool:
+        """小队是否有人参战。"""
+        return any(
+            self.is_engaged(member)
+            for member in self.party
+            if not member.is_dead
+        )
 
     # ---- 移动 ----
 
@@ -1106,7 +1222,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                              tile_space_prebuilt=self.spatial_cache(),
                              surface_layers=self.world_layers,
                              actor_z=target_z,
-                             can_fly=p.is_hovering or p.fly_speed > 0):
+                             can_fly=p.is_hovering or p.fly_speed > 0,
+                             height_walls=getattr(self, "dungeon_wall_cells", None)):
                     self.entities[i] = (c, (col, row, target_z))
                     self._spatial_cache = None
                     p.z = target_z
@@ -1118,7 +1235,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                     self._check_traps(p, (col, row))
                     self._check_wall_support_or_fall(p)
                     if not self.in_combat:
-                        halved = p.has_status("prone") or p.has_status("hiding")
+                        halved = movement_speed_halved(p)
                         speed = p.effective_speed / 2.0 if halved else p.effective_speed
                         self.clock.tick_move(speed)
                     self._offer_opportunities(p, (ec, er), (col, row))
@@ -1153,7 +1270,8 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                          tile_space_prebuilt=self.spatial_cache(),
                          surface_layers=self.world_layers,
                          actor_z=creature.z,
-                         can_fly=creature.is_hovering or creature.fly_speed > 0):
+                         can_fly=creature.is_hovering or creature.fly_speed > 0,
+                         height_walls=getattr(self, "dungeon_wall_cells", None)):
             # 更新位置
             for i, (c, (ec, er, ez)) in enumerate(self.entities):
                 if c is creature and (ec, er) == (from_col, from_row):
@@ -1167,21 +1285,21 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                     return True
         return False
 
-    def move_selected_followers(self, leader: Entity, delta: float) -> None:
-        """根据 leader 移动推进的钟摆数，移动所有被选中的跟随者。"""
+    def move_selected_followers(self, actor: Entity, delta: float) -> None:
+        """根据当前受控者移动推进的钟摆数，移动所有被选中的跟随者。"""
         if delta <= 0:
             return
-        leader_pos = self.get_entity_pos(leader)
-        if leader_pos is None:
+        actor_pos = self.get_entity_pos(actor)
+        if actor_pos is None:
             return
         SCALE = 10
         for member in list(self.party):
-            if member is leader or member.is_dead or id(member) not in self.selected_party_members:
+            if member is actor or member.is_dead or id(member) not in self.selected_party_members:
                 continue
             member_pos = self.get_entity_pos(member)
             if member_pos is None:
                 continue
-            target = self._party_follower_target(member_pos, leader_pos, member)
+            target = self._party_follower_target(member_pos, actor_pos, member)
             if target is None:
                 continue
             path = find_path(
@@ -1193,7 +1311,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             )
             if not path or len(path) < 2:
                 continue
-            halved = member.has_status("prone") or member.has_status("hiding")
+            halved = movement_speed_halved(member)
             ticks_per_grid = _move_ap_cost(member, halved=halved)
             curS = self._party_move_curS.get(id(member), 0)
             curS += int(SCALE * delta)
@@ -1207,15 +1325,15 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                 from_pos = next_pos
 
     def _party_follower_target(
-        self, follower_pos: tuple[int, int], leader_pos: tuple[int, int], follower: Entity
+        self, follower_pos: tuple[int, int], actor_pos: tuple[int, int], follower: Entity
     ) -> tuple[int, int] | None:
-        """为跟随者选取 leader 相邻的可用目标格。"""
+        """为跟随者选取当前受控者相邻的可用目标格。"""
         candidates = []
         for dc in (-1, 0, 1):
             for dr in (-1, 0, 1):
                 if dc == 0 and dr == 0:
                     continue
-                pos = (leader_pos[0] + dc, leader_pos[1] + dr)
+                pos = (actor_pos[0] + dc, actor_pos[1] + dr)
                 if not self.map.within_bounds(pos[0], pos[1]):
                     continue
                 if pos == follower_pos:
@@ -1228,6 +1346,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                     surface_layers=self.world_layers,
                     actor_z=follower.z,
                     can_fly=follower.is_hovering or follower.fly_speed > 0,
+                    height_walls=getattr(self, "dungeon_wall_cells", None),
                 ):
                     distance = max(abs(pos[0] - follower_pos[0]), abs(pos[1] - follower_pos[1]))
                     candidates.append((distance, pos))
@@ -1241,7 +1360,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                    for e in self.pending_reactions)
 
     def _offer_opportunities(self, mover, from_pos, to_pos) -> bool:
-        from domain.combat.opportunity import collect_opportunity_reactors
+        from domain.combat.opportunity import collect_opportunity_reactors, reaction_can_fire
         reactors = collect_opportunity_reactors(self, mover, from_pos, to_pos)
         player_stop = False
         for sequence, r in enumerate(reactors):
@@ -1249,12 +1368,15 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                 "kind": "opportunity_attack", "trigger": "movement",
                 "mover": mover, "reactor": r, "registered_at": sequence,
             }
-            if r.controlled:
-                self.pending_reactions.append(event)
-                self.emit_event(reaction_required(event["kind"]))
-                player_stop = True
-            else:
+            if not r.controlled:
                 self._resolve_npc_opportunity(event)
+                continue
+            if not reaction_can_fire(r, event):
+                self.emit_log("AP 不足，无法借机")
+                continue
+            self.pending_reactions.append(event)
+            self.emit_event(reaction_required(event["kind"]))
+            player_stop = True
         return player_stop
 
     def _resolve_npc_opportunity(self, event: dict) -> None:
@@ -1274,8 +1396,18 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             return
         reactor.ap -= cost
         mpos = self.get_entity_pos(mover)
-        resolve_attack(reactor, mover, weapon, attacker_pos=apos, target_pos=mpos,
+        result = resolve_attack(reactor, mover, weapon, attacker_pos=apos, target_pos=mpos,
                        grid=self.map, ground_items=getattr(self, "ground_items", []))
+        from domain.classes import available_abilities
+        from domain.combat.tenacity import settle_attack_tenacity
+        tenacity_action = (not result["hit"]) and "削韧" in available_abilities(reactor)
+        settle_attack_tenacity(
+            reactor, mover, weapon, result["roll"],
+            tenacity_action=tenacity_action,
+            combat_state=self,
+            consume_extra=False,
+            note_combo=False,
+        )
         if self.emit_log and visible:
             self.emit_log(spec["log_npc"].format(reactor=reactor.name, mover=mover.name))
 
@@ -1284,12 +1416,14 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
             return
         self.pending_reactions.pop()
         self.interact_phase = ""
-        if not abandoned:
-            pass
-        if self._player_reaction_pending():
-            self.interact_phase = "reaction"
-            self.emit_reaction_required()
-            return
+        from domain.combat.opportunity import reaction_can_fire
+        while self._player_reaction_pending():
+            event = self.pending_reactions[-1]
+            if reaction_can_fire(event.get("reactor"), event):
+                self.interact_phase = "reaction"
+                self.emit_reaction_required()
+                return
+            self.pending_reactions.pop()
         self.resume_npc_advance()
 
     def resume_npc_advance(self) -> None:
@@ -1427,7 +1561,7 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
         for creature, _ in all_creatures:
             if creature.is_dead:
                 continue
-            if creature.food_locked:
+            if creature.food_locked or getattr(creature, "_resting", False):
                 continue
             # NPC 饥饿时优先吃背包食物（玩家手动吃，不自动）
             max_food = 15000
@@ -1458,44 +1592,21 @@ class GameState(LightMixin, NpcBehaviorMixin, ActionResolverMixin, StealthMixin,
                                 position=self.get_entity_pos(creature),
                             )
                         break
-            creature.food_value = max(0, creature.food_value - int(delta))
-            # 玩家饥饿/濒死提示
+            spent = int(delta)
+            old_food = creature.food_value
+            creature.food_value = max(0, creature.food_value - spent)
+            if creature.food_value > 0:
+                creature.starve_pendulums = 0.0
+            else:
+                starved = spent - min(old_food, spent)
+                creature.starve_pendulums += starved
+                from domain.entity.status import STARVE_PENDULUMS, raise_exhaustion
+                while creature.starve_pendulums >= STARVE_PENDULUMS:
+                    creature.starve_pendulums -= STARVE_PENDULUMS
+                    raise_exhaustion(creature, 1)
+            # 玩家饥饿提示
             if creature.controlled and self.emit_log:
                 if creature.food_value == 3000:
                     self.emit_log("你感到饥饿，需要进食了")
-                elif creature.food_value == 0 and creature.hp > 0:
-                    self.emit_log("你快要饿死了！")
-            if creature.food_value == 0:
-                creature.take_damage(1, "starvation")
-                # 死亡时 inventory + equipment 物品加入掉落（被控生物除外）
-                if not creature.controlled and creature.is_dead:
-                    loot = getattr(creature, 'loot', {}) or {}
-                    always = loot.get('always', [])
-                    # 背包物品
-                    for item in creature.inventory:
-                        always.append({
-                            "name": item.name, "item_type": item.item_type,
-                            "amount": item.count if hasattr(item, 'count') else 1,
-                            "weight": item.weight, "price": item.price,
-                            "effect": getattr(item, 'effect', ''),
-                            "description": getattr(item, 'description', ''),
-                        })
-                    # 装备栏物品
-                    for slot, item in creature.equipment.items():
-                        if item is not None:
-                            always.append({
-                                "name": item.name, "item_type": item.item_type,
-                                "amount": item.count if hasattr(item, 'count') else 1,
-                                "weight": item.weight, "price": item.price,
-                                "effect": getattr(item, 'effect', ''),
-                                "description": getattr(item, 'description', ''),
-                                "slot": slot,
-                            })
-                    if always:  # 只在有物品时更新
-                        loot['always'] = always
-                        creature.loot = loot
-
-        p = self.controlled_entity
-        if p is not None and p.is_dead:
-            if self.emit_log:
-                self.emit_log(f"{p.name} 饿死了……")
+                elif creature.food_value == 0 and old_food > 0:
+                    self.emit_log("你开始挨饿")

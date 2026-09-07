@@ -95,6 +95,27 @@ _init_back_sector_cache()
 # 通行判断
 # ═══════════════════════════════════════════════════
 
+def higher_surface_fills_volume(
+    col: int, row: int, z: int,
+    surface_layers: dict,
+    height_walls: set | None = None,
+) -> bool:
+    """更高存在地表默认填实该格。中间层登记为高度墙则是空洞（天花板下可走）。正负层同一规则。"""
+    higher = [
+        level for level, layer in surface_layers.items()
+        if level > z and layer.surface((col, row)).exists
+    ]
+    if not higher:
+        return False
+    peak = max(higher)
+    walls = height_walls or set()
+    if (col, row, peak) in walls:
+        return False
+    return not any(
+        (col, row, mid) in walls for mid in range(z + 1, peak)
+    )
+
+
 def can_enter(
     col: int, row: int,
     grid: Grid[Terrain],
@@ -108,6 +129,7 @@ def can_enter(
     surface_layers: dict | None = None,
     actor_z: int = 0,
     can_fly: bool = False,
+    height_walls: set | None = None,
 ) -> bool:
     """判断是否可以进入 (col, row)。
 
@@ -131,13 +153,10 @@ def can_enter(
             )
             if not can_fly and not lower_surface:
                 return False
-        if actor_z >= 0:
-            higher_surface = any(
-                z > actor_z and layer_map.surface((col, row)).exists
-                for z, layer_map in surface_layers.items()
-            )
-            if higher_surface:
-                return False
+        if higher_surface_fills_volume(
+            col, row, actor_z, surface_layers, height_walls
+        ):
+            return False
     if not allow_non_adjacent and from_col is not None and from_row is not None:
         if (abs(col - from_col), abs(row - from_row)) not in {(0, 1), (1, 0)}:
             return False

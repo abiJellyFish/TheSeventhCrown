@@ -4,7 +4,7 @@ import os
 import random
 from domain.game_state import GameState
 from domain.entity import (Entity, Weapon, are_hostile,
-                           adjust_favor, get_favor, set_favor)
+                           get_favor, set_favor, make_hostile)
 import domain.entity as ent
 from domain.movement import Terrain, find_path
 from domain.fov import LightLevel, compute_fov
@@ -13,7 +13,6 @@ from domain.combat.attack import (hit_check, roll_damage, reduce_tenacity,
     apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack,
     miss_message, cover_message, normalize_damage_type)
 from domain.combat.flow import CombatFlow
-import domain.dice
 from domain.ai.engine import BehaviorEngine
 from domain.rest import short_rest, long_rest
 from infrastructure.loader import DataLoader, _load_dialogues, _load_scene_actions
@@ -28,7 +27,7 @@ from domain.item_actions import (get_item_actions, find_placeable_tile,
     place_on_ground, remove_from_inventory as item_remove_from_inventory,
     copy_item_with_count, get_throw_range, get_throw_max_range,
     tile_space_used, MAX_TILE_SPACE)
-from domain.loot import _add_to_inventory, is_currency_entry
+from domain.loot import grant_item
 from presentation.textual.fov import _update_fov
 
 
@@ -46,11 +45,6 @@ _INTERACT_DISPATCH = {
     InteractType.HARVEST_CROP: "_interact_harvest_crop",
     InteractType.PICK_CROP: "_interact_pick_crop",
     InteractType.CLEAR_CROP: "_interact_clear_crop",
-}
-
-RECIPES = {
-    "一磅野猪肉": {"result": "烤兽肉", "time": 1},
-    "浆果": {"result": "烤熟的浆果", "time": 1},
 }
 
 
@@ -92,25 +86,13 @@ class InteractMixin:
 
     def _interact_item(self, target) -> None:
         """打开地面物品面板，再由玩家选择操作。"""
+        from domain.interact import item_interact_options
         items = target.extra.get("items", [])
         self._state.interact_target = target
         self._state.interact_phase = "item_menu"
-        chest = next(
-            (item for item in items if getattr(item, "chest_data", None) is not None),
-            None,
-        )
-        options = ["打开"] if chest is not None else []
-        if any("灌木" in item.name for item in items):
-            options.append("采摘")
-        if any(
-            getattr(getattr(item, "obstacle_type", None), "value",
-                    getattr(item, "obstacle_type", None)) != "full"
-            and getattr(item, "can_pickup", True)
-            for item in items
-        ):
-            options.append("捡起")
+        options = item_interact_options(self._state, target)
         option_text = "，".join(
-            f"{index + 1} {label}" for index, label in enumerate(options)
+            f"{index + 1} {label}" for index, (_action, label) in enumerate(options)
         )
         self._act_log.add(f"{target.label}：输入 {option_text or '0 返回'}，0 返回")
         if any(getattr(item, "obstacle_type", None) for item in items):
@@ -126,38 +108,38 @@ class InteractMixin:
         if num == 0:
             self._cancel_interact()
             return
-        items = target.extra.get("items", [])
-        chest = next(
-            (item for item in items if getattr(item, "chest_data", None) is not None),
-            None,
-        )
-        option_index = 1
-        if chest is not None:
-            if num == option_index:
-                target.extra["chest_data"] = chest.chest_data
-                target.extra["item"] = chest
-                self._interact_chest(target)
-                return
-            option_index += 1
-        is_bush = any("灌木" in item.name for item in items)
-        if is_bush and num == option_index:
-            self._interact_pick(target)
-            return
-        pickup_num = option_index + (1 if is_bush else 0)
-        if num != pickup_num:
+        from domain.interact import item_interact_options
+        options = item_interact_options(self._state, target)
+        if num < 1 or num > len(options):
             self._act_log.add("序号无效")
             return
-        pickup = next(
-            (item for item in items
-             if getattr(getattr(item, "obstacle_type", None), "value",
-                        getattr(item, "obstacle_type", None)) != "full"
-             and getattr(item, "can_pickup", True)),
-            None,
-        )
-        if pickup is None:
-            self._act_log.add("该物品不能捡起")
+        action = options[num - 1][0]
+        if action == "open":
+            items = target.extra.get("items", [])
+            chest = next(
+                (item for item in items if getattr(item, "chest_data", None) is not None),
+                None,
+            )
+            if chest is None:
+                raise RuntimeError("没有可打开的容器")
+            target.extra["chest_data"] = chest.chest_data
+            target.extra["item"] = chest
+            self._interact_chest(target)
             return
-        self._interact_pickup(target)
+        if action == "pick":
+            self._interact_pick(target)
+            return
+        if action == "loot":
+            self._interact_loot(target)
+            return
+        if action == "pickup":
+            creature = target.creature
+            if creature is not None and getattr(creature, "is_dead", False):
+                self._corpse_pickup()
+                return
+            self._interact_pickup(target)
+            return
+        raise RuntimeError(f"未知物品交互: {action}")
 
     def _interact_chest(self, target) -> None:
         """打开箱子交互面板。"""
@@ -204,8 +186,7 @@ class InteractMixin:
 
         # count == 1 → 直接转移
         chest_inv.pop(num - 1)
-        _add_to_inventory(self._state.controlled_entity, item)
-        self._act_log.add(f"拿取了 {item.name}")
+        grant_item(self._state.controlled_entity, item, self._state)
 
         # 箱子清空时自动转移金币
         if not chest_inv:
@@ -285,8 +266,7 @@ class InteractMixin:
         if qty >= max_qty:
             # 全量转移
             chest_inv.pop(idx)
-            _add_to_inventory(self._state.controlled_entity, item)
-            self._act_log.add(f"拿取了 {item.name} x{max_qty}")
+            grant_item(self._state.controlled_entity, item, self._state)
         else:
             # 部分转移
             from domain.item_actions import copy_item_with_count
@@ -294,8 +274,7 @@ class InteractMixin:
             split = copy_item_with_count(item, qty, unit_w * qty)
             item.count -= qty
             item.weight -= split.weight
-            _add_to_inventory(self._state.controlled_entity, split)
-            self._act_log.add(f"拿取了 {split.name} x{qty}")
+            grant_item(self._state.controlled_entity, split, self._state)
 
         # 箱子清空时自动转移金币
         if not chest_inv:
@@ -371,8 +350,15 @@ class InteractMixin:
     def _cancel_interact(self) -> None:
         """取消交互，恢复默认状态。"""
         if self._state.interact_phase == "party_select":
-            leader = self._state.controlled_entity
-            self._state.selected_party_members = {id(leader)} if leader is not None else set()
+            controlled = self._state.controlled_entity
+            self._state.selected_party_members = (
+                {id(controlled)} if controlled is not None else set()
+            )
+        if self._state.interact_phase == "party_dismiss":
+            self._state.selected_dismiss_members = set()
+        if self._state.interact_phase == "rest_select":
+            self._state.pending_rest_kind = ""
+            self._state.selected_rest_members = set()
         self._state.interact_phase = ""
         self._state.interact_targets = []
         self._state.interact_target = None
@@ -380,6 +366,8 @@ class InteractMixin:
         self._state.item_menu_stack.clear()
         self._state.shove_target = None
         self._state.steal_target = None
+        self._state.loot_selected = set()
+        self._state.loot_return_phase = ""
         _update_fov(self._state)
         self._refresh_scene()
         self.refresh_all()
@@ -407,40 +395,83 @@ class InteractMixin:
     # ── 各交互类型处理方法 ──
 
     def _interact_talk(self, target) -> None:
-        """与生物交谈。敌对生物直接开战。"""
+        """打开生物个人交互面板。清醒敌对直接开战。"""
         c = target.creature
         if c is None:
             return
-        if are_hostile(c, self._state.controlled_entity):
+        if are_hostile(c, self._state.controlled_entity) and not c.has_status("睡眠"):
             self._act_log.add(f"{self._pn} 拔剑冲向 {c.name}!")
             self._start_combat(c)
             return
-        self._state.interact_target = target
-        self._state.interact_phase = "talking"
-        self._act_log.add(f"{self._pn} 向 {c.name} 搭话")
-        self._act_log.add(self._get_npc_dialogue(c))
-        self.refresh_all()
+        self._open_creature_panel(target)
 
     def _interact_corpse(self, target) -> None:
-        """尸体面板：搜刮 / 捡起 二选一（尸体=每生物武器物品）。"""
-        c = target.creature
-        if c is None:
+        """尸体是物品：打开物品交互面板。"""
+        creature = target.creature
+        if creature is None:
             return
+        items = list(target.extra.get("items", []))
+        corpse = getattr(creature, "corpse", None)
+        if corpse is not None and corpse not in items:
+            items.append(corpse)
+        target.extra["items"] = items
+        self._interact_item(target)
+
+    def _open_creature_panel(self, target) -> None:
         self._state.interact_target = target
-        self._state.interact_phase = "corpse"
-        self._act_log.add(f"面对 {c.name} 的尸体 —  搜刮  捡起  离开")
+        self._state.interact_phase = "target"
         self.refresh_all()
 
-    def _corpse_loot(self) -> None:
-        """尸体面板 [1]搜刮：复用原搜刮逻辑。"""
-        target = getattr(self._state, 'interact_target', None)
-        if target is None:
+    def _handle_creature_option(self, num: int) -> None:
+        """个人面板数字选项。"""
+        target = getattr(self._state, "interact_target", None)
+        creature = target.creature if target else None
+        if creature is None:
             return
-        self._interact_loot(target)
-        self._state.interact_phase = ""
+        from domain.interact import creature_interact_options
+        options = creature_interact_options(self._state, creature)
+        if num < 1 or num > len(options):
+            return
+        action = options[num - 1][0]
+        handlers = {
+            "talk": self._creature_talk,
+            "trade": self._interact_trade_start,
+            "recruit": self._creature_recruit,
+            "ask_quest": self._interact_ask_quest,
+            "deliver_quest": self._interact_deliver_quest,
+            "loot": lambda: self._interact_loot(target),
+            "pickup": self._corpse_pickup,
+        }
+        handlers[action]()
+
+    def _creature_talk(self) -> None:
+        """交谈：已有对话则写入日志，留在个人面板。"""
+        target = getattr(self._state, "interact_target", None)
+        creature = target.creature if target else None
+        if creature is None:
+            return
+        self._act_log.add(f"{self._pn} 向 {creature.name} 搭话")
+        self._act_log.add(self._get_npc_dialogue(creature))
+        self.refresh_all()
+
+    def _creature_recruit(self) -> None:
+        target = getattr(self._state, "interact_target", None)
+        creature = target.creature if target else None
+        if creature is None:
+            return
+        from domain.recruitment import attempt_recruit
+        from domain.faction import get_attitude
+        attitude = get_attitude(creature, self._state.controlled_entity)
+        cost = 5 if creature.name == "商人" or creature.shop_id else 0
+        result = attempt_recruit(self._state, creature,
+                                 attitude=attitude, cost=cost)
+        self._act_log.add(result.message)
+        if result.success:
+            self._state.interact_phase = ""
+        self.refresh_all()
 
     def _corpse_pickup(self) -> None:
-        """尸体面板 [2]捡起：生成尸体武器 → 装备双手 → 移除尸体实体。"""
+        """尸体面板捡起：生成尸体武器 → 装备双手 → 移除尸体实体。"""
         target = getattr(self._state, 'interact_target', None)
         if target is None or target.creature is None:
             return
@@ -466,70 +497,88 @@ class InteractMixin:
         self.refresh_all()
 
     def _interact_loot(self, target) -> None:
+        """打开搜刮面板。掉落表仅在第一次打开时掷骰。"""
+        from domain.loot import ensure_loot_rolled, list_loot_entries
         c = target.creature
         if c is None:
             return
-        if getattr(c, '_looted', False):
-            self._act_log.add("已经搜刮过了")
-            self._state.interact_phase = ""
-            self.refresh_all()
-            return
-        c._looted = True
-
-        roll = domain.dice.roll_2d6()
-        self._act_log.add(f"搜刮：{c.name} 搜刮检定 2d6={roll}")
-
-        loot_data = getattr(c, 'loot', {}) or {}
-        found = []
-
-        # always 物品直接获得
-        for entry in loot_data.get("always", []):
-            item = self._create_loot_item(entry)
-            found.append(item)
-
-        # DC 物品：2d6 >= DC 才获得
-        for key, entries in loot_data.items():
-            if not key.startswith("dc_"):
-                continue
-            dc = int(key.split("_")[1])
-            if roll >= dc:
-                for entry in entries:
-                    item = self._create_loot_item(entry)
-                    found.append(item)
-
-        if found:
-            for item in found:
-                if item is not None:
-                    _add_to_inventory(self._state.controlled_entity, item)
-                    self._act_log.add(f"  获得: {item.name}" + (f" x{item.count}" if item.count > 1 else ""))
-        else:
-            self._act_log.add("  什么都没有找到...")
+        roll = ensure_loot_rolled(c)
+        if roll is not None:
+            self._act_log.add(f"搜刮：{c.name} 搜刮检定 2d6={roll}")
+        self._state.interact_target = target
+        self._state.loot_selected = set()
+        current = self._state.interact_phase
+        self._state.loot_return_phase = (
+            current if current in ("target", "item_menu")
+            else ("menu" if self._state.interact_targets else "")
+        )
+        self._state.interact_phase = "looting"
+        if not list_loot_entries(c):
+            self._act_log.add(f"{c.name} 身上没有可搜刮的物品")
+        self._wake_input()
         self.refresh_all()
 
-    def _create_loot_item(self, entry: dict):
-        """根据 loot 条目创建物品实例。货币条目直接入账，返回 None。"""
-        # 货币条目：直接入账（含 gp/sp/cp 且无 name）
-        if is_currency_entry(entry):
-            player_receive(self._state.controlled_entity, entry)
-            self._act_log.add(f"  获得: {price_to_text(entry)}")
-            return None
-
-        name = entry.get("name", "")
-        amount = entry.get("amount", 1)
-        # 普通物品：从缓存加载并设置数量
-        item = self._load_item_by_name(name)
-        if item is None:
-            # fallback: 创建简单 Item
-            item = ent.Item(name=name, item_type="misc", count=amount, weight=0.1)
+    def _cmd_loot_select(self, cmd: str) -> None:
+        """搜刮面板 :L序号 勾选/取消。"""
+        from domain.loot import list_loot_entries
+        try:
+            num = int(cmd[1:])
+        except (ValueError, IndexError):
+            self._act_log.add("用法: :L序号  如 :L1 选择第1项")
+            return
+        target = getattr(self._state, "interact_target", None)
+        creature = target.creature if target else None
+        if creature is None:
+            return
+        entries = list_loot_entries(creature)
+        if num < 1 or num > len(entries):
+            self._act_log.add("序号无效")
+            return
+        eid = entries[num - 1]["id"]
+        selected = self._state.loot_selected
+        if eid in selected:
+            selected.discard(eid)
         else:
-            item.count = amount
-            if item.weight:
-                item.weight = item.weight * amount
-        return item
+            selected.add(eid)
+        self.refresh_all()
+        self._wake_input()
 
-    def _load_item_by_name(self, name: str):
-        """从 data/items/ 按名称加载物品实例（委托给 load_item）。"""
-        return load_item(name)
+    def _loot_take_selected(self) -> None:
+        """回车拿走勾选物品。"""
+        from domain.loot import take_loot_entries
+        target = getattr(self._state, "interact_target", None)
+        creature = target.creature if target else None
+        player = self._state.controlled_entity
+        if creature is None or player is None:
+            return
+        selected = list(self._state.loot_selected)
+        if not selected:
+            self._act_log.add("未选择物品")
+            return
+        taken = take_loot_entries(creature, player, selected, self._state)
+        self._state.loot_selected = set()
+        if not taken:
+            self._act_log.add("没有可拿走的物品")
+        else:
+            leftover = [label for label in taken if "获得" not in label]
+            if leftover:
+                self._act_log.add("拿走: " + "、".join(leftover))
+        self.refresh_all()
+
+    def _loot_panel_back(self) -> None:
+        """搜刮面板 ' 回退到对象个人面板、交互菜单或关闭。"""
+        self._state.loot_selected = set()
+        back = self._state.loot_return_phase
+        self._state.loot_return_phase = ""
+        if back in ("target", "item_menu") and self._state.interact_target:
+            self._state.interact_phase = back
+            self.refresh_all()
+            return
+        if back == "menu" and self._state.interact_targets:
+            self._state.interact_phase = "menu"
+            self.refresh_all()
+            return
+        self._cancel_interact()
 
     def _interact_pick(self, target) -> None:
         """采摘灌木丛。"""
@@ -541,12 +590,10 @@ class InteractMixin:
             self._state.interact_phase = ""
             self.refresh_all()
             return
-        b = random.randint(2, 5)
-        berry = load_item("浆果")
-        if berry:
-            berry.count = b
-            _add_to_inventory(self._state.controlled_entity, berry)
-        self._act_log.add(f"{self._pn} 从灌木丛摘到 {b} 个浆果")
+        from domain.craft.engine import pick_bush
+        items = pick_bush()
+        for item in items:
+            grant_item(self._state.controlled_entity, item, self._state)
         # 记录采摘，1000 钟摆后重生
         self._state.harvested_bushes[(tc, tr)] = self._state.clock.pendulum_count + 6
         self.refresh_all()
@@ -563,14 +610,11 @@ class InteractMixin:
             return
         self._state.clock.tick_action(1)
         player = self._state.controlled_entity
-        names = []
         for ref in refs:
             item = load_item(ref["name"])
             if item:
                 item.count = ref.get("count", 1)
-                _add_to_inventory(player, item)
-                names.append(f"{item.name} x{item.count}")
-        self._act_log.add(f"收获了 {', '.join(names)}")
+                grant_item(player, item, self._state)
         self._cancel_interact()
         self.refresh_all()
 
@@ -709,6 +753,17 @@ class InteractMixin:
             return
         item = inv[num - 1]
         player = st.controlled_entity
+        from domain.steal import steal_cost
+        if not target.can_act:
+            cost = steal_cost(item)
+            if st.in_combat:
+                player.ap = max(0, player.ap - cost * 10)
+            else:
+                st.clock.tick_action(cost)
+            taken = self._take_one_from_inventory(target, item)
+            grant_item(player, taken, st)
+            self.refresh_all()
+            return
         # 隐匿优势：玩家对目标隐匿 → 敏捷检定优势
         player_pos = st.get_entity_pos(player)
         hidden = (player_pos is not None
@@ -722,10 +777,9 @@ class InteractMixin:
             st.clock.tick_action(cost)
         if result["success"]:
             taken = self._take_one_from_inventory(target, item)
-            _add_to_inventory(player, taken)
+            grant_item(player, taken, st)
             st.steal_stolen.append(taken)
             st._break_stealth_in_view(player)
-            self._act_log.add(f"你悄悄取走了 {taken.name} (价值 {price_to_text(taken.price)})")
             self.refresh_all()
             return
         # 失败被发现
@@ -767,8 +821,8 @@ class InteractMixin:
             self._act_log.add("你归还了偷窃的物品")
             self._cancel_interact()
         elif num == 2:
-            adjust_favor(target, player, "敌对")
-            self._act_log.add(f"{target.name} 被你激怒了!")
+            if make_hostile(target, player, st.party):
+                self._act_log.add(f"{target.name} 被你激怒了!")
             self._cancel_interact()
         elif num == 3:
             self._persuade_steal()
@@ -799,7 +853,8 @@ class InteractMixin:
         player = st.controlled_entity
         gp_total = sum(price_to_copper(i.price) // 100 for i in st.steal_stolen)
         dc = 10 + gp_total + st.steal_persuade_bonus
-        roll = domain.dice.roll_d20() + player.stat_adjust("cha")
+        from domain.checks import ability_check
+        roll = ability_check(player, "cha")
         if roll >= dc:
             self._act_log.add(f"游说成功 (d20+魅力={roll} vs DC{dc}) — {target.name} 不再追究")
             self._cancel_interact()
@@ -809,7 +864,7 @@ class InteractMixin:
             self._act_log.add(f"游说失败 (d20+魅力={roll} vs DC{dc}) — 下次难度+5")
             if st.steal_persuade_failures >= 3:
                 self._act_log.add(f"{target.name} 对你失去了耐心")
-                adjust_favor(target, player, "敌对")
+                make_hostile(target, player, st.party)
                 self._cancel_interact()
             else:
                 st.interact_phase = "stealing"
@@ -819,7 +874,7 @@ class InteractMixin:
     # ── 交易流程 ──
 
     def _interact_trade_start(self) -> None:
-        """从交谈界面进入交易。商人走商店文件；其余实体默认交易自身携带的物品（P1 3.2）。"""
+        """从个人交互面板进入交易。商人走商店文件；其余实体默认交易自身携带的物品（P1 3.2）。"""
         target = getattr(self._state, 'interact_target', None)
         if target is None or target.creature is None:
             return
@@ -846,7 +901,7 @@ class InteractMixin:
         if shop is None:
             return
         if "creature" in shop:
-            ok, msg = trade_buy_creature(self._state.controlled_entity, shop["creature"], index)
+            ok, msg = trade_buy_creature(self._state.controlled_entity, shop["creature"], index, self._state)
         else:
             ok, msg = trade_buy(self._state.controlled_entity, shop, index, self._state)
         self._act_log.add(msg)
@@ -885,113 +940,3 @@ class InteractMixin:
         tier = brave if brave in ("low", "medium", "high") else "medium"
         action_dialogues = dialogue.get(action, dialogue.get("idle", {}))
         return f"{c.name}: {action_dialogues.get(tier, action_dialogues.get('medium', '...'))}"
-
-
-    def _detect_cooking_tools(self) -> list[dict]:
-        """扫描玩家 3x3 范围内厨具，徒手始终可用。"""
-        pc, pr = self._state.controlled_entity_pos[:2]
-        tools = [{"name": "徒手", "type": "bare_hands", "pos": (pc, pr)}]
-        for dc in (-1, 0, 1):
-            for dr in (-1, 0, 1):
-                pos = (pc + dc, pr + dr)
-                if self._state.map.within_bounds(*pos) and any(
-                    item_pos == pos and item.name == "篝火"
-                    for item, item_pos in self._state.ground_items
-                ):
-                    tools.append({"name": "篝火", "type": "campfire", "pos": pos})
-        return tools
-
-    def _interact_cook(self, cmd: str) -> None:
-        """处理烹饪面板的 :A序号 输入。"""
-        try:
-            num = int(cmd[1:])
-        except (ValueError, TypeError):
-            self._act_log.add("用法: :A序号  如 :A1 选择第1项")
-            return
-
-        ip = self._state.interact_phase
-
-        if ip == "cooking_tools":
-            tools = getattr(self, '_cooking_tools', [])
-            if num == 0:
-                self._cancel_interact()
-                return
-            if 1 <= num <= len(tools):
-                self._selected_cooking_tool = tools[num - 1]
-                self._state.interact_phase = "cooking"
-                self.refresh_all()
-            else:
-                self._act_log.add("厨具序号无效")
-
-        elif ip == "cooking":
-            if num == 0:
-                self._state.interact_phase = "cooking_tools"
-                self.refresh_all()
-                return
-
-            player = self._state.controlled_entity
-            cookable_items = [
-                candidate for candidate in player.inventory
-                if candidate.name in RECIPES
-            ]
-            item = (
-                cookable_items[num - 1]
-                if 1 <= num <= len(cookable_items)
-                else None
-            )
-            if item is None:
-                self._act_log.add("食材序号无效")
-                return
-
-            tool_name = getattr(self, '_selected_cooking_tool', {}).get('type', '')
-
-            # 徒手烹饪 → 占位
-            if tool_name == "bare_hands":
-                self._act_log.add("烹饪：待定开发")
-                self._state.interact_phase = ""
-                self.refresh_all()
-                return
-
-            # AP/钟摆消耗
-            if self._state.in_combat:
-                if player.ap < 10:
-                    self._act_log.add("AP 不足，无法烹饪")
-                    return
-                player.ap -= 10
-            else:
-                self._state.clock.tick_action(1.0)
-
-            # 消耗原材料（堆叠处理）
-            inv = player.inventory
-            if item.count > 1:
-                item.count -= 1
-                unit_weight = item.weight / (item.count + 1)
-                item.weight -= unit_weight
-            else:
-                for i, inv_item in enumerate(inv):
-                    if inv_item is item:
-                        inv.pop(i)
-                        break
-
-            # 查找食谱
-            result_data = RECIPES.get(item.name)
-            if result_data is None:
-                self._act_log.add("没有匹配的食谱")
-                return
-
-            # 从 data/items/*.json 加载成品
-            result_item = self._load_item_by_name(result_data["result"])
-            if result_item is None:
-                self._act_log.add(f"无法加载成品物品: {result_data['result']}")
-                return
-
-            _add_to_inventory(player, result_item)
-
-            tool_name = getattr(self, '_selected_cooking_tool', {}).get('name', '?')
-            if tool_name == "篝火":
-                self._act_log.add(f"篝火上飘起香气，{result_data['result']}做好了")
-            else:
-                self._act_log.add(f"你徒手处理了{item.name}，得到了{result_data['result']}")
-
-            self._state.interact_phase = ""
-            self.refresh_all()

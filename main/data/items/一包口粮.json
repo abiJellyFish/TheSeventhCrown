@@ -8,5 +8,7 @@
     "cp": 5
   },
   "description": "几块晒干的兽肉和浆果",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true
+  }
 }

@@ -406,7 +406,7 @@ class SaveSlotScreen(Screen):
             if slot["updated_at"] is None:
                 details = "空"
             else:
-                details = f'{slot["location"]} Lv.{slot["player_level"]}'
+                details = f'{slot["location"]} Lv.{int(slot["character_level"] or 0)}'
             marker = ">" if index == self.selected else " "
             if index == self.selected:
                 lines.append(f"[reverse]{marker} {slot['slot']}[/]")

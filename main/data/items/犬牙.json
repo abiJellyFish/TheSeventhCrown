@@ -6,5 +6,7 @@
     "cp": 20
   },
   "description": "坚硬的兽牙，材料",
-  "item_type": "material"
+  "item_type": {
+    "material": true
+  }
 }

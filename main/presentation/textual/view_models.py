@@ -64,7 +64,7 @@ def build_game_view_model(
             max_mp=player.max_mp,
             ap=player.ap,
             max_ap=player.max_ap,
-            level=player.class_level,
+            level=player.character_level,
             class_name=player.char_class,
         ),
         combat=CombatViewModel(

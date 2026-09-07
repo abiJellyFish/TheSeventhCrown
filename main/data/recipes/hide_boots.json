@@ -1,0 +1,12 @@
+{
+  "id": "hide_boots",
+  "craft": "make",
+  "output": {"name": "猪皮靴", "count": 1},
+  "required": {"猪皮": 3},
+  "time_pendulums": 15000,
+  "tools": [
+    {"name": "皮革工具", "category": "leather_tools", "time_factor": 0.5}
+  ],
+  "require_tool": false,
+  "discovery_needed": 1
+}

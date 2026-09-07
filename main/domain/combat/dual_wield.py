@@ -31,7 +31,7 @@ def dual_wield_ap_cost(left, right) -> int:
     return max(getattr(left, 'ap_cost', 2), getattr(right, 'ap_cost', 2))
 
 import random
-from domain.entity import Entity, Weapon, are_hostile, adjust_favor
+from domain.entity import Entity, Weapon
 from domain.dice import roll_d20, roll_adv_dice, resolve_adv_auto
 from domain.combat.attack import hit_check, reduce_tenacity, resolve_attack, miss_message, cover_message, compute_attack_adv
 from domain.combat.cover import resolve_cover_line, terrain_cover_info
@@ -74,13 +74,8 @@ class DualWieldMixin:
                 return
             p.ap -= weapon.weapon.ap_cost
 
-        # 攻击掷骰前（仅第一步）：目标能看到攻击者 → 记录临时敌对 + 进战斗
-        if step == "left" and not self._state.in_combat and target is not p \
-           and self._target_can_see_attacker(target_pos, target) and not are_hostile(target, p):
-            if target.faction == "中立" or target.faction == "守序":
-                adjust_favor(target, p, "敌对")
-                self._log(f"{target.name} 被激怒，开始反击!")
-            self._request_combat(target)
+        if step == "left":
+            self._provoke_if_seen(target, p, target_pos)
 
         # 无目标 → 直接结束双持
         if target is None:

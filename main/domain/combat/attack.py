@@ -157,7 +157,8 @@ def compute_attack_adv(attacker: Entity, defender: Entity, weapon: Item,
         hidden: 攻击者对目标成功隐匿（由调用方经 state._is_hidden_to 判定）。
         out_of_sight: 攻击者在目标视野外（相邻一圈 ∪ 面前扇形之外，由调用方判定）。
     """
-    adv = 0
+    from domain.checks import KIND_ATTACK, status_adv
+    adv = status_adv(attacker, KIND_ATTACK)
     if weapon is not None:
         adv += attacker.weapon_proficiency_level(weapon.category)
         attack_stat = weapon.attack_stat
@@ -199,7 +200,7 @@ def compute_attack_adv(attacker: Entity, defender: Entity, weapon: Item,
             adv += 1                    # 相邻近战优势
         else:
             adv -= 1                    # 范围外劣势
-    if defender.has_status("不可移动"):
+    if defender.has_status("睡眠"):
         adv += 1
     if defender.has_status("昏迷"):
         adv += 1
@@ -228,30 +229,9 @@ def compute_attack_adv(attacker: Entity, defender: Entity, weapon: Item,
 
 def stat_check(creature: Entity, stat: str, adv: int = 0,
                chosen_roll: int | None = None) -> int:
-    """属性检定：D20 + 属性调整值，支持优势/劣势。
-    若生物有 "assisted"（被协助）状态，本次检定 +1 优势并消耗该状态（D18）。
-
-    Args:
-        creature: 进行检定的生物
-        stat: 属性名（"str"/"dex"/...）
-        adv: 优势/劣势（正=优势，负=劣势，见 _roll_auto）
-        chosen_roll: 玩家已选择的骰面（优势面板选择）。非 None 时直接使用。
-    """
-    if creature.has_status("昏迷") and stat in ("str", "dex", "wis"):
-        return -10**9
-    if creature.has_status("重伤") and stat in ("str", "dex", "wis"):
-        adv -= 1
-    # 被协助 → 下次检定优势，消耗之（D18）
-    if creature.has_status("assisted"):
-        adv += 1
-        creature.remove_status("assisted")
-    armor_penalty = creature.armor_penalty()
-    if stat == "str" and armor_penalty["str_disadvantage"]:
-        adv -= 1
-    if stat == "dex" and armor_penalty["dex_disadvantage"]:
-        adv -= 1
-    roll = chosen_roll if chosen_roll is not None else _roll_auto(adv)
-    return check_total(creature, roll, creature.stat_adjust(stat))
+    """属性检定：转统一入口 ability_check。"""
+    from domain.checks import ability_check
+    return ability_check(creature, stat, extra_adv=adv, chosen_roll=chosen_roll)
 
 
 # ═══════════════════════════════════════════════════
@@ -332,6 +312,10 @@ def roll_damage(weapon: Item, attacker: Entity, critical: bool = False) -> int:
             sd_count *= 2
         total += roll_dice(sd_count, sd_sides)
 
+    quality = getattr(weapon, "quality", "") or ""
+    if quality:
+        from domain.craft.quality import scale_value
+        total = scale_value(total, quality)
     return total
 
 
@@ -377,7 +361,7 @@ def _load_damage_modifiers() -> dict[str, dict[str, str | None]]:
     if data:
         return data
     return {
-        "immunities": {"poison_immune": "poison", "sleep_immune": None},
+        "immunities": {"poison_immune": "poison", "sleep_immune": None, "fire_immune": "fire"},
         "resistances": {"piercing_resist": "piercing"},
         "vulnerabilities": {"bludgeoning_vulnerable": "bludgeoning", "radiant_vulnerable": "radiant"},
     }
@@ -491,8 +475,7 @@ def resolve_attack(
         else:
             hit, roll = hit_check(attacker, defender, weapon, adv=adv, guaranteed=guaranteed)
     if not hit:
-        # 未命中 → 削韧
-        reduce_tenacity(defender, roll)
+        # 未命中 → 不自动削韧；削韧是未命中后的下位动作
         return {"hit": False, "critical": False, "roll": roll,
                 "location": None, "damage": 0,
                 "blocked_by_cover": False, "cover_pos": None,
@@ -507,7 +490,35 @@ def resolve_attack(
             ground_items=ground_items,
         )
         if blocked:
-            reduce_tenacity(defender, roll)  # 掩体阻挡，等效未命中
+            from domain.obstacle import obstacle_at
+            obstacle = obstacle_at(cover_pos, ground_items=ground_items)
+            if isinstance(obstacle, Entity):
+                result = resolve_attack(
+                    attacker, obstacle, weapon,
+                    attacker_pos=attacker_pos, target_pos=cover_pos,
+                    grid=grid, ground_items=ground_items,
+                    damage_bonus=damage_bonus, damage_multiplier=damage_multiplier,
+                    nonlethal=nonlethal, hidden=hidden, out_of_sight=out_of_sight,
+                    guaranteed=guaranteed, light_cover=light_cover,
+                    award_weapon_experience=False,
+                )
+                result = dict(result)
+                result["blocked_by_cover"] = True
+                result["cover_pos"] = cover_pos
+                result["hit_target"] = obstacle
+                return result
+            if obstacle is not None:
+                damage = apply_final_damage(
+                    obstacle, roll_damage(weapon, attacker),
+                    normalize_damage_type(weapon.damage_type),
+                )
+                return {
+                    "hit": True, "critical": False, "roll": roll,
+                    "location": None, "damage": damage,
+                    "blocked_by_cover": True, "cover_pos": cover_pos,
+                    "damage_type": normalize_damage_type(weapon.damage_type),
+                    "class_leveled": False, "hit_target": obstacle,
+                }
             return {"hit": False, "critical": False, "roll": roll,
                     "location": None, "damage": 0,
                     "blocked_by_cover": True, "cover_pos": cover_pos,
@@ -565,15 +576,14 @@ def resolve_attack(
 # 削韧
 # ═══════════════════════════════════════════════════
 
-def reduce_tenacity(target: Entity, d20_roll: int) -> None:
-    """未命中时削减目标韧性。公式: max(roll // 5, 1)。
-    韧性归零 → 陷入 incapacitated 状态。
-    韧性最低为 0。
-    """
-    reduction = max(d20_roll // 5, 1)
-    target.tenacity = max(0, target.tenacity - reduction)
-    if target.tenacity == 0 and not target.has_status("incapacitated"):
-        target.add_status("incapacitated")
+def reduce_tenacity(target: Entity, d20_roll: int, weapon=None,
+                    combat_state=None) -> None:
+    """下位动作「削韧」：max(roll // 5, 1)，再乘武器类型/钝击。"""
+    from domain.combat.tenacity import apply_tenacity_loss, compute_tenacity_amount
+    amount = compute_tenacity_amount(
+        weapon, d20_roll, tenacity_action=True, extra=0,
+    )
+    apply_tenacity_loss(target, amount, combat_state)
 
 
 # ═══════════════════════════════════════════════════

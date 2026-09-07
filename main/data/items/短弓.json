@@ -6,7 +6,9 @@
     "sp": 5
   },
   "description": "短弓，远程武器，普通弹药无限免费",
-  "item_type": "weapon",
+  "item_type": {
+    "weapon": true
+  },
   "weapon": {
     "weapon_type": "ranged",
     "category": "martial",

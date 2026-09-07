@@ -112,7 +112,8 @@ class CommandMixin:
         if num == 0:
             self._cancel_interact()
             return
-        actions = self._state.controlled_entity.actions
+        from domain.actions import available_actions
+        actions = available_actions(self._state.controlled_entity)
         if num < 1 or num > len(actions):
             self._act_log.add("序号无效")
             return
@@ -134,18 +135,21 @@ class CommandMixin:
             self._act_log.add("放弃借机攻击")
             self.refresh_all()
             return
-        items = list_available_reactions(st.controlled_entity)
+        event = st.pending_reactions[-1]
+        items = list_available_reactions(st.controlled_entity, event["kind"])
         if num < 1 or num > len(items):
             self._act_log.add("无效选项")
             return
         item = items[num - 1]
-        weapon = default_melee_weapon(st.controlled_entity)
-        cost = weapon_ap_cost(weapon)
-        if st.controlled_entity.ap < cost:
-            self._act_log.add("AP 不足")
-            return
+        if item["kind"] == "opportunity_attack":
+            weapon = default_melee_weapon(st.controlled_entity)
+            cost = weapon_ap_cost(weapon)
+            if st.controlled_entity.ap < cost:
+                self._act_log.add("AP 不足，无法借机")
+                st.finish_player_reaction(abandoned=True)
+                self.refresh_all()
+                return
         st.interact_phase = ""
-        event = st.pending_reactions[-1]
         if event["kind"] == "shield":
             st.controlled_entity.remove_status("shield")
             st.finish_player_reaction(abandoned=False)
@@ -311,6 +315,12 @@ class CommandMixin:
             self._right_panel._quests_back = "manual"
         elif num == 3:
             self._right_panel.view_mode = "guide"
+        elif num == 4:
+            self._right_panel.view_mode = "recipes"
+        elif num == 5:
+            self._right_panel.view_mode = "make_book"
+        elif num == 6:
+            self._right_panel.view_mode = "alch_book"
         else:
             self._act_log.add(f"无效选项: {cmd}")
             return
@@ -442,5 +452,26 @@ class CommandMixin:
         p.facing = _dir
         self._act_log.add(f"朝向: {facing_label(p.facing)}")
         _update_fov(self._state)
+        self.refresh_all()
+
+    def _cmd_observe_entity_log(self, cmd: str) -> None:
+        """观察模式 X0：打开光标格实体的个人日志面板。"""
+        if cmd.upper() != "X0":
+            return
+        state = self._state
+        if not state.observe_mode:
+            return
+        if state.observe_log_id is not None:
+            self.refresh_all()
+            return
+        cursor = state.observe_cursor
+        selected_z, _surface = state.observation_surface(cursor)
+        entity = state.get_entity_at(cursor[0], cursor[1], z=selected_z)
+        if entity is None or entity.is_dead:
+            self._act_log.add("没有可查看的实体日志")
+            return
+        state.observe_log_id = id(entity)
+        if self._right_panel is not None:
+            self._right_panel._page_offset = 0
         self.refresh_all()
 

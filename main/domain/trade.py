@@ -9,7 +9,8 @@
 import json
 import os
 from dataclasses import replace
-from domain.entity import Item
+from domain.items.item import Item
+from domain.loot import _add_to_inventory, grant_item
 from domain.items.factory import ItemFactory
 from domain.ports import RepositoryPort, get_repository
 
@@ -101,6 +102,20 @@ def sell_price(price: dict) -> dict:
     return copper_to_currency(price_to_copper(price) // 2)
 
 
+def item_market_price(item) -> dict:
+    """品质倍率 × 磨损系数后的市价。未完成物无价值。"""
+    from domain.craft.quality import QUALITY_MULT, require_quality
+
+    if getattr(item, "unfinished", False):
+        return {}
+    quality = getattr(item, "quality", "普通") or "普通"
+    require_quality(quality)
+    max_d = getattr(item, "max_durability", 0) or 1
+    wear = getattr(item, "durability", max_d) / max_d
+    copper = round(price_to_copper(item.price or {}) * QUALITY_MULT[quality] * wear)
+    return copper_to_currency(int(copper))
+
+
 def price_to_text(price: dict) -> str:
     """价格转显示文本，自动归一化进位（如 50SP → 5GP 进位后显示 8GP）。"""
     normalized = copper_to_currency(price_to_copper(price))
@@ -119,9 +134,14 @@ def price_to_text(price: dict) -> str:
 def _copy_item(item) -> Item:
     """创建物品的独立副本（用于交易，避免引用同一对象）。组件化复制。"""
     return Item(
-        name=item.name, item_type=item.item_type, weight=item.weight,
+        name=item.name, item_type=dict(item.item_type), weight=item.weight,
         price=dict(item.price), description=item.description, effect=item.effect,
         amount=item.amount, count=1,
+        traits=list(item.traits),
+        quality=getattr(item, "quality", "普通"),
+        unfinished=getattr(item, "unfinished", False),
+        durability=item.durability, max_durability=item.max_durability,
+        stack_limit=getattr(item, "stack_limit", 99),
         throw_range=item.throw_range, throw_str_req=item.throw_str_req,
         throw_damage=item.throw_damage, throw_damage_type=item.throw_damage_type,
         throw_effect=item.throw_effect, becomes=item.becomes,
@@ -231,7 +251,7 @@ def shop_gold_text(shop_data: dict) -> str:
 
 # ── 交易操作 ──
 
-def trade_buy(player, shop_data: dict, stock_index: int) -> tuple[bool, str]:
+def trade_buy(player, shop_data: dict, stock_index: int, state=None) -> tuple[bool, str]:
     """玩家购买商店商品。返回 (成功, 日志消息)。"""
     stock = shop_data.get("_resolved_stock", [])
     if stock_index < 0 or stock_index >= len(stock):
@@ -246,7 +266,7 @@ def trade_buy(player, shop_data: dict, stock_index: int) -> tuple[bool, str]:
         return False, "扣款失败"
     # 创建物品副本加入背包
     new_item = _copy_item(entry["item"])
-    player.inventory.append(new_item)
+    grant_item(player, new_item, state)
     # 扣减库存
     entry["stock_qty"] = entry.get("stock_qty", 1) - 1
     if entry["stock_qty"] <= 0:
@@ -271,20 +291,20 @@ def build_creature_shop(creature) -> dict:
     }
 
 
-def trade_buy_creature(player, creature, inv_index: int) -> tuple[bool, str]:
+def trade_buy_creature(player, creature, inv_index: int, state=None) -> tuple[bool, str]:
     """玩家购买实体携带的物品。返回 (成功, 日志消息)。"""
     inv = creature.inventory
     if inv_index < 0 or inv_index >= len(inv):
         return False, "无效的商品序号"
     item = inv[inv_index]
-    price = dict(item.price) if item.price else {}
+    price = item_market_price(item)
     if not player_can_afford(player, price):
         return False, f"金币不够，需要 {price_to_text(price)}"
     if not player_pay(player, price):
         return False, "扣款失败"
     new_item = _copy_item(item)
     new_item.count = 1
-    player.inventory.append(new_item)
+    grant_item(player, new_item, state)
     if item.count > 1:
         unit_weight = item.weight / item.count
         item.count -= 1
@@ -294,12 +314,12 @@ def trade_buy_creature(player, creature, inv_index: int) -> tuple[bool, str]:
     return True, f"买到了 {item.name}，花费 {price_to_text(price)}"
 
 
-def trade_sell_creature(player, creature, inv_index: int) -> tuple[bool, str]:
+def trade_sell_creature(player, creature, inv_index: int, state=None) -> tuple[bool, str]:
     """玩家出售背包物品给实体。堆叠物品每次只卖 1 个。返回 (成功, 日志消息)。"""
     if inv_index < 0 or inv_index >= len(player.inventory):
         return False, "无效的背包序号"
     item = player.inventory[inv_index]
-    price = sell_price(item.price)
+    price = sell_price(item_market_price(item))
     if price_to_copper(price) > creature.shop_gold:
         return False, "对方没有足够的钱收购这件物品"
     creature.shop_gold -= price_to_copper(price)
@@ -312,16 +332,16 @@ def trade_sell_creature(player, creature, inv_index: int) -> tuple[bool, str]:
         del player.inventory[inv_index]
     new_item = _copy_item(item)
     new_item.count = 1
-    creature.inventory.append(new_item)
+    grant_item(creature, new_item, state)
     return True, f"卖出了 {item.name}，获得 {price_to_text(price)}"
 
 
-def trade_sell(player, shop_data: dict, inv_index: int) -> tuple[bool, str]:
+def trade_sell(player, shop_data: dict, inv_index: int, state=None) -> tuple[bool, str]:
     """玩家出售背包物品给商店。堆叠物品每次只卖 1 个。返回 (成功, 日志消息)。"""
     if inv_index < 0 or inv_index >= len(player.inventory):
         return False, "无效的背包序号"
     item = player.inventory[inv_index]
-    price = sell_price(item.price)
+    price = sell_price(item_market_price(item))
     # 检查商店资金
     shop_gold = shop_data.get("shop_gold", 0)
     if price_to_copper(price) > shop_gold:

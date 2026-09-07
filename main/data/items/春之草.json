@@ -1,0 +1,12 @@
+{
+  "name": "春之草",
+  "item_type": {
+    "material": true
+  },
+  "effect": "material",
+  "weight": 0.0,
+  "price": {
+    "cp": 5
+  },
+  "description": "清香的草叶，可以疗愈伤口"
+}

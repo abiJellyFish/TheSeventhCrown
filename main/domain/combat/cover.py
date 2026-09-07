@@ -163,3 +163,179 @@ def is_light_cover(state, pos: tuple[int, int], excluded=None) -> bool:
     if lm is not None and lm[pos] == LightLevel.DIM:
         return True
     return False
+
+
+HEIGHT_WALL = object()
+
+
+def _xyz(position) -> tuple[int, int, int]:
+    if len(position) == 3:
+        return int(position[0]), int(position[1]), int(position[2])
+    return int(position[0]), int(position[1]), 0
+
+
+def line_cells_between(origin, dest) -> list[tuple[int, int, int]]:
+    """从 origin 走到 dest 的中间格，不含两端。"""
+    x0, y0, z0 = _xyz(origin)
+    x1, y1, z1 = _xyz(dest)
+    if (x0, y0, z0) == (x1, y1, z1):
+        return []
+    dx, dy, dz = abs(x1 - x0), abs(y1 - y0), abs(z1 - z0)
+    sx = 1 if x1 >= x0 else -1
+    sy = 1 if y1 >= y0 else -1
+    sz = 1 if z1 >= z0 else -1
+    cells = []
+    if dx >= dy and dx >= dz:
+        err_y = err_z = dx // 2
+        x, y, z = x0, y0, z0
+        while x != x1:
+            x += sx
+            err_y += dy
+            err_z += dz
+            if err_y >= dx:
+                y += sy
+                err_y -= dx
+            if err_z >= dx:
+                z += sz
+                err_z -= dx
+            if (x, y, z) != (x1, y1, z1):
+                cells.append((x, y, z))
+        return cells
+    if dy >= dz:
+        err_x = err_z = dy // 2
+        x, y, z = x0, y0, z0
+        while y != y1:
+            y += sy
+            err_x += dx
+            err_z += dz
+            if err_x >= dy:
+                x += sx
+                err_x -= dy
+            if err_z >= dy:
+                z += sz
+                err_z -= dy
+            if (x, y, z) != (x1, y1, z1):
+                cells.append((x, y, z))
+        return cells
+    err_x = err_y = dz // 2
+    x, y, z = x0, y0, z0
+    while z != z1:
+        z += sz
+        err_x += dx
+        err_y += dy
+        if err_x >= dz:
+            x += sx
+            err_x -= dz
+        if err_y >= dz:
+            y += sy
+            err_y -= dz
+        if (x, y, z) != (x1, y1, z1):
+            cells.append((x, y, z))
+    return cells
+
+
+def _is_ignored(creature, ignore) -> bool:
+    return any(creature is skipped for skipped in ignore)
+
+
+def hard_blocker_at(state, cell, ignore=()) -> object | None:
+    """活体实体或高度墙。全身障碍不当硬挡。"""
+    col, row, layer = _xyz(cell)
+    for creature, position in getattr(state, "entities", ()):
+        if _is_ignored(creature, ignore) or getattr(creature, "is_dead", False):
+            continue
+        pos = _xyz(position)
+        if pos == (col, row, layer):
+            return creature
+    if state.is_height_wall((col, row), layer):
+        return HEIGHT_WALL
+    return None
+
+
+def existing_surface_cell(state, cell) -> tuple[int, int, int] | None:
+    """该三维格是否有真实存在的地表。"""
+    if cell is None:
+        return None
+    col, row, layer = _xyz(cell)
+    if state.surface_at((col, row), layer, create=False).exists:
+        return (col, row, layer)
+    return None
+
+
+def surface_for_height_wall(state, wall_cell) -> tuple[int, int, int]:
+    """高度墙只是体积概念，伤害落到挡住该体积的真实地表。正负层同一规则。
+
+    本层登记为实心则优先本层；被更高地表填实则落到更高层。
+    """
+    col, row, layer = _xyz(wall_cell)
+    walls = getattr(state, "dungeon_wall_cells", set()) or set()
+    higher = sorted(level for level in state.world_layers if level > layer)
+    lower = sorted(
+        (level for level in state.world_layers if level < layer), reverse=True
+    )
+
+    def first_existing(levels):
+        for level in levels:
+            if state.surface_at((col, row), level, create=False).exists:
+                return (col, row, level)
+        return None
+
+    if (col, row, layer) in walls:
+        found = existing_surface_cell(state, (col, row, layer))
+        if found is not None:
+            return found
+        found = first_existing(higher) or first_existing(lower)
+    else:
+        found = (
+            first_existing(higher)
+            or existing_surface_cell(state, (col, row, layer))
+            or first_existing(lower)
+        )
+    if found is not None:
+        return found
+    raise RuntimeError(f"高度墙没有对应地表: {(col, row, layer)}")
+
+
+def attack_surface_cell(state, cell) -> tuple[int, int, int] | None:
+    """攻击该格时真正扣耐久的地表；高度墙落到阻挡源。"""
+    if cell is None:
+        return None
+    col, row, layer = _xyz(cell)
+    if state.is_height_wall((col, row), layer):
+        return surface_for_height_wall(state, (col, row, layer))
+    return existing_surface_cell(state, cell)
+
+
+def first_hard_blocker(state, origin, dest, ignore=()):
+    """弹道中间第一块硬挡：(坐标, 实体或 HEIGHT_WALL)。无则 None。"""
+    for cell in line_cells_between(origin, dest):
+        found = hard_blocker_at(state, cell, ignore)
+        if found is not None:
+            return cell, found
+    dest_xyz = _xyz(dest)
+    if state.is_height_wall(dest_xyz[:2], dest_xyz[2]):
+        return dest_xyz, HEIGHT_WALL
+    return None
+
+
+def redirect_blocked_shape(state, origin, cells, shape, ignore=()):
+    """任意格被硬挡则整块改打最近阻挡物及原形状周边。未被挡则原样返回。"""
+    from domain.combat.shape import shape_cells
+    ox, oy, oz = _xyz(origin)
+    nearest = None
+    nearest_pos = None
+    nearest_dist = None
+    for cell in cells:
+        found = first_hard_blocker(state, origin, cell, ignore)
+        if found is None:
+            continue
+        pos, blocker = found
+        dist = max(abs(pos[0] - ox), abs(pos[1] - oy), abs(pos[2] - oz))
+        if nearest_dist is None or dist < nearest_dist:
+            nearest, nearest_pos, nearest_dist = blocker, pos, dist
+    if nearest is None:
+        return list(cells), None, None
+    if nearest is HEIGHT_WALL:
+        nearest_pos = surface_for_height_wall(state, nearest_pos)
+    return shape_cells(nearest_pos, shape), nearest, nearest_pos
+

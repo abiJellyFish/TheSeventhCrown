@@ -11,5 +11,8 @@
   },
   "becomes": "空玻璃瓶",
   "description": "喝掉这瓶清澈蓝色液体的生物恢复 50 点精神值",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true,
+    "fragile": true
+  }
 }

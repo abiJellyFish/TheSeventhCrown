@@ -23,9 +23,8 @@ import domain.entity as ent
 from domain.movement import Terrain
 from domain.movement import find_path
 from domain.fov import LightLevel, compute_fov
-from domain.combat.initiative import roll_initiative
-from domain.combat.attack import hit_check, roll_damage, reduce_tenacity, apply_damage_type_modifiers, parse_dice, roll_dice, resolve_attack, miss_message, cover_message, normalize_damage_type
 from domain.combat.flow import CombatFlow
+from domain.combat.attack import parse_dice, roll_dice
 from domain.map.generation import build_world
 from domain.dice import roll_d20, check_dc, roll_2d6
 
@@ -41,10 +40,11 @@ from presentation.textual.widgets import (
 from presentation.textual.screens.title_main import (
     TitleScreen, SaveSlotScreen, JourneyEndScreen,
 )
-from presentation.textual.screens.char_select import CharSelectScreen, CHARACTERS
+from presentation.textual.screens.char_select import CharSelectScreen
 import os
 from presentation.textual.controllers.inventory import InventoryMixin
 from presentation.textual.controllers.interact import InteractMixin
+from presentation.textual.controllers.craft import CraftMixin
 
 
 def _is_living_entity_target(target) -> bool:
@@ -60,9 +60,8 @@ from presentation.textual.view_models import (
     CookingToolViewModel,
     build_game_view_model,
 )
-from domain.events import combat_ended, combat_started, turn_changed
+from domain.events import combat_started, turn_changed
 from presentation.textual.fov import _update_fov
-from domain.loot import _add_to_inventory
 from infrastructure.loader import _load_dialogues, _load_scene_actions
 from domain.ai.engine import BehaviorEngine
 
@@ -115,7 +114,7 @@ class GameInput(Input):
 
 # ═════════════════════════════════ GameScreen ════════════════════════════════════
 
-class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, CommandMixin, KeybindMixin, Screen):
+class GameScreen(CraftMixin, InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, CommandMixin, KeybindMixin, Screen):
     CSS = """
     * { margin: 0; padding: 0; overflow: hidden; }
 
@@ -151,7 +150,7 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
     # ── 视图注册表：每个视图声明支持的按键和输入命令 ──
 
     _EXPLORE_KEYS = {
-        "0", "N", "g", "G", "r", "R", "comma", "F", "A", "S", "5", "T", "semicolon", ";",
+        "0", "N", "g", "G", "r", "R", "comma", "F", "A", "S", "5", "T", "O", "semicolon", ";",
         "[", "]", "L",
     }
 
@@ -161,11 +160,11 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         # ── 左栏 ──
         "explore":                {"keys": _EXPLORE_KEYS, "commands": {"D": "_cmd_facing_input"}},
         "combat_idle":            {"keys": _EXPLORE_KEYS, "commands": {"D": "_cmd_facing_input"}},
-        "combat_select_action":   {"keys": set(), "commands": {"A": "_cmd_action_input"}},
-        "combat_select_spell":    {"keys": set(), "commands": {"A": "_cmd_spell_input"}},
-        "combat_select_cast_attr": {"keys": set(), "commands": {"A": "_cmd_cast_attr_input"}},
-        "combat_select_maneuver": {"keys": set(), "commands": {"A": "_cmd_maneuver_input"}},
-        "combat_select_special":  {"keys": set(), "commands": {"A": "_cmd_special_input"}},
+        "combat_select_action":   {"keys": {"apostrophe"}, "commands": {"A": "_cmd_action_input"}},
+        "combat_select_spell":    {"keys": {"apostrophe"}, "commands": {"A": "_cmd_spell_input"}},
+        "combat_select_cast_attr": {"keys": {"apostrophe"}, "commands": {"A": "_cmd_cast_attr_input"}},
+        "combat_select_maneuver": {"keys": {"apostrophe"}, "commands": {"A": "_cmd_maneuver_input"}},
+        "combat_select_special":  {"keys": {"apostrophe"}, "commands": {"A": "_cmd_special_input"}},
         "combat_adv_select":      {"keys": set(),
                                    "commands": {"0": "_cmd_adv_select", "1": "_cmd_adv_select",
                                                 "2": "_cmd_adv_select", "3": "_cmd_adv_select",
@@ -174,48 +173,71 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
                                                 "8": "_cmd_adv_select", "9": "_cmd_adv_select"}},
         "combat_ranged_target":   {"keys": {"enter", "apostrophe", "[", "]", "1", "2", "3"},
                                    "commands": {"A": "_cmd_target_choice"}},
-        "interact_menu":          {"keys": {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}, "commands": {}},
-        "item_menu":              {"keys": {"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}, "commands": {}},
-        "talking":                {"keys": {"t", "Q", "D", "R", "0"}, "commands": {}},
-        "trading":                {"keys": {"0"}, "commands": {"B": "_cmd_trade_buy", "S": "_cmd_trade_sell"}},
-        "cooking_tools":          {"keys": set(), "commands": {"A": "_interact_cook"}},
-        "cooking":                {"keys": set(), "commands": {"A": "_interact_cook"}},
-        "chest":                  {"keys": {"0"}, "commands": {"C": "_handle_chest_take", "S": "_handle_chest_store"}},
-        "chest_qty":              {"keys": {"0"}, "commands": {"C": "_handle_chest_take_qty", "S": "_handle_chest_store_qty"}},
-        "action_menu":            {"keys": {"0"}, "commands": {"N": "_cmd_action_menu_input"}},
-        "shove_choice":           {"keys": set(), "commands": {"S": "_cmd_shove_choice"}},
-        "corpse":                 {"keys": {"0", "1", "2"}, "commands": {}},
-        "reaction":               {"keys": {"escape", "0"}, "commands": {"A": "_cmd_reaction_input"}},
-        "stealing":               {"keys": {"0"}, "commands": {"S": "_cmd_steal_input"}},
-        "steal_caught":           {"keys": {"0"}, "commands": {"S": "_cmd_steal_caught"}},
-        "party_select":           {"keys": {"1", "2", "3", "4", "0", "enter"}, "commands": {}},
+        "interact_menu":          {"keys": {"1", "2", "3", "4", "5", "6", "7", "8", "9", "apostrophe"}, "commands": {}},
+        "item_menu":              {"keys": {"1", "2", "3", "4", "5", "6", "7", "8", "9", "apostrophe"}, "commands": {}},
+        "target":                 {"keys": {"1", "2", "3", "4", "5", "6", "7", "8", "9", "apostrophe"}, "commands": {}},
+        "trading":                {"keys": {"apostrophe"}, "commands": {"B": "_cmd_trade_buy", "S": "_cmd_trade_sell"}},
+        "cook_pick":              {"keys": {"enter", "apostrophe"}, "commands": {"K": "_craft_cmd_pick", "Y": "_craft_cmd_pick"}},
+        "cook_tool":              {"keys": {"enter", "apostrophe"}, "commands": {"K": "_craft_cmd_tool", "Y": "_craft_cmd_tool"}},
+        "cook_confirm":           {"keys": {"enter", "apostrophe"}, "commands": {}},
+        "craft_list":             {"keys": {"enter", "apostrophe"}, "commands": {"Z": "_craft_cmd_list"}},
+        "craft_tool":             {"keys": {"enter", "apostrophe"}, "commands": {"Z": "_craft_cmd_tool"}},
+        "craft_product":          {"keys": {"apostrophe"}, "commands": {"Z": "_craft_cmd_work"}},
+        "craft_continue":         {"keys": {"apostrophe"}, "commands": {"Z": "_craft_cmd_continue"}},
+        "craft_adv_select":       {"keys": set(),
+                                   "commands": {"0": "_cmd_craft_adv_select", "1": "_cmd_craft_adv_select",
+                                                "2": "_cmd_craft_adv_select", "3": "_cmd_craft_adv_select",
+                                                "4": "_cmd_craft_adv_select", "5": "_cmd_craft_adv_select",
+                                                "6": "_cmd_craft_adv_select", "7": "_cmd_craft_adv_select",
+                                                "8": "_cmd_craft_adv_select", "9": "_cmd_craft_adv_select"}},
+        "chest":                  {"keys": {"apostrophe"}, "commands": {"C": "_handle_chest_take", "S": "_handle_chest_store"}},
+        "chest_qty":              {"keys": {"apostrophe"}, "commands": {"C": "_handle_chest_take_qty", "S": "_handle_chest_store_qty"}},
+        "action_menu":            {"keys": {"apostrophe"}, "commands": {"N": "_cmd_action_menu_input"}},
+        "shove_choice":           {"keys": {"apostrophe"}, "commands": {"S": "_cmd_shove_choice"}},
+        "reaction":               {"keys": {"apostrophe"}, "commands": {"A": "_cmd_reaction_input"}},
+        "stealing":               {"keys": {"apostrophe"}, "commands": {"S": "_cmd_steal_input"}},
+        "steal_caught":           {"keys": {"apostrophe"}, "commands": {"S": "_cmd_steal_caught"}},
+        "party_select":           {"keys": {"1", "2", "3", "4", "enter", "apostrophe"}, "commands": {}},
+        "party_dismiss":          {"keys": {"1", "2", "3", "4", "enter", "apostrophe"}, "commands": {}},
+        "rest_select":            {"keys": {"1", "2", "3", "4", "enter", "apostrophe"}, "commands": {}},
+        "looting":                {"keys": {"enter", "apostrophe"}, "commands": {"L": "_cmd_loot_select"}},
         # ── 右栏 ──
         "right_default":          {"keys": _RIGHT_DEFAULT_KEYS, "commands": {}},
-        "right_inventory":        {"keys": {"I", "C", "X"}, "commands": {"I": "_use_item", "U": "_handle_unequip", "W": "_swap_hands"}},
-        "right_character":        {"keys": {"C", "I", "X"}, "commands": {}},
-        "right_system":           {"keys": {"E", "escape"}, "commands": {"E": "_cmd_system_input"}},
-        "right_spellbook":        {"keys": {"B"}, "commands": {"I": "_cmd_spellbook_input"}},
-        "right_manual":           {"keys": {"E", "escape"}, "commands": {"M": "_cmd_manual_input"}},
-        "right_guide":            {"keys": {"E", "escape"}, "commands": {}},
-        "right_title":            {"keys": {"E", "escape"}, "commands": {}},
-        "right_quests":           {"keys": {"Q", "E", "escape"}, "commands": {"Q": "_cmd_quest_select"}},
-        "right_quest_detail":     {"keys": {"E", "escape"}, "commands": {}},
-        "right_item_menu":        {"keys": {"I", "escape"}, "commands": {"U": "_cmd_item_action"}},
-        "right_observe":          {"keys": {"X"}, "commands": {}},
+        "right_inventory":        {"keys": {"I", "C", "X", "apostrophe"}, "commands": {"I": "_use_item", "U": "_handle_unequip", "W": "_swap_hands"}},
+        "right_character":        {"keys": {"C", "I", "X", "apostrophe"}, "commands": {}},
+        "right_system":           {"keys": {"E", "apostrophe"}, "commands": {"E": "_cmd_system_input"}},
+        "right_spellbook":        {"keys": {"B", "apostrophe"}, "commands": {"I": "_cmd_spellbook_input"}},
+        "right_manual":           {"keys": {"E", "apostrophe"}, "commands": {"M": "_cmd_manual_input"}},
+        "right_guide":            {"keys": {"E", "apostrophe"}, "commands": {}},
+        "right_recipes":          {"keys": {"E", "apostrophe"}, "commands": {}},
+        "right_make_book":        {"keys": {"E", "apostrophe"}, "commands": {}},
+        "right_alch_book":        {"keys": {"E", "apostrophe"}, "commands": {}},
+        "right_title":            {"keys": {"E", "apostrophe"}, "commands": {}},
+        "right_quests":           {"keys": {"Q", "E", "apostrophe"}, "commands": {"Q": "_cmd_quest_select"}},
+        "right_quest_detail":     {"keys": {"E", "apostrophe"}, "commands": {}},
+        "right_item_menu":        {"keys": {"I", "apostrophe"}, "commands": {"U": "_cmd_item_action"}},
+        "right_observe":          {"keys": {"X"}, "commands": {"X": "_cmd_observe_entity_log"}},
+        "right_observe_log":      {"keys": {"X", "apostrophe"}, "commands": {"X": "_cmd_observe_entity_log"}},
     }
 
     # 交互阶段 → 左栏视图名映射（与 LeftPanel.render 分支顺序一致）
     _INTERACT_VIEWS = {
-        "menu": "interact_menu", "talking": "talking", "trading": "trading",
-        "cooking_tools": "cooking_tools", "cooking": "cooking", "chest": "chest",
+        "menu": "interact_menu", "item_menu": "item_menu", "target": "target",
+        "trading": "trading",
+        "cook_pick": "cook_pick", "cook_tool": "cook_tool", "cook_confirm": "cook_confirm",
+        "craft_list": "craft_list", "craft_tool": "craft_tool", "craft_product": "craft_product",
+        "craft_continue": "craft_continue", "craft_adv_select": "craft_adv_select",
+        "chest": "chest",
         "chest_take_qty": "chest_qty", "chest_store_qty": "chest_qty",
         "action_menu": "action_menu",
         "shove_choice": "shove_choice",
-        "corpse": "corpse",
+        "looting": "looting",
         "reaction": "reaction",
         "stealing": "stealing",
         "steal_caught": "steal_caught",
         "party_select": "party_select",
+        "party_dismiss": "party_dismiss",
+        "rest_select": "rest_select",
     }
 
     def __init__(self, char_key: str = "伊芙琳", domain: str | None = None,
@@ -261,21 +283,8 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         # build_world 统一加载所有实体（包括 fighter/mage，和其他村民一样）
         build_world(self._state, _loader)
 
-        # 玩家角色不是地图 NPC，必须从角色数据单独创建并加入世界实体集合。
-        player = _loader.load_entity(char_key)
-        if player is None:
-            raise ValueError(f"角色数据不存在: {char_key}")
-        self._state.add_entity(player, (0, 0))
-        self._state.set_controlled(player)
-        companion = next(
-            character for character in CHARACTERS if character["key"] != char_key
-        )
-        ally = _loader.load_entity(companion["key"])
-        if ally is None:
-            raise ValueError(f"盟友角色数据不存在: {companion['key']}")
-        self._state.add_entity(ally, (0, 1))
-        if not self._state.add_party_member(ally):
-            raise RuntimeError("初始盟友加入小队失败")
+        from domain.opening import apply_new_game_opening, bind_selected_character
+        player = bind_selected_character(self._state, char_key)
         # 法师领域天赋注入（角色选择页的领域选择不是装备法术书）
         if char_key == "伊芙琳" and self._domain and self._domain != "evocation":
             player.domain_talents = [self._domain]
@@ -292,6 +301,8 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
             if not self._save_manager.load(self._state, self._load_slot, _loader):
                 raise ValueError(f"存档不存在: {self._load_slot}")
             _update_fov(self._state)
+        else:
+            apply_new_game_opening(self._state)
         # 战斗流程状态机（需在 widgets 创建后初始化，使用延迟绑定）
         self._combat_flow: CombatFlow | None = None
 
@@ -343,13 +354,13 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
     }
 
     # 需要输入框获得焦点的交互阶段
-    _INTERACT_INPUT_PHASES = {"trading", "talking"}
+    _INTERACT_INPUT_PHASES = {"trading"}
 
     # 需要自动聚焦输入框的右侧面板视图（observe 不在此列）
     _FOCUS_VIEW_MODES = {"inventory", "character"}
 
     # 需要输入框获得焦点的交互阶段（扩展）
-    _FOCUS_INTERACT_PHASES = {"interact_menu", "talking"}
+    _FOCUS_INTERACT_PHASES = {"interact_menu"}
 
     def _wake_input(self) -> None:
         """唤醒输入框 — 启用并聚焦。"""
@@ -443,11 +454,11 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
 
     def _start_spell_targeting(self, spell: dict, cast_attr: str | None = None) -> None:
         """进入法术瞄准阶段：统一选格子（同远程攻击），范围允许即可选自身/空地。支持多目标。"""
+        from domain.combat.target_phase import activate_aim
         missiles = spell.get("effect", {}).get("missiles", 1)
         target_mode = spell.get("target_mode")
         if target_mode not in ("target", "area"):
             target_mode = "area" if spell.get("effect", {}).get("area") else "target"
-        self._state.observe_mode = False
         self._state.pending_attack = {
             "mode": "spell", "spell": spell,
             "cast_attr": cast_attr,
@@ -458,8 +469,12 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
             "target_shape": spell.get("target_shape", ""),
             "target_z": self._state.controlled_entity.z,
         }
-        self._state.combat_phase = "ranged_target"
-        self._state.observe_cursor = self._state.controlled_entity_pos[:2]
+        if not activate_aim(self._state):
+            self._act_log.add("无法找到合适的目标")
+            self._state.pending_attack = {}
+            self._close_input()
+            self.refresh_all()
+            return
         rng = spell.get("range", 1)
         shape_hint = f" 范围:{spell.get('target_shape')}" if spell.get("target_shape") else ""
         if missiles > 1:
@@ -480,6 +495,8 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         from domain.combat.target_phase import SurfaceTarget
 
         caster = self._state.controlled_entity
+        from domain.combat.tenacity import reset_attack_streak
+        reset_attack_streak(caster)
         pending = self._state.pending_attack or {}
         scroll = pending.get("scroll_item")
         if scroll is not None and pending.get("spell", {}).get("effect", {}).get("type") == "revive":
@@ -566,7 +583,6 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
                     target = self._state.damageables_in_shape(
                         (*target_pos, pending.get("target_z", self._state.active_z)),
                         shape_spec,
-                        visible_only=True,
                     )
             if effect_type == "damage":
                 target_mode = spell.get("target_mode") or (
@@ -581,11 +597,7 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
                     surface_cells = []
                 count, sides = parse_dice(effect.get("amount", "1d4"))
                 for col, row, z in surface_cells:
-                    if (
-                        self._state.is_in_fov((col, row, z))
-                        and self._state.is_exposed_surface((col, row, z))
-                        and self._state.surface_at((col, row), z).exists
-                    ):
+                    if self._state.surface_at((col, row), z).exists:
                         damage = roll_dice(count, sides)
                         surface_damage += damage
                         self._state.damage_surface((col, row), damage, z=z)
@@ -643,21 +655,36 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
             return
         if target.is_dead:
             return
-        self._state.in_combat = True
+        if self._state.interact_phase == "party_select":
+            self._state.interact_phase = ""
+        from domain.combat.initiative import enter_rotation, join_rotation
+        from domain.visibility import can_see
+        actor = self._state.controlled_entity
+        extras = []
+        if target not in self._state.party:
+            extras.append(target)
+        if actor is not None:
+            for creature, _pos in self._state.entities:
+                if (
+                    creature.hp > 0
+                    and creature not in extras
+                    and creature not in self._state.party
+                    and are_hostile(creature, actor)
+                    and can_see(self._state, creature, actor)
+                ):
+                    extras.append(creature)
+        if self._state.in_combat:
+            for creature in extras:
+                if join_rotation(self._state, creature):
+                    pos = self._state.get_entity_pos(creature)
+                    self._add_visible_action_log(
+                        f"{creature.name} 加入了战斗!",
+                        position=None if pos is None else pos[:2],
+                    )
+            return
+        enter_rotation(self._state, extra=extras)
         self._state.emit_event(combat_started())
         self._state._combat_ticked = False
-        self._state.controlled_entity.ap = self._state.controlled_entity.max_ap
-        combatants = [
-            member for member in self._state.party if not member.is_dead
-        ]
-        pc, pr = self._state.controlled_entity_pos[:2]
-        for creature, (ec, er, ez) in self._state.entities:
-            if creature.hp > 0 and are_hostile(creature, self._state.controlled_entity) \
-               and (ec - pc) ** 2 + (er - pr) ** 2 <= creature.vision_range ** 2:
-                if creature not in combatants:
-                    combatants.append(creature)
-                creature.ap = creature.max_ap
-        # 弹药武器：战斗开始时重置为未装填
         for item in self._state.controlled_entity.equipment.values():
             if item is not None:
                 props = getattr(item, 'properties', []) or []
@@ -667,43 +694,38 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
             props = getattr(item, 'properties', []) or []
             if "ammo" in props:
                 item.loaded = False
-
-        self._state.combat_initiative = roll_initiative(combatants)
-        self._state.combat_turn_index = 0
-
-        turn = self._state.controlled_entity if ambush else combatants[0]
+        if not self._state.combat_initiative:
+            return
+        turn = self._state.controlled_entity if ambush else self._state.combat_initiative[0]
+        if turn not in self._state.combat_initiative:
+            turn = self._state.combat_initiative[0]
         self._state.combat_turn_index = self._state.combat_initiative.index(turn)
         self._state.combat_turn_entity = turn
-        turn.ap = turn.max_ap
         self._scene_log.add("=== 战斗开始 ===")
         if turn in self._state.party:
             self._state.set_controlled(turn)
+            self._state.clear_group_move()
             self._act_log.add(f">>> {turn.name}的战斗轮 <<<")
-        else:
-            self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
-            self._state._npc_act(turn)
-            if self._state._player_reaction_pending():
-                self._maybe_open_reaction_panel()
-                self.refresh_all()
-                return
-            self._next_turn(reset_combat_ticked=False)
+            return
+        self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
+        self._state._npc_act(turn)
+        if self._state._player_reaction_pending():
+            self._maybe_open_reaction_panel()
             self.refresh_all()
             return
+        self._next_turn(reset_combat_ticked=False)
+        self.refresh_all()
 
-    def _end_combat(self) -> None:
-        if self._state.is_game_over():
-            self._open_journey_end()
-            return
-        # 当前轮未完成（敌人死在半轮等场景）→ 补推
-        if not getattr(self._state, '_combat_ticked', False):
-            self._state.clock.tick_combat_round()
-            self._state._advance_npcs(6.0, combatants=False)
-        self._state.in_combat = False; self._state.combat_initiative = []
-        self._state.combat_turn_entity = None
-        self._state.emit_event(combat_ended())
-        self._state.controlled_entity.ap = self._state.controlled_entity.max_ap
-        self._state._combat_ticked = False
-        self._scene_log.add("=== 战斗结束 ===")
+    def _clear_engagement(self) -> None:
+        """脱战：先攻去掉敌对，小队留在轮转。"""
+        from domain.combat.tenacity import convert_combat_break_to_explore
+        remaining = []
+        for creature in list(self._state.combat_initiative):
+            if creature in self._state.party and not creature.is_dead:
+                remaining.append(creature)
+            else:
+                convert_combat_break_to_explore(creature)
+        self._state.combat_initiative = remaining
 
     def _require_held_item(self, item):
         """火把等手持物在左或右手，不要求双手。不在手持栏则抛错。"""
@@ -772,31 +794,35 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         if reset_combat_ticked:
             self._state._combat_ticked = False  # 仅顶层流转重置，递归/续跑不抹掉满轮标记
 
-        # 透明网格（复用缓存，一部构建，参战拉入+脱战共用，阶段2.5）
-        from domain.fov import _line_of_sight
-        from domain.movement import sector_of
-        transparent = self._state._get_transparent_grid()
-
-        # 拉入视野内未参战的敌对生物（朝向+距离+视线，阶段2.5）
-        pc, pr = self._state.controlled_entity_pos[:2]
+        current = self._state.combat_turn_entity
+        from domain.combat.initiative import join_rotation
+        from domain.visibility import can_see
+        actor = self._state.controlled_entity
         for creature, (ec, er, ez) in self._state.entities:
-            if creature.hp > 0 and are_hostile(creature, self._state.controlled_entity) \
-               and (ec - pc) ** 2 + (er - pr) ** 2 <= creature.vision_range ** 2 \
-               and sector_of(creature.facing, (pc - ec, pr - er)) != "back" \
-               and _line_of_sight(transparent, ec, er, pc, pr) \
-               and creature not in self._state.combat_initiative:
-                creature.ap = creature.max_ap
-                self._state.combat_initiative.append(creature)
-                self._add_visible_action_log(
-                    f"{creature.name} 加入了战斗!",
-                    position=(ec, er),
-                )
+            if (
+                creature.hp > 0
+                and actor is not None
+                and are_hostile(creature, actor)
+                and creature not in self._state.combat_initiative
+                and can_see(self._state, creature, actor)
+            ):
+                if join_rotation(self._state, creature):
+                    self._add_visible_action_log(
+                        f"{creature.name} 加入了战斗!",
+                        position=(ec, er),
+                    )
+        for member in self._state.party:
+            if not member.is_dead:
+                join_rotation(self._state, member)
 
         if self._state.check_combat_visibility(self._state.controlled_entity):
-            self._act_log.add(f"{self._pn} 脱离了敌人的视野，战斗结束")
-            self._end_combat()
-            self.refresh_all()
-            return
+            hostiles = [
+                creature for creature in self._state.combat_initiative
+                if creature not in self._state.party and not creature.is_dead
+            ]
+            if hostiles:
+                self._act_log.add(f"{self._pn} 脱离了敌人的视野")
+                self._clear_engagement()
 
         alive = [e for e in self._state.combat_initiative if e is self._state.controlled_entity or not e.is_dead]
 
@@ -804,12 +830,18 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         if not alive:
             self.refresh_all()
             return
-        idx = (self._state.combat_turn_index + 1) % len(alive)
-        # 满轮 → 推进钟摆 6 + 非参战生物结算 6 钟摆
+        if current in alive:
+            idx = (alive.index(current) + 1) % len(alive)
+        else:
+            idx = 0
+        # 满轮 → 推进钟摆 6 + 非参战生物结算 6 钟摆（参战与否相同）
         if idx == 0:
             self._state.clock.tick_combat_round()
             self._state._combat_ticked = True
             self._state._advance_npcs(6.0, combatants=False)
+            from domain.combat.tenacity import expire_combat_round_statuses
+            for creature in self._state.combat_initiative:
+                expire_combat_round_statuses(creature)
         self._state.combat_turn_index = idx; turn = alive[idx]
         self._state.combat_turn_entity = turn
         if turn in self._state.party:
@@ -819,6 +851,11 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         turn.remove_status("disengaged")
         turn.remove_status("dodge")
         turn.ap = turn.max_ap
+        if turn.has_status("incapacitated"):
+            self._act_log.add(f"{turn.name} 失能，跳过此轮")
+            self._next_turn(reset_combat_ticked=False)
+            self.refresh_all()
+            return
         if turn is self._state.controlled_entity:
             self._act_log.add(f">>> {self._pn}的战斗轮 <<<")
         else:
@@ -891,9 +928,10 @@ class GameScreen(InventoryMixin, InteractMixin, TargetingMixin, NpcRunnerMixin, 
         if isinstance(desc, dict):
             desc = desc.get("enemy", desc.get("no_enemy", "")) if enemy_count else desc.get("no_enemy", desc.get("enemy", ""))
             desc = desc.replace("{player}", self._pn)
+        from domain.entity.status import format_status_names
         status_text = ""
         if c.statuses:
-            status_text = f" {', '.join(s.name for s in c.statuses)}"
+            status_text = f" {', '.join(format_status_names(c))}"
         return f"{c.name}{status_text} {hp}{desc}"
 # ═════════════════════════════════════ MVPApp ═══════════════════════════════════════
 

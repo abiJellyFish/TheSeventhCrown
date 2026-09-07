@@ -8,5 +8,8 @@
     "sp": 30
   },
   "description": "透明瓶身可聚焦阳光生火",
-  "item_type": "misc"
+  "item_type": {
+    "misc": true,
+    "fragile": true
+  }
 }

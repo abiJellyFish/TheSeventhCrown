@@ -31,6 +31,7 @@ def _update_fov(state: GameState) -> None:
         ),
         state._terrain_version,
         state._light_version,
+        state._effective_sky(),
     )
     if state._fov_cache_key == cache_key:
         return

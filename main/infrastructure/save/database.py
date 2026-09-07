@@ -19,6 +19,26 @@ from domain.grid import Grid, Terrain
 from domain.fov import LightLevel
 
 
+def _serialize_status(effect) -> dict:
+    data = {"name": effect.name, "duration": effect.duration}
+    if getattr(effect, "end_event", None):
+        data["end_event"] = effect.end_event
+    if getattr(effect, "rounds_left", None) is not None:
+        data["rounds_left"] = effect.rounds_left
+    return data
+
+
+def _restore_status(entry) -> StatusEffect:
+    if not isinstance(entry, dict):
+        return StatusEffect(name=entry)
+    return StatusEffect(
+        name=entry["name"],
+        duration=entry.get("duration"),
+        end_event=entry.get("end_event"),
+        rounds_left=entry.get("rounds_left"),
+    )
+
+
 def _parse_light_source_key(key: str) -> tuple[int, int, int]:
     parts = tuple(map(int, key.split(",")))
     if len(parts) == 3:
@@ -36,12 +56,7 @@ class SaveManager:
         Path(save_dir).mkdir(parents=True, exist_ok=True)
         self._db_path = Path(save_dir) / "saves.sqlite3"
         with sqlite3.connect(self._db_path) as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS saves (
-                slot TEXT PRIMARY KEY, created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL, location TEXT, player_level REAL,
-                version INTEGER NOT NULL, snapshot TEXT NOT NULL)"""
-            )
+            self._ensure_saves_table(conn)
             conn.execute("DELETE FROM saves WHERE version < 4")
 
     # ── 保存 ──
@@ -160,33 +175,48 @@ class SaveManager:
         with sqlite3.connect(self._db_path) as conn:
             conn.execute(
                 """INSERT INTO saves(slot, created_at, updated_at, location,
-                player_level, version, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)
+                character_level, version, snapshot) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(slot) DO UPDATE SET updated_at=excluded.updated_at,
-                location=excluded.location, player_level=excluded.player_level,
+                location=excluded.location, character_level=excluded.character_level,
                 version=excluded.version, snapshot=excluded.snapshot""",
                 (slot, now, now, state.current_map,
-                     getattr(state.controlled_entity, "class_level", 0), 4, snapshot),
+                     0 if state.controlled_entity is None
+                     else state.controlled_entity.character_level, 4, snapshot),
             )
 
     def list_slots(self) -> list[dict]:
         """返回四个存档槽的元数据。"""
         with sqlite3.connect(self._db_path) as conn:
             rows = conn.execute(
-                "SELECT slot, created_at, updated_at, location, player_level "
+                "SELECT slot, created_at, updated_at, location, character_level "
                 "FROM saves ORDER BY slot"
             ).fetchall()
         metadata = {
             row[0]: {"slot": row[0], "created_at": row[1],
                      "updated_at": row[2], "location": row[3],
-                     "player_level": row[4]}
+                     "character_level": None if row[4] is None else int(row[4])}
             for row in rows
         }
         return [
             metadata.get(slot, {"slot": slot, "created_at": None,
                                 "updated_at": None, "location": None,
-                                "player_level": None})
+                                "character_level": None})
             for slot in self.SLOT_NAMES
         ]
+
+    @staticmethod
+    def _ensure_saves_table(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS saves (
+            slot TEXT PRIMARY KEY, created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL, location TEXT, character_level INTEGER,
+            version INTEGER NOT NULL, snapshot TEXT NOT NULL)"""
+        )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(saves)")}
+        if "player_level" in columns and "character_level" not in columns:
+            conn.execute(
+                "ALTER TABLE saves RENAME COLUMN player_level TO character_level"
+            )
 
     @classmethod
     def _validate_slot(cls, slot: str) -> None:
@@ -514,8 +544,15 @@ class SaveManager:
             "hp": player.hp, "max_hp": player.max_hp,
             "mp": player.mp, "max_mp": player.max_mp,
             "tenacity": player.tenacity, "max_tenacity": player.max_tenacity,
+            "attack_streak": getattr(player, "attack_streak", 0),
+            "pending_tenacity_bonus": getattr(player, "pending_tenacity_bonus", 0),
+            "_tenacity_regen_acc": getattr(player, "_tenacity_regen_acc", 0.0),
             "ap": player.ap, "max_ap": player.max_ap,
             "courage": player.courage, "max_courage": player.max_courage,
+            "sanity": player.sanity, "max_sanity": player.max_sanity,
+            "mind": player.mind, "max_mind": player.max_mind,
+            "exhaustion_level": player.exhaustion_level,
+            "starve_pendulums": player.starve_pendulums,
             "body_type": player.body_type,
             "z": player.z,
             "climb_speed": player.climb_speed,
@@ -525,12 +562,16 @@ class SaveManager:
             "stats": dict(player.stats),
             "armor_experience": dict(player.armor_experience),
             "armor_training_progress": dict(player.armor_training_progress),
+            "craft_experience": dict(player.craft_experience),
+            "tool_experience": dict(player.tool_experience),
+            "known_recipes": list(player.known_recipes),
+            "recipe_attempts": dict(player.recipe_attempts),
             "gp": player.gp, "sp": player.sp, "cp": player.cp,
             "food_value": player.food_value,
             "food_locked": player.food_locked,
             "vision_range": player.vision_range,
             "darkvision_range": player.darkvision_range,
-            "statuses": [{"name": s.name, "duration": s.duration} for s in player.statuses],
+            "statuses": [_serialize_status(s) for s in player.statuses],
             "equipment": {
                 slot: SaveManager._serialize_item(item) if item else None
                 for slot, item in player.equipment.items()
@@ -568,6 +609,12 @@ class SaveManager:
             "durability": item.durability,
             "max_durability": item.max_durability,
             "loaded": item.loaded,
+            "quality": getattr(item, "quality", "普通"),
+            "unfinished": getattr(item, "unfinished", False),
+            "craft_progress": getattr(item, "craft_progress", 0),
+            "recipe_id": getattr(item, "recipe_id", ""),
+            "craft_tool": getattr(item, "craft_tool", ""),
+            "craft_required": getattr(item, "craft_required", 0),
         }
 
     @staticmethod
@@ -579,8 +626,13 @@ class SaveManager:
             entry.update({
                 "key": creature.template_name,
                 "pos": list(position),
-                "statuses": [{"name": s.name, "duration": s.duration} for s in creature.statuses],
+                "statuses": [_serialize_status(s) for s in creature.statuses],
                 "_looted": getattr(creature, "_looted", False),
+                "loot_rolled": getattr(creature, "loot_rolled", False),
+                "loot_drops": [
+                    SaveManager._serialize_item(item)
+                    for item in getattr(creature, "loot_drops", []) or []
+                ],
                 "_is_dead": getattr(creature, "_is_dead", False),
                 "comatose_pendulums": getattr(creature, "_comatose_pendulums", 0.0),
             })
@@ -627,22 +679,41 @@ class SaveManager:
         player.mp = data.get("mp", player.mp)
         player.max_tenacity = data.get("max_tenacity", player.max_tenacity)
         player.tenacity = data.get("tenacity", player.tenacity)
+        player.attack_streak = data.get("attack_streak", 0)
+        player.pending_tenacity_bonus = data.get("pending_tenacity_bonus", 0)
+        player._tenacity_regen_acc = float(data.get("_tenacity_regen_acc", 0.0))
         player.max_ap = data.get("max_ap", player.max_ap)
         player.ap = data.get("ap", player.ap)
         player.class_level = data.get("class_level", player.class_level)
         player.class_exp = data.get("class_exp", player.class_exp)
-        player.max_courage = data.get("max_courage", 0)
-        player.courage = min(data.get("courage", 0), player.max_courage)
+        legacy = "sanity" not in data and "max_sanity" not in data
+        max_courage = data.get("max_courage", 10)
+        courage = data.get("courage", max_courage)
+        if legacy and max_courage == 0:
+            max_courage = 10
+            courage = 10
+        player.max_courage = max_courage
+        player.courage = min(courage, player.max_courage)
+        player.max_sanity = data.get("max_sanity", 100)
+        player.sanity = min(data.get("sanity", player.max_sanity), player.max_sanity)
+        player.max_mind = data.get("max_mind", 100)
+        player.mind = min(data.get("mind", player.max_mind), player.max_mind)
+        player.exhaustion_level = data.get("exhaustion_level", 0)
+        player.starve_pendulums = float(data.get("starve_pendulums", 0.0))
         player.speed = data.get("speed", 1)
         player.stats = dict(data.get("stats", player.stats))
         player.armor_experience = dict(data.get("armor_experience", {}))
         player.armor_training_progress = dict(data.get("armor_training_progress", {}))
+        player.craft_experience = dict(data.get("craft_experience", {}))
+        player.tool_experience = dict(data.get("tool_experience", {}))
+        player.known_recipes = list(data.get("known_recipes", player.known_recipes))
+        player.recipe_attempts = dict(data.get("recipe_attempts", {}))
         player.gp = data.get("gp", 0)
         player.sp = data.get("sp", 0)
         player.cp = data.get("cp", 0)
         player.food_value = data.get("food_value", 15000)
         player.food_locked = data.get("food_locked", False)
-        player.statuses = [StatusEffect(name=s["name"], duration=s.get("duration")) if isinstance(s, dict) else StatusEffect(name=s) for s in data.get("statuses", [])]
+        player.statuses = [_restore_status(s) for s in data.get("statuses", [])]
         player.memorized_spells = data.get("memorized_spells", [])
         player.spell_slots = data.get("spell_slots", {})
         player.spell_domains = data.get("spell_domains", [])
@@ -671,37 +742,60 @@ class SaveManager:
             for slot, item_data in data.get("equipment", {}).items():
                 item_data = item_data if isinstance(item_data, dict) else {"name": item_data}
                 if item_data.get("name") and slot in player.equipment:
-                    item = loader.load_item(item_data["name"])
+                    item = SaveManager._restore_saved_item(item_data, loader)
                     if item:
-                        item.count = item_data.get("count", item.count)
-                        item.durability = item_data.get("durability", item.durability)
-                        item.max_durability = item_data.get("max_durability", item.max_durability)
-                        item.loaded = item_data.get("loaded", item.loaded)
                         player.equipment[slot] = item
             player.accessories.clear()
             for item_data in data.get("accessories", []):
                 item_data = item_data if isinstance(item_data, dict) else {"name": item_data}
-                item = loader.load_item(item_data["name"])
+                item = SaveManager._restore_saved_item(item_data, loader)
                 if item:
-                    item.count = item_data.get("count", item.count)
-                    item.durability = item_data.get("durability", item.durability)
-                    item.max_durability = item_data.get("max_durability", item.max_durability)
-                    item.loaded = item_data.get("loaded", item.loaded)
                     player.accessories.append(item)
-
-            # 背包重建
             player.inventory = []
             for entry in data.get("inventory", []):
                 item_data = entry if isinstance(entry, dict) else {"name": entry}
-                item = loader.load_item(item_data["name"])
+                item = SaveManager._restore_saved_item(item_data, loader)
                 if item:
-                    item.count = item_data.get("count", 1)
-                    item.durability = item_data.get("durability", item.durability)
-                    item.max_durability = item_data.get("max_durability", item.max_durability)
-                    item.loaded = item_data.get("loaded", item.loaded)
-                    if item.weight:
-                        item.weight = item.weight * item.count
+                    if item.weight and not item.unfinished:
+                        unit = item.weight / max(item.count, 1)
+                        item.weight = unit * item.count
                     player.inventory.append(item)
+
+    @staticmethod
+    def _overlay_item_craft(item, item_data: dict) -> None:
+        if "quality" in item_data:
+            item.quality = item_data.get("quality", item.quality)
+        item.unfinished = item_data.get("unfinished", False)
+        item.craft_progress = item_data.get("craft_progress", 0)
+        item.recipe_id = item_data.get("recipe_id", "")
+        item.craft_tool = item_data.get("craft_tool", "")
+        item.craft_required = item_data.get("craft_required", 0)
+
+    @staticmethod
+    def _restore_saved_item(item_data: dict, loader: "DataLoader"):
+        if item_data.get("unfinished"):
+            from domain.items.item import Item
+            item = Item(
+                name=item_data["name"],
+                unfinished=True,
+                recipe_id=item_data.get("recipe_id", ""),
+                craft_progress=item_data.get("craft_progress", 0),
+                craft_tool=item_data.get("craft_tool", ""),
+                craft_required=item_data.get("craft_required", 0),
+                count=item_data.get("count", 1),
+                durability=item_data.get("durability", 20),
+                max_durability=item_data.get("max_durability", 20),
+            )
+            return item
+        item = loader.load_item(item_data.get("name"))
+        if item is None:
+            return None
+        item.count = item_data.get("count", item.count)
+        item.durability = item_data.get("durability", item.durability)
+        item.max_durability = item_data.get("max_durability", item.max_durability)
+        item.loaded = item_data.get("loaded", item.loaded)
+        SaveManager._overlay_item_craft(item, item_data)
+        return item
 
     @staticmethod
     def _restore_entities(state: "GameState", data: list,
@@ -716,6 +810,12 @@ class SaveManager:
                 SaveManager._restore_player(c, entry, loader)
                 c.faction = entry.get("faction", c.faction)
                 c._looted = entry.get("_looted", False)
+                c.loot_rolled = entry.get("loot_rolled", False)
+                c.loot_drops = []
+                for drop in entry.get("loot_drops", []):
+                    item = SaveManager._restore_saved_item(drop, loader)
+                    if item is not None:
+                        c.loot_drops.append(item)
                 c._is_dead = entry.get("_is_dead", False)
                 c._comatose_pendulums = entry.get("comatose_pendulums", 0.0)
                 c.temp_traits = entry.get("temp_traits", {})

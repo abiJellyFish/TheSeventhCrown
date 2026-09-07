@@ -34,6 +34,7 @@ def visible_cells(state, observer) -> VisibilityResult:
         getattr(state, "_terrain_version", 0),
         getattr(state, "_light_version", 0),
         getattr(state, "active_z", 0),
+        state._effective_sky(),
     )
     # 先刷新空间索引；地面物品列表可能由旧调用方直接修改，
     # 不能在命中旧可见性缓存后才发现障碍坐标已经变化。

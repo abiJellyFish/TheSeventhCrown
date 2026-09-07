@@ -6,5 +6,7 @@
     "sp": 2
   },
   "description": "细腻的绒毛，易燃",
-  "item_type": "material"
+  "item_type": {
+    "material": true
+  }
 }

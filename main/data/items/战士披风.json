@@ -1,6 +1,8 @@
 {
   "name": "战士披风",
-  "item_type": "accessory",
+  "item_type": {
+    "accessory": true
+  },
   "accessory": true,
   "weight": 1.0,
   "price": {

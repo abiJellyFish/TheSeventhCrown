@@ -5,9 +5,11 @@ import os
 from textual.widgets import Static
 
 from domain.movement import Terrain, facing_label
+from domain.entity.status import format_status_names
 from domain.combat.dual_wield import dual_wield_mode, dual_wield_ap_cost
-from domain.actions import collect_actions
+from domain.actions import collect_actions, available_actions
 from domain.classes import combat_abilities
+from domain.rest import LONG_REST_PENDULUMS, SHORT_REST_PENDULUMS
 from presentation.textual.view_models import GameViewModel
 from presentation.textual.widgets.pagination import paginate_lines, to_renderable
 
@@ -32,6 +34,7 @@ class LeftPanel(Static):
         self._special_map: dict[int, str] = {}
         self._cook_map: dict = {}
         self._page_offset = 0
+        self._last_identity = None
 
     def set_view_model(self, view_model: GameViewModel, *, refresh: bool = True) -> None:
         self.view_model = view_model
@@ -50,9 +53,22 @@ class LeftPanel(Static):
     def state(self):
         return self.view_model.snapshot if self.view_model is not None else None
 
+    def _panel_identity(self) -> str:
+        state = self.state
+        if state is None:
+            return ""
+        iphase = getattr(state, "interact_phase", "") or ""
+        if iphase:
+            return f"interact:{iphase}"
+        return f"combat:{getattr(state, 'combat_phase', 'idle') or 'idle'}"
+
     def render(self) -> str:
         if self.state is None:
             return ""
+        identity = self._panel_identity()
+        if self._last_identity is not None and identity != self._last_identity:
+            self._page_offset = 0
+        self._last_identity = identity
         content = self._build_panel_content()
         try:
             content_region = self.content_region
@@ -84,14 +100,16 @@ class LeftPanel(Static):
             return self._render_interact_menu()
         if iphase == "item_menu":
             return self._render_item_interact_panel()
-        if iphase == "talking":
-            return self._render_talk_panel()
+        if iphase == "target":
+            return self._render_target_panel()
+        if iphase == "looting":
+            return self._render_loot_panel()
         if iphase == "trading":
             return self._render_trade_panel()
-        if iphase == "cooking_tools":
-            return self._render_cooking_tools()
-        if iphase == "cooking":
-            return self._render_cooking_panel()
+        if iphase in ("cook_pick", "cook_tool", "cook_confirm",
+                      "craft_list", "craft_tool", "craft_product",
+                      "craft_continue", "craft_adv_select"):
+            return self._render_craft_panel()
         if iphase == "chest":
             return self._render_chest_panel()
         if iphase == "chest_take_qty":
@@ -102,8 +120,6 @@ class LeftPanel(Static):
             return self._render_action_menu()
         if iphase == "shove_choice":
             return self._render_shove_choice()
-        if iphase == "corpse":
-            return self._render_corpse_panel()
         if iphase == "reaction":
             return self._render_reaction_panel()
         if iphase == "stealing":
@@ -112,6 +128,10 @@ class LeftPanel(Static):
             return self._render_steal_caught_panel()
         if iphase == "party_select":
             return self._render_party_select_panel()
+        if iphase == "party_dismiss":
+            return self._render_party_dismiss_panel()
+        if iphase == "rest_select":
+            return self._render_rest_select_panel()
         # ── 攻击流程子面板 — 探索/战斗模式共用 ──
         phase = self.state.combat_phase
         if (self.state.pending_attack or {}).get("target_choice_active"):
@@ -151,19 +171,15 @@ class LeftPanel(Static):
             "",
         ]
         idx = 1
-        for item in list_available_reactions(p):
+        for item in list_available_reactions(p, ev["kind"]):
             if item["kind"] == "opportunity_attack":
                 weapon = default_melee_weapon(p)
                 cost = weapon_ap_cost(weapon)
-                ok = p.ap >= cost
-                line = f"[[A{idx}]]{item['name']}  AP:{cost}"
-                if not ok:
-                    line = f"[dim][[A{idx}]]{item['name']}  AP:{cost}（AP 不足）[/]"
-                lines.append(line)
+                lines.append(f"[[A{idx}]]{item['name']}  AP:{cost}")
             elif item["kind"] == "shield":
                 lines.append(f"[[A{idx}]]{item['name']}")
             idx += 1
-        lines.extend(["[[A0]]放弃", "", "[[Esc]]放弃"])
+        lines.extend(["[[']]取消"])
         return "\n".join(lines)
 
     def _knockout_line(self) -> str:
@@ -182,6 +198,7 @@ class LeftPanel(Static):
             self._stealth_line(),
             r"] 向高处攀爬  \[ 向低处攀爬  L 松手",
             "[[;]]多选成员移动",
+            "[[O]]遣散成员",
             "[[D1]]北 [[D2]]东 [[D3]]南 [[D4]]西",
         ])
 
@@ -198,21 +215,14 @@ class LeftPanel(Static):
             "[[A]]攻击 [[S]]法术  " + self._knockout_line(),
             self._stealth_line(),
             r"] 向高处攀爬  \[ 向低处攀爬  L 松手",
+            "[[O]]遣散成员",
             "[[D1]]北 [[D2]]东 [[D3]]南 [[D4]]西",
         ]
         return "\n".join(lines)
 
     def _combat_mode_line(self) -> str:
         if self.state.in_combat:
-            party = getattr(self.state, "party", [])
-            status = (
-                "参战中"
-                if any(
-                    not any(member is participant for member in party)
-                    for participant in self.state.combat_initiative
-                )
-                else "未参战"
-            )
+            status = "参战中" if self.state.is_engaged() else "未参战"
             return f"[[T]]探索模式（{status}）"
         return "[[T]]轮转模式"
 
@@ -230,7 +240,7 @@ class LeftPanel(Static):
                 f"{member.name}{status}",
                 f"HP {member.hp}/{member.max_hp}",
                 f"MP {member.mp}/{member.max_mp}",
-                f"TEN {member.tenacity}/{member.max_tenacity}",
+                f"TEN {member.tenacity}/{member.tenacity_cap()}",
             ])
 
         width = getattr(getattr(self, "content_region", None), "width", 0)
@@ -258,24 +268,20 @@ class LeftPanel(Static):
 
     def _render_action_menu(self) -> str:
         """动作子面板：扫描实体 actions 动态生成（D22）。"""
-        actions = self.state.controlled_entity.actions
+        actions = available_actions(self.state.controlled_entity)
         lines = ["[bold]── 动作 ──[/]", ""]
         for i, a in enumerate(actions, 1):
             name = a.get("name", a.get("key", "?"))
             cost_ap = a.get("cost_ap", 0)
             cost_p = a.get("cost_pendulum", 0)
-            # 躲藏始终显示"躲藏"（起身改为独立动作 stand，阶段7.5/7.6）
-            # 起身按状态动态显示费用；无倒地/躲藏状态时不显示起身
             if a.get("key") == "stand":
                 prone = self.state.controlled_entity.has_status("prone")
                 hiding = self.state.controlled_entity.has_status("hiding")
-                if not prone and not hiding:
-                    continue
                 cost_ap = 30 if prone else 20
                 cost_p = 3 if prone else 2
             lines.append(f"[[N{i}]]{name}  AP:{cost_ap} 钟摆:{cost_p}")
         lines.append("")
-        lines.append("[[N0]]返回")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
     def _render_shove_choice(self) -> str:
@@ -289,45 +295,65 @@ class LeftPanel(Static):
             "[[S1]]撞倒  —  使目标倒地",
             "[[S2]]推开  —  将目标推离 1 格",
             "",
-            "[[S0]]取消",
+            "[[']]取消",
         ])
-
-    def _render_corpse_panel(self) -> str:
-        """尸体面板：搜刮 / 捡起。"""
-        target = getattr(self.state, 'interact_target', None)
-        c = target.creature if target else None
-        if c is None:
-            return "── 尸体 ──\n\n(目标已消失)\n\n[[0]]离开"
-        looted = getattr(c, '_looted', False)
-        loot_label = "搜刮(已搜刮)" if looted else "搜刮"
-        lines = [
-            "[bold]── 尸体 ──[/]",
-            c.name,
-            "",
-            f"[[1]]{loot_label}",
-        ]
-        if getattr(c, 'corpse', None) is not None:
-            lines.append("[[2]]捡起")
-        lines.append("")
-        lines.append("[[0]]离开")
-        return "\n".join(lines[:self.size.height])
 
     def _render_party_select_panel(self) -> str:
         """多选小队成员移动面板。"""
         st = self.state
         lines = ["[bold]── 选择同行成员 ──[/]", ""]
-        leader = st.controlled_entity
+        controlled = st.controlled_entity
         members = [m for m in st.party if not m.is_dead]
         for idx in range(4):
             if idx >= len(members):
                 lines.append(f"[[{idx + 1}]] 空位")
                 continue
             member = members[idx]
-            leader_mark = " (当前)" if member is leader else ""
+            current_mark = " (当前)" if member is controlled else ""
             selected = id(member) in st.selected_party_members
             mark = "✓" if selected else " "
-            lines.append(f"[[{idx + 1}]] [{mark}] {member.name}{leader_mark}")
-        lines.extend(["", "[[Enter]]确认  [[0]]取消"])
+            lines.append(f"[[{idx + 1}]] [{mark}] {member.name}{current_mark}")
+        lines.extend(["", "[[Enter]]确认  [[']]取消"])
+        return "\n".join(lines)
+
+    def _render_party_dismiss_panel(self) -> str:
+        """遣散小队成员面板。列出全部槽位（含死者）；当前受控者不可勾选。"""
+        st = self.state
+        lines = ["[bold]── 遣散成员 ──[/]", ""]
+        controlled = st.controlled_entity
+        members = list(st.party)
+        selected = getattr(st, "selected_dismiss_members", set())
+        for idx in range(4):
+            if idx >= len(members):
+                lines.append(f"[[{idx + 1}]] 空位")
+                continue
+            member = members[idx]
+            current_mark = " (当前)" if member is controlled else ""
+            mark = "✓" if id(member) in selected else " "
+            lines.append(f"[[{idx + 1}]] [{mark}] {member.name}{current_mark}")
+        lines.extend(["", "[[Enter]]遣散  [[']]取消"])
+        return "\n".join(lines)
+
+    def _render_rest_select_panel(self) -> str:
+        """短休/长休多选成员面板。"""
+        st = self.state
+        kind = "短休" if st.pending_rest_kind == "short" else "长休"
+        duration = SHORT_REST_PENDULUMS if st.pending_rest_kind == "short" else LONG_REST_PENDULUMS
+        lines = [f"[bold]── 选择一同{kind}的成员 ──[/]", f"{duration} 钟摆", ""]
+        controlled = st.controlled_entity
+        members = [m for m in st.party if not m.is_dead]
+        for idx in range(4):
+            if idx >= len(members):
+                lines.append(f"[[{idx + 1}]] 空位")
+                continue
+            member = members[idx]
+            current_mark = " (当前)" if member is controlled else ""
+            engaged = st.is_engaged(member)
+            selected = id(member) in st.selected_rest_members
+            mark = "✓" if selected else " "
+            extra = " 参战" if engaged else ""
+            lines.append(f"[[{idx + 1}]] [{mark}] {member.name}{current_mark}{extra}")
+        lines.extend(["", "[[Enter]]确认  [[']]取消"])
         return "\n".join(lines)
 
 
@@ -338,12 +364,16 @@ class LeftPanel(Static):
         actions = collect_actions(self.state)
         # CombatFlow 持有该字典的同一引用；原地更新，避免渲染后替换引用导致流程仍使用空映射。
         self._action_map.clear()
-        lines = ["── 选择攻击方式 ──"]
+        title = "── 选择攻击方式 ──"
+        player = self.state.controlled_entity
+        if getattr(player, "pending_tenacity_bonus", 0):
+            title += " 连击"
+        lines = [title]
         for i, a in enumerate(actions, 1):
             self._action_map[i] = (a["mode"], a["weapon"])
             lines.append(f"[[A{i}]]{a['label']}")
         self._action_map[0] = ("cancel", None)
-        lines.append("[[A0]]取消")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
     def _render_spell_panel(self) -> str:
@@ -363,7 +393,7 @@ class LeftPanel(Static):
             lines.append(f"[[A{i}]]{s['name']}  MP:{mp}  AP:{ap}  {rng_str}")
         for i in range(used + 1, total_slots + 1):
             lines.append(f"[[A{i}]](空位)")
-        lines.append("[[A0]]取消")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
     _STAT_LABELS = {"str": "力量", "dex": "敏捷", "con": "体质", "int": "智力", "wis": "感知", "cha": "魅力"}
@@ -377,7 +407,7 @@ class LeftPanel(Static):
         for i, a in enumerate(attrs, 1):
             label = self._STAT_LABELS.get(a, a)
             lines.append(f"[[A{i}]]{label}")
-        lines.append("[[A0]]取消")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
     def _render_aim_panel(self) -> str:
@@ -484,7 +514,7 @@ class LeftPanel(Static):
                 lines.append(f"目标: {ent.name}{self_tag} {faction_tag}")
                 lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)  AC {ent.total_ac('chest')}")
                 if ent.statuses:
-                    lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+                    lines.append(f"  状态: {', '.join(format_status_names(ent))}")
         elif ground is not None:
             obstacle = getattr(ground, "obstacle_type", "")
             obstacle_name = getattr(obstacle, "value", obstacle) or "无"
@@ -528,7 +558,7 @@ class LeftPanel(Static):
                 label = getattr(target, "name", str(target))
                 detail = ""
             lines.append(f"[[A{index}]]{label}  {detail}")
-        lines.extend(["", "[[A0]]取消"])
+        lines.extend(["", "[[']]取消"])
         return "\n".join(lines)
 
     def _render_adv_select_panel(self) -> str:
@@ -597,7 +627,7 @@ class LeftPanel(Static):
             self._special_map[i] = action["name"]
             lines.append(f"[[A{i}]]{action['name']}  AP+{action['ap_extra']}")
         self._special_map[0] = None
-        lines.append("[[A0]]放弃下位动作")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
 
@@ -610,84 +640,72 @@ class LeftPanel(Static):
         for i, t in enumerate(targets, 1):
             lines.append(f"[[{i}]]{t.label}")
         lines.append("")
-        lines.append("[[0]]离开")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
     def _render_item_interact_panel(self) -> str:
         target = self.state.interact_target
         if target is None:
-            return "── 物品 ──\n\n(无目标)\n\n[[0]]离开"
+            return "── 物品 ──\n\n(无目标)\n\n[[']]取消"
         items = target.extra.get("items", [])
         lines = [f"[bold]── {target.label} ──[/]", ""]
+        from presentation.textual.controllers.craft import item_quality_label
         for item in items:
             obstacle = getattr(getattr(item, "obstacle_type", None), "value",
                                getattr(item, "obstacle_type", None))
             durability = f"耐久 {item.durability}/{item.max_durability}"
             suffix = f"  障碍:{obstacle}" if obstacle else ""
-            lines.append(f"{item.name} x{item.count}  {durability}{suffix}")
-        can_pickup = any(
-            getattr(getattr(item, "obstacle_type", None), "value",
-                    getattr(item, "obstacle_type", None)) != "full"
-            and getattr(item, "can_pickup", True)
-            for item in items
-        )
-        has_container = any(
-            getattr(item, "chest_data", None) is not None
-            for item in items
-        )
-        is_bush = any("灌木" in item.name for item in items)
-        option_index = 1
-        if has_container:
-            lines.extend(["", f"[[{option_index}]]打开"])
-            option_index += 1
-        if is_bush:
-            lines.extend(["", f"[[{option_index}]]采摘"])
-            option_index += 1
-        if can_pickup:
-            lines.append(f"[[{option_index}]]捡起")
-        if not has_container and not is_bush and not can_pickup:
+            lines.append(f"{item_quality_label(item)} x{item.count}  {durability}{suffix}")
+        from domain.interact import item_interact_options
+        options = item_interact_options(self.state, target)
+        if options:
+            lines.append("")
+        for index, (_action, label) in enumerate(options, 1):
+            lines.append(f"[[{index}]]{label}")
+        if not options:
             lines.extend(["", "该物品不可捡起"])
-        lines.append("[[0]]离开")
+        lines.append("[[']]取消")
         return "\n".join(lines)
 
-    def _render_talk_panel(self) -> str:
-        """交谈面板。"""
+    def _render_target_panel(self) -> str:
+        """对象个人交互面板：名称、态度、阵营，选项并列。"""
+        from domain.faction import get_attitude
+        from domain.interact import creature_interact_options
         target = self.state.interact_target
         if target is None or target.creature is None:
-            return "── 交谈 ──\n\n(无目标)\n\n[[0]]离开"
-        c = target.creature
-        lines = [
-            f"[bold]── 与{c.name}交谈 ──[/]",
-            "",
-        ]
-        # 显示基本状态
-        hp_pct = c.hp / max(c.max_hp, 1) * 100
-        faction_tag = {"混乱": "[red]敌对[/]", "守序": "[green]友好[/]",
-                       "中立": "[yellow]中立[/]"}.get(c.faction, c.faction)
-        lines.append(f"HP {c.hp}/{c.max_hp} ({hp_pct:.0f}%)  {faction_tag}")
-        if c.statuses:
-            lines.append(f"状态: {', '.join(s.name for s in c.statuses)}")
-        lines.append("")
-        # 交易选项：非敌对且非野兽 → 可交易（P1 3.2 所有实体默认交易自身携带物品）
-        from domain.entity import are_hostile
+            return "── 【？】 ──\n\n(无目标)\n\n[[']]取消"
+        creature = target.creature
         player = self.state.controlled_entity
-        if not are_hostile(c, player) and c.body_type != "beast":
-            lines.append("[[T]]交易")
-        from domain.faction import get_attitude
-        if (not getattr(c, "party_member", False)
-                and get_attitude(c, player) in ("友好", "冷漠")):
-            recruit_hint = "（需要5GP）" if c.name == "商人" or c.shop_id else ""
-            lines.append(f"[[R]]招募{recruit_hint}")
-        # 委托选项：所有非野兽实体可询问，无任务由 handler 提示（P1 3.4）
-        if c.body_type != "beast":
-            lines.append("[[Q]]询问委托")
-        # 交付任务：目标发布的任务有已接取未完成的（P1 3.4）
-        from domain.quest import quests_by_giver
-        giver_quests = [q.name for q in quests_by_giver(c.name)
-                        if q.name in self.state.active_quests]
-        if giver_quests:
-            lines.append("[[D]]交付任务")
-        lines.append("[[0]]离开")
+        lines = [f"[bold]── 【{creature.name}】 ──[/]", ""]
+        attitude = get_attitude(creature, player) if player is not None else ""
+        info = f"阵营 {creature.faction}"
+        if attitude:
+            info = f"态度 {attitude}  {info}"
+        lines.append(info)
+        lines.append("")
+        for index, (_action, label) in enumerate(
+            creature_interact_options(self.state, creature), 1
+        ):
+            lines.append(f"[[{index}]]{label}")
+        lines.append("[[']]取消")
+        return "\n".join(lines)
+
+    def _render_loot_panel(self) -> str:
+        """搜刮面板：勾选后回车拿走。"""
+        from domain.loot import list_loot_entries
+        target = getattr(self.state, "interact_target", None)
+        creature = target.creature if target else None
+        if creature is None:
+            return "── 搜刮 ──\n\n(目标已离开)\n\n[[']]取消"
+        selected = getattr(self.state, "loot_selected", set())
+        lines = [f"[bold]── 搜刮 {creature.name} ──[/]", ""]
+        entries = list_loot_entries(creature)
+        if not entries:
+            lines.append("(空)")
+        for index, entry in enumerate(entries, 1):
+            mark = "✓" if entry["id"] in selected else " "
+            lines.append(f"[[L{index}]] [{mark}] {entry['label']}")
+        lines.extend(["", ":L序号 选择  [[Enter]]拿走  [[']]取消"])
         return "\n".join(lines)
 
     def _render_steal_panel(self) -> str:
@@ -696,7 +714,7 @@ class LeftPanel(Static):
         st = self.state
         target = st.steal_target
         if target is None:
-            return "── 偷窃 ──\n\n(目标已离开)\n\n[0] 离开"
+            return "── 偷窃 ──\n\n(目标已离开)\n\n[[']]取消"
         lines = [f"[bold]── 偷窃 {target.name} ──[/]", ""]
         if st.steal_stolen:
             lines.append(f"已偷到: {', '.join(i.name for i in st.steal_stolen)}")
@@ -708,7 +726,7 @@ class LeftPanel(Static):
         else:
             lines.append("  (身上空无一物)")
         lines.append("")
-        lines.append("[:S序号] 偷窃  [0] 离开")
+        lines.append("[:S序号] 偷窃  [[']]取消")
         return "\n".join(lines)
 
     def _render_steal_caught_panel(self) -> str:
@@ -725,7 +743,7 @@ class LeftPanel(Static):
             "[[4]]威胁（未实装）",
             "[[5]]欺瞒（未实装）",
             "",
-            "[:S序号] 选择  [0] 离开",
+            "[:S序号] 选择  [[']]取消",
         ]
         return "\n".join(lines)
 
@@ -737,7 +755,7 @@ class LeftPanel(Static):
         shop = self.state.shop_data
         p = self.state.controlled_entity
         if shop is None:
-            return "── 交易 ──\n\n商店数据异常\n\n[[0]]离开"
+            return "── 交易 ──\n\n商店数据异常\n\n[[']]取消"
 
         shop_name = shop.get("name", "商店")
         wealth = copper_to_currency(player_wealth_copper(p))
@@ -773,41 +791,114 @@ class LeftPanel(Static):
             lines.append("  (无可出售物品)")
 
         lines.append("")
-        lines.append(":B序号 购买  :S序号 出售  [[0]]离开")
+        lines.append(":B序号 购买  :S序号 出售  [[']]取消")
         return "\n".join(lines)
 
 
-    # ── 烹饪面板 ──
+    # ── 烹饪 / 制作 / 炼药 ──
 
-    def _render_cooking_tools(self) -> str:
-        """厨具选择面板。"""
-        tools = self.view_model.cooking_tools
-        lines = ["[bold]── 选择厨具 ──[/]", ""]
-        if not tools:
-            lines.append("附近没有可用的厨具")
-        else:
-            for i, tool in enumerate(tools):
-                lines.append(f"[[A{i+1}]]{tool.name}")
-        lines.append("")
-        lines.append("[[A0]]返回")
-        return "\n".join(lines)
+    def _render_craft_panel(self) -> str:
+        from presentation.textual.controllers.craft import item_info_text
+        from domain.craft.recipe import (
+            HANDS,
+            effective_required,
+            make_recipe_by_output,
+            match_from_materials,
+            time_for_tool,
+        )
 
-    def _render_cooking_panel(self) -> str:
-        """烹饪原材料选择面板。"""
-        from presentation.textual.controllers.interact import RECIPES
-        player = self.state.controlled_entity
-        selected_tool = self.view_model.selected_cooking_tool
-        tool_name = selected_tool.name if selected_tool is not None else "?"
-        lines = [f"[bold]── 烹饪（{tool_name}）──[/]", ""]
-        idx = 1
-        for item in player.inventory:
-            if item.name in RECIPES:
-                lines.append(f"[[A{idx}]]{item.name} x{item.count}")
-                idx += 1
-        if idx == 1:
-            lines.append("没有可烹饪的食材")
-        lines.append("")
-        lines.append("[[A0]]返回")
+        ip = self.state.interact_phase
+        data = getattr(self.state, "pending_craft", {}) or {}
+        kind = data.get("kind", "cook")
+        titles = {"cook": "烹饪", "alchemy": "炼药", "make": "制作"}
+        title = titles.get(kind, "制作")
+        if ip == "cook_pick":
+            lines = [f"[bold]── {title}：选择材料 ──[/]", ""]
+            names = data.get("pick_names") or []
+            pick = data.get("pick") or {}
+            prefix = "Y" if kind == "alchemy" else "K"
+            for i, name in enumerate(names, 1):
+                lines.append(f"[[{prefix}{i}]]{item_info_text(name)}")
+            if pick:
+                lines.append("")
+                lines.append("已选: " + " ".join(f"{n}x{c}" for n, c in pick.items()))
+            lines.append(f"已选 {sum(pick.values())}/5 份")
+            lines.append("回车下一层  ' 退出")
+            return "\n".join(lines)
+        if ip == "cook_tool" or ip == "craft_tool":
+            prefix = "Z" if kind == "make" else ("Y" if kind == "alchemy" else "K")
+            from domain.craft.stations import available_tools
+            pos = self.state.controlled_entity_pos
+            backpack = ("皮革工具",) if kind == "make" else (
+                ("捣药钵",) if kind == "alchemy" else ()
+            )
+            tools = available_tools(self.state, pos, backpack)
+            lines = [f"[bold]── {title}：选择工具 ──[/]", ""]
+            for i, name in enumerate(tools, 1):
+                mark = " *" if name == data.get("tool") else ""
+                lines.append(f"[[{prefix}{i}]]{name}{mark}")
+            back = "返回成品列表" if kind == "make" else "返回材料"
+            lines.append(f"回车确认  ' {back}")
+            return "\n".join(lines)
+        if ip == "cook_confirm":
+            pick = data.get("pick") or {}
+            tool = data.get("tool", HANDS)
+            lines = [f"[bold]── {title}：确认 ──[/]", ""]
+            for name, count in pick.items():
+                lines.append(f"  {item_info_text(name, count)}")
+            lines.append(f"工具: {tool}")
+            try:
+                recipe = match_from_materials(kind, pick, tool)
+            except ValueError:
+                lines.append("没有匹配的配方")
+            else:
+                out_name, out_count = recipe.output
+                lines.append(f"产出: {item_info_text(out_name, out_count)}")
+                lines.append("所需材料:")
+                for mat, qty in effective_required(recipe, tool).items():
+                    lines.append(f"  {item_info_text(mat, qty)}")
+                lines.append(f"所需时间: {time_for_tool(recipe, tool)} 钟摆")
+            lines.append("回车执行  ' 返回工具")
+            return "\n".join(lines)
+        if ip == "craft_list":
+            lines = ["[bold]── 制作：成品列表 ──[/]", ""]
+            from domain.craft.recipe import BY_CRAFT
+            player = self.state.controlled_entity
+            idx = 1
+            for recipe in BY_CRAFT.get("make", ()):
+                if recipe.id in player.known_recipes:
+                    lines.append(f"[[Z{idx}]]{item_info_text(recipe.output[0], recipe.output[1])}")
+                    idx += 1
+            if idx == 1:
+                lines.append("  (没有已知制作表)")
+            lines.append("' 退出")
+            return "\n".join(lines)
+        if ip == "craft_product":
+            name = data.get("product", "")
+            recipe = make_recipe_by_output(name)
+            tool = data.get("tool") or HANDS
+            lines = ["[bold]── 制作：成品 ──[/]", "", item_info_text(name)]
+            lines.append("材料:")
+            for mat, qty in recipe.required.items():
+                lines.append(f"  {item_info_text(mat, qty)}")
+            lines.append(f"所需时间: {time_for_tool(recipe, tool)} 钟摆")
+            lines.append(f"工具: {tool}")
+            lines.append(":Z钟摆数 开始  ' 返回工具")
+            return "\n".join(lines)
+        if ip == "craft_continue":
+            lines = [
+                "[bold]── 继续制作 ──[/]",
+                "",
+                data.get("continue_name", ""),
+                f"已做/所需: {data.get('continue_progress', 0)}/{data.get('continue_required', 0)}",
+                ":Z钟摆数  ' 退出",
+            ]
+            return "\n".join(lines)
+        rolls = data.get("rolls") or []
+        lines = ["── 优势! 选择点数 ──"]
+        for i, face in enumerate(rolls, 1):
+            lines.append(f"  [[{i}]] {face}")
+        lines.append("输入序号选择其中一个点数")
         return "\n".join(lines)
 
 
@@ -815,7 +906,7 @@ class LeftPanel(Static):
         """箱子交互面板：拿取区 + 存放区。"""
         target = getattr(self.state, 'interact_target', None)
         if target is None:
-            return "── 箱子 ──\n\n(数据异常)\n\n[0] 离开"
+            return "── 箱子 ──\n\n(数据异常)\n\n[[']]取消"
 
         chest_data = target.extra.get("chest_data", {})
         label = chest_data.get("label", "箱子")
@@ -849,26 +940,26 @@ class LeftPanel(Static):
             lines.append("  (背包为空)")
         lines.append("")
 
-        lines.append(":C序号 拿取  :S序号 存放  [0] 离开")
+        lines.append(":C序号 拿取  :S序号 存放  [[']]取消")
         return "\n".join(lines)
 
     def _render_chest_qty_panel(self, mode: str) -> str:
         """箱子数量选择面板。mode: "take" | "store" """
         target = getattr(self.state, 'interact_target', None)
         if target is None:
-            return "── 箱子 ──\n\n(数据异常)\n\n[0] 返回"
+            return "── 箱子 ──\n\n(数据异常)\n\n[[']]取消"
         extra = target.extra
         item = extra.get("_qty_item")
         max_qty = extra.get("_qty_max", 1)
         if item is None:
-            return "── 箱子 ──\n\n(数据异常)\n\n[0] 返回"
+            return "── 箱子 ──\n\n(数据异常)\n\n[[']]取消"
         action = "拿取" if mode == "take" else "存放"
         prefix = "C" if mode == "take" else "S"
         return "\n".join([
             f"[bold]── {action} {item.name} ──[/]",
             f"可选: 1 - {max_qty}",
             "",
-            f"输入 :{prefix}数量 确认  [0] 返回",
+            f"输入 :{prefix}数量 确认  [[']]取消",
         ])
 
 

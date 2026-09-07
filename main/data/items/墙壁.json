@@ -1,6 +1,8 @@
 {
   "name": "墙壁",
-  "item_type": "obstacle",
+  "item_type": {
+    "obstacle": true
+  },
   "weight": 0,
   "description": "全身障碍。",
   "durability": 80,

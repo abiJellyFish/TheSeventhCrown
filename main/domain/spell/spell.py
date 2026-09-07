@@ -162,12 +162,10 @@ def spell_save_dc(caster: Entity, spell: dict, attribute: str | None = None) -> 
 
 
 def spell_saving_throw(target: Entity, dc: int, ability: str = "dex") -> bool:
-    """目标进行豁免检定。返回 True = 豁免成功。
-    回避状态下敏捷豁免具有优势（阶段7 D19）。"""
-    from domain.dice import roll_d20, check_total
-    adv = 1 if (ability == "dex" and target.has_status("dodge")) else 0
-    roll = roll_d20(advantage=adv)
-    return check_total(target, roll, target.stat_adjust(ability)) >= dc
+    """目标进行豁免检定。返回 True = 豁免成功。"""
+    from domain.checks import saving_throw
+    _, total = saving_throw(target, ability)
+    return total >= dc
 
 
 def resolve_spell(caster: Entity, target: Entity | None,

@@ -6,7 +6,9 @@
     "sp": 5
   },
   "description": "长杖，可单手或双手持用",
-  "item_type": "weapon",
+  "item_type": {
+    "weapon": true
+  },
   "weapon": {
     "weapon_type": "melee",
     "category": "simple",

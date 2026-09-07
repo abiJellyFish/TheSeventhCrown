@@ -4,9 +4,21 @@ from textual.widgets import Static
 
 from domain.entity import get_attitude, get_favor
 from domain.classes import class_exp_progress, format_class_route_lines
+from domain.fov import LightLevel
 from domain.movement import Terrain, facing_label
+from domain.entity.status import format_status_names
 from presentation.textual.view_models import GameViewModel
 from presentation.textual.widgets.pagination import paginate_lines, to_renderable
+from presentation.textual.widgets.observe_log import render_observe_entity_log
+from presentation.textual.controllers.craft import item_quality_label
+from presentation.textual.widgets.item_display import format_item_detail_lines
+from domain.items.item import format_item_type_labels
+
+_BRIGHTNESS = {
+    LightLevel.BRIGHT: "明亮",
+    LightLevel.DIM: "微光",
+    LightLevel.DARK: "黑暗",
+}
 
 
 class RightPanel(Static):
@@ -17,9 +29,10 @@ class RightPanel(Static):
         # "default" | "inventory" | "character" | "system" | "spellbook"
         # | "quests" | "manual" | "title" | "quest_detail" | "guide"
         self.view_mode = "default"
+        self._page_offset = 0
+        self._last_identity = None
         self.selected_quest: str = ""    # 任务详情页当前选中的任务名
         self._quests_back: str = "default"  # 任务面板返回目标（default 快捷 / manual 手册进入）
-        self._page_offset = 0
 
     def set_view_model(self, view_model: GameViewModel, *, refresh: bool = True) -> None:
         """接收只读展示快照；state 仅作为旧版复杂面板的兼容桥。"""
@@ -39,9 +52,24 @@ class RightPanel(Static):
     def state(self):
         return self.view_model.snapshot if self.view_model is not None else None
 
+    def _panel_identity(self) -> str:
+        mode = getattr(self, "view_mode", "default")
+        state = self.state
+        if state is None:
+            return f"view:{mode}"
+        if getattr(state, "item_menu_stack", None):
+            return f"item_menu:{len(state.item_menu_stack)}"
+        if getattr(state, "observe_mode", False):
+            return f"observe:{getattr(state, 'observe_log_id', None)}"
+        return f"view:{mode}"
+
     def render(self) -> str:
         if self.view_model is None:
             return ""
+        identity = self._panel_identity()
+        if self._last_identity is not None and identity != self._last_identity:
+            self._page_offset = 0
+        self._last_identity = identity
         content = self._build_panel_content()
         try:
             content_region = self.content_region
@@ -70,6 +98,8 @@ class RightPanel(Static):
         if state.item_menu_stack:
             return self._render_item_menu()
         if state.observe_mode:
+            if state.observe_log_id is not None:
+                return render_observe_entity_log(state)
             return self._render_observe()
         if self.view_mode == "inventory":
             return self._render_inventory()
@@ -85,6 +115,8 @@ class RightPanel(Static):
             return self._render_title()
         elif self.view_mode == "guide":
             return self._render_guide()
+        elif self.view_mode in ("recipes", "make_book", "alch_book"):
+            return self._render_recipe_book()
         elif self.view_mode == "quests":
             return self._render_quests()
         elif self.view_mode == "quest_detail":
@@ -98,8 +130,9 @@ class RightPanel(Static):
         slow_tag = " [dim]慢速[/]" if self.state.slow_mode else ""
         food_pct = p.food_value * 100 // 15000
         lines = [
-            f"[bold]{p.name}[/]  人类 Lv.{p.class_level:.1f} {p.char_class}{slow_tag}",
-            f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
+            f"[bold]{p.name}[/]  人类 Lv.{p.character_level} {p.char_class}{slow_tag}",
+            f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.tenacity_cap()}[/]",
+            f"勇气 {p.courage}/{p.max_courage}  理智 {p.sanity}/{p.max_sanity}  心灵 {p.mind}/{p.max_mind}",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}  载重 {p.total_carry_weight:.1f}/{p.carry_capacity():.0f}kg  {p.carry_status()['label']}",
             "",
@@ -110,7 +143,7 @@ class RightPanel(Static):
             else "[[H]]关闭高度 [[M]]地图",
         ]
         if p.statuses:
-            lines.append(f"[red]{' '.join(s.name for s in p.statuses)}[/]")
+            lines.append(f"[red]{' '.join(format_status_names(p))}[/]")
         return "\n".join(lines)
 
     def _render_item_menu(self) -> str:
@@ -122,16 +155,17 @@ class RightPanel(Static):
         top = stack[-1]
         menu_type = top.get("type", "")
         item = top.get("item")
-        item_name = item.name if item else "???"
+        item_name = item_quality_label(item) if item else "???"
         item_count = getattr(item, 'count', 1) if item else 1
 
         if menu_type == "item_actions":
             options = top.get("options", [])
-            lines = [
-                f"[bold]物品: {item_name}[/]",
-                f"数量: x{item_count}  {getattr(item, 'description', '')}",
-                "",
-            ]
+            lines = [f"[bold]物品: {item_name}[/]"]
+            if item is not None:
+                lines.extend(format_item_detail_lines(item))
+            else:
+                lines.append(f"数量: x{item_count}")
+            lines.append("")
             for i, opt in enumerate(options):
                 label = opt.get("label", str(i))
                 lines.append(f"  [[U{i + 1}]]{label}")
@@ -179,7 +213,7 @@ class RightPanel(Static):
     def _render_inventory(self) -> str:
         p = self.state.controlled_entity
         lines = [
-            f"[bold]物品栏[/] [dim]I/Esc返回[/]",
+            f"[bold]物品栏[/] [dim][[']]返回[/]",
             f"金币: {p.gp}GP  饮食: {p.food_value * 100 // 15000}%",
             "── 装备 ──",
         ]
@@ -188,9 +222,7 @@ class RightPanel(Static):
         if p.inventory:
             item_lines = []
             for i, item in enumerate(p.inventory):
-                item_lines.append(f"  [{i + 1}] {item.name} x{item.count}")
-                if item.description:
-                    item_lines.append(f"      {item.description[:20]}")
+                item_lines.append(f"  [{i + 1}] {item_quality_label(item)} x{item.count}")
             lines.extend(item_lines)
         else:
             lines.append("  (空)")
@@ -204,9 +236,10 @@ class RightPanel(Static):
         progress = class_exp_progress(p.char_class, p.class_exp)
         exp_bar = "+" * int(progress * 10) + "_" * (10 - int(progress * 10))
         lines = [
-            f"[bold]角色面板[/] [dim]C/Esc返回[/]  {p.name}  {p.faction}  {p.char_class} Lv.{p.class_level:.1f}",
+            f"[bold]角色面板[/] [dim][[']]返回[/]  {p.name}  {p.faction}  {p.char_class} Lv.{p.character_level}",
             f"经验: [{exp_bar}]  总经验 {p.class_exp:.2f}  当前进度 {progress * 100:.0f}%",
-            f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.max_tenacity}[/]",
+            f"HP [green]{p.hp}/{p.max_hp}[/]  MP [blue]{p.mp}/{p.max_mp}[/]  TEN [yellow]{p.tenacity}/{p.tenacity_cap()}[/]",
+            f"勇气 {p.courage}/{p.max_courage}  理智 {p.sanity}/{p.max_sanity}  心灵 {p.mind}/{p.max_mind}",
             f"AC 头部{p.total_ac('head')} 躯干{p.total_ac('chest')} 双臂{p.total_ac('arms')} 双腿{p.total_ac('legs')}",
             f"SPD {p.speed}  INIT +{p.initiative_bonus()}  金币: {p.gp}GP",
             f"载重 {p.total_carry_weight:.1f}/{p.carry_capacity():.0f}kg  [{p.carry_status()['label']}]  饮食: {p.food_value * 100 // 15000}%",
@@ -224,7 +257,7 @@ class RightPanel(Static):
         lines.append("── 装备 ──")
         lines.extend(self._render_equipment_lines(p))
         if p.statuses:
-            lines.append(f"[red]状态: {' '.join(s.name for s in p.statuses)}[/]")
+            lines.append(f"[red]状态: {' '.join(format_status_names(p))}[/]")
         lines.append("")
         lines.append("── 武器与护甲训练 ──")
         for category, label in (
@@ -248,13 +281,19 @@ class RightPanel(Static):
                 f"  {label}: [{'+' * proficiency}{'_' * (5 - proficiency)}] "
                 f"经验 {exp:.2f}  熟练+{proficiency}  专精+{expertise}"
             )
+        lines.append("")
+        lines.append("── 烹饪 / 制作 / 炼药 ──")
+        for kind, label in (("cook", "烹饪"), ("make", "制作"), ("alchemy", "炼药")):
+            exp = p.craft_experience.get(kind, 0.0)
+            level = p.craft_level(kind)
+            lines.append(f"  {label} Lv.{level}  经验 {exp:.1f}")
         lines.append("[dim][[C]]关闭 [[I]]物品栏 [[X]]观察[/]")
         return "\n".join(lines)
 
     def _render_system(self) -> str:
         """渲染「- 思绪 -」面板。"""
         lines = [
-            "[bold]─ 思绪 -[/] [dim]E返回[/]",
+            "[bold]─ 思绪 -[/] [dim][[']]返回[/]",
             "",
             "  [[E1]]手册",
             "  [[E2]]封存记忆",
@@ -263,40 +302,62 @@ class RightPanel(Static):
             "  [[E5]]主标题",
             "  [[E6]]设置",
             "",
-            "[dim]:E序号 选择  E返回[/]",
+            "[dim]:E序号 选择  [[']]返回[/]",
         ]
         return "\n".join(lines)
 
     def _render_manual(self) -> str:
         """渲染「手册」面板：称号 / 任务入口。"""
         lines = [
-            "[bold]─ 手册 -[/] [dim]E返回[/]",
+            "[bold]─ 手册 -[/] [dim][[']]返回[/]",
             "",
             "  [[M1]]称号",
             "  [[M2]]任务",
             "  [[M3]]操作指南",
+            "  [[M4]]食谱",
+            "  [[M5]]制作表",
+            "  [[M6]]炼药配方",
             "",
-            "[dim]:M序号 选择  E返回[/]",
+            "[dim]:M序号 选择  [[']]返回[/]",
         ]
+        return "\n".join(lines)
+
+    def _render_recipe_book(self) -> str:
+        from domain.craft.recipe import BY_CRAFT
+        kind = {"recipes": "cook", "make_book": "make", "alch_book": "alchemy"}[self.view_mode]
+        title = {"cook": "食谱", "make": "制作表", "alchemy": "炼药配方"}[kind]
+        known = set(self.state.controlled_entity.known_recipes)
+        lines = [f"[bold]─ {title} -[/] [dim][[']]返回[/]", ""]
+        shown = 0
+        for recipe in BY_CRAFT.get(kind, ()):
+            if recipe.id in known:
+                need = "、".join(f"{n}×{c}" for n, c in recipe.required.items())
+                out = f"{recipe.output[0]}×{recipe.output[1]}"
+                lines.append(f"  {out}  需 {need}")
+                shown += 1
+        if shown == 0:
+            lines.append("  (尚未学会)")
+        lines.append("")
+        lines.append("[dim][[']]返回[/]")
         return "\n".join(lines)
 
     def _render_title(self) -> str:
         """渲染「称号」面板。"""
         titles = self.state.controlled_entity.titles
         lines = [
-            "[bold]─ 称号 -[/] [dim]E返回[/]",
+            "[bold]─ 称号 -[/] [dim][[']]返回[/]",
             "",
         ]
         if titles:
             lines.extend(f"  {title}" for title in titles)
         else:
             lines.append("  (尚未获得称号)")
-        lines.extend(["", "[dim]E返回[/]"])
+        lines.extend(["", "[dim][[']]返回[/]"])
         return "\n".join(lines)
 
     def _render_guide(self) -> str:
         return (
-            "[bold]─ 操作指南 -[/] [dim]E返回[/]\n\n"
+            "[bold]─ 操作指南 -[/] [dim][[']]返回[/]\n\n"
             "输入 store 快速存档。输入 read 快速读档。"
         )
 
@@ -338,7 +399,7 @@ class RightPanel(Static):
         st = self.state
         from domain.quest import load_quests
         quests = load_quests()
-        lines = [f"[bold]任务[/] [dim]E返回[/]", ""]
+        lines = [f"[bold]任务[/] [dim][[']]返回[/]", ""]
         lines.append("[bold]进行中[/]")
         active = st.active_quests
         if active:
@@ -358,7 +419,7 @@ class RightPanel(Static):
         else:
             lines.append("  (暂无)")
         lines.append("")
-        lines.append("[dim]:Q序号 查看详情  E返回[/]")
+        lines.append("[dim]:Q序号 查看详情  [[']]返回[/]")
         return "\n".join(lines)
 
     def _render_quest_detail(self) -> str:
@@ -372,7 +433,7 @@ class RightPanel(Static):
         done = self.selected_quest in st.completed_quests
         status = "[green]已完成[/]" if done else "[yellow]进行中[/]"
         lines = [
-            f"[bold]── {q.name} ──[/]  [dim]E返回[/]",
+            f"[bold]── {q.name} ──[/]  [dim][[']]返回[/]",
             f"委托人: {q.giver}",
             f"状态: {status}",
             "",
@@ -381,6 +442,29 @@ class RightPanel(Static):
             f"报酬: {q.reward_text}",
         ]
         return "\n".join(lines)
+
+    _OBSERVE_STATS = (
+        ("str", "力量"), ("dex", "敏捷"), ("con", "体质"),
+        ("int", "智力"), ("wis", "感知"), ("cha", "魅力"),
+    )
+
+    def _observe_entity_vitals(self, ent, *, hp_pct: float | None = None) -> list[str]:
+        hp = f"HP {ent.hp}/{ent.max_hp}"
+        if hp_pct is not None:
+            hp += f" ({hp_pct:.0f}%)"
+        cap = ent.tenacity_cap()
+        lines = [
+            f"  {hp}  MP {ent.mp}/{ent.max_mp}  TEN {ent.tenacity}/{cap}",
+        ]
+        parts = []
+        for key, label in self._OBSERVE_STATS:
+            val = ent.stat(key)
+            adj = ent.stat_adjust(key)
+            sign = "+" if adj >= 0 else ""
+            parts.append(f"{label} {val}({sign}{adj})")
+        lines.append("  " + "  ".join(parts[:3]))
+        lines.append("  " + "  ".join(parts[3:]))
+        return lines
 
     def _render_observe(self) -> str:
         cursor = self.state.observe_cursor
@@ -430,30 +514,33 @@ class RightPanel(Static):
             }.get(ent.body_type, ent.body_type)
             if ent is self.state.controlled_entity:
                 # 玩家自身：显示基础信息与状态（进水后的潮湿等），不显示态度/隐匿
-                lines.append(f"生物: {ent.name}(你) Lv.{ent.class_level:.1f}  类型:{body_type}  阵营:{ent.faction}")
-                lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp}")
+                lines.append(f"生物: {ent.name}(你) Lv.{ent.character_level}  类型:{body_type}  阵营:{ent.faction}")
+                lines.append(f"  朝向: {facing_label(ent.facing)}")
+                lines.extend(self._observe_entity_vitals(ent))
                 if ent.food_value > 0:
                     lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
                 if ent.statuses:
-                    lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+                    lines.append(f"  状态: {', '.join(format_status_names(ent))}")
             else:
                 hp_pct = ent.hp / max(ent.max_hp, 1) * 100
                 attitude = get_attitude(ent, self.state.controlled_entity)
                 att_color = {"敌对": "[red]敌对[/]", "友好": "[green]友好[/]", "冷漠": "[yellow]冷漠[/]"}.get(attitude, attitude)
                 favor = get_favor(ent, self.state.controlled_entity)
-                lines.append(f"生物: {ent.name} Lv.{ent.class_level:.1f}  类型:{body_type}  阵营:{ent.faction}  态度:{att_color}  好感:{favor}")
-                lines.append(f"  朝向: {facing_label(ent.facing)}  HP {ent.hp}/{ent.max_hp} ({hp_pct:.0f}%)")
+                lines.append(f"生物: {ent.name} Lv.{ent.character_level}  类型:{body_type}  阵营:{ent.faction}  态度:{att_color}  好感:{favor}")
+                lines.append(f"  朝向: {facing_label(ent.facing)}")
+                lines.extend(self._observe_entity_vitals(ent, hp_pct=hp_pct))
                 if ent.food_value > 0:
                     lines.append(f"  饮食: {ent.food_value * 100 // 15000}%")
                 if ent.statuses:
-                    lines.append(f"  状态: {', '.join(s.name for s in ent.statuses)}")
+                    lines.append(f"  状态: {', '.join(format_status_names(ent))}")
                 if self.state._is_hidden_to(self.state.controlled_entity, ent, (cx, cy)):
                     lines.append("  目标对你是隐匿的")
+            lines.append("[dim][[X0]]个人日志[/]")
         elif ent and ent.is_dead and getattr(ent, "corpse", None):
             corpse = ent.corpse
             lines.append("物品:")
             lines.append(f"  {corpse.name} x{getattr(corpse, 'count', 1)}")
-            lines.append(f"  类型: {getattr(corpse, 'item_type', 'misc')}")
+            lines.append(f"  类型: {format_item_type_labels(corpse)}")
             if getattr(corpse, "description", ""):
                 lines.append(f"  描述: {corpse.description}")
             lines.append(
@@ -484,13 +571,9 @@ class RightPanel(Static):
         if player_pos is not None and self.state._cover_level((cx, cy), player_pos[:2]) == "light":
             lines.append("可见度: 轻度遮蔽")
 
-        # 光照
-        if cursor in self.state.fov_bright:
-            lines.append("亮度: 明亮")
-        elif cursor in self.state.fov_dim:
-            lines.append("亮度: 微光")
-        else:
-            lines.append("亮度: 不可见")
+        # 光照：按格子实际天光/光源，不用 FOV 集合（相邻格会被标成明亮）
+        level = self.state.light_at(cx, cy, selected_z)
+        lines.append(f"亮度: {_BRIGHTNESS[level]}")
 
         # 物品清单
         from domain.item_actions import get_ground_items_at
@@ -503,7 +586,7 @@ class RightPanel(Static):
         if ground_at:
             lines.append("── 地上物品 ──")
             for g in ground_at:
-                lines.append(f"  {g['name']} x{g['count']}  类型:{g['item_type']}")
+                lines.append(f"  {g['name']} x{g['count']}  类型:{format_item_type_labels(g['item'])}")
                 if g["description"]:
                     lines.append(f"    描述: {g['description']}")
                 lines.append(
@@ -538,7 +621,7 @@ class RightPanel(Static):
             for slot, label in group:
                 item = player.equipment.get(slot)
                 if item:
-                    name = item.name
+                    name = item_quality_label(item)
                     props = getattr(item, 'properties', []) or []
                     if 'two_handed' in props:
                         name += "(双手)"
@@ -561,5 +644,5 @@ class RightPanel(Static):
                     parts.append(f"{label}:-")
             lines.append("  " + " ".join(parts))
         accessories = getattr(player, "accessories", [])
-        lines.append("  饰品:" + (" ".join(item.name for item in accessories) if accessories else "-"))
+        lines.append("  饰品:" + (" ".join(item_quality_label(item) for item in accessories) if accessories else "-"))
         return lines

@@ -1,10 +1,12 @@
 """地图图例 Widget —— 固定 3 行，显示 FOV 内字符含义，与 MapView 分离避免宽度变化导致布局抖动。"""
+import re
 
 from textual.widgets import Static
 
 from domain.movement import Terrain
-from domain.item_actions import GROUND_ITEM_RENDER
+from domain.item_actions import ground_item_render
 from presentation.textual.view_models import GameViewModel
+from presentation.textual.widgets.map_view import FACTION_COLORS, TERRAIN_COLORS
 
 TERRAIN_CHARS = {
     Terrain.GRASS: ".", Terrain.BARREN: ".", Terrain.PLAIN: ".",
@@ -16,6 +18,24 @@ TERRAIN_LABELS = {
     Terrain.FLOOR: "地面", Terrain.WATER: "水",
     Terrain.STAIRS_DOWN: "入口", Terrain.STAIRS_UP: "出口",
 }
+
+_MARKUP = re.compile(r"\[/?[^\]]+\]")
+
+
+def _visible_len(text: str) -> int:
+    return len(_MARKUP.sub("", text))
+
+
+def _entry(ch: str, name: str, color: str = "") -> str:
+    if color:
+        return f"[{color}]{ch}[/]{name}"
+    return f"{ch}{name}"
+
+
+def _item_render(item) -> dict | None:
+    if getattr(item, "render_char", ""):
+        return {"char": item.render_char, "color": item.render_color or "white"}
+    return ground_item_render(item)
 
 
 class MapLegend(Static):
@@ -36,47 +56,51 @@ class MapLegend(Static):
         if self.state is None:
             return "\n\n"
         fov = self.state.fov_cache
-        gmap = self.state.map
 
-        legend_seen: dict[str, str] = {"@": "玩家"}
+        by_char: dict[str, str] = {"@": _entry("@", "玩家", "green")}
         for creature, position in self.state.entities:
             if self.state.is_in_fov(position) and not creature.is_dead:
-                legend_seen[creature.char] = creature.name
+                color = FACTION_COLORS.get(creature.faction, "")
+                by_char[creature.char] = _entry(creature.char, creature.name, color)
 
         for pos in fov:
             t = self.state.surface_at(pos[:2], pos[2]).terrain
             ch = TERRAIN_CHARS.get(t)
             label = TERRAIN_LABELS.get(t)
             if ch and label:
-                legend_seen.setdefault(ch, label)
+                by_char.setdefault(ch, _entry(ch, label, TERRAIN_COLORS.get(t, "")))
+
+        item_entries: list[str] = []
+        seen_items: set[tuple[str, str]] = set()
         for item, position in self.state.ground_items:
-            if self.state.is_in_fov(position):
-                render_info = (
-                    {"char": item.render_char, "color": item.render_color}
-                    if getattr(item, "render_char", "")
-                    else GROUND_ITEM_RENDER.get(item.item_type)
-                )
-                if render_info:
-                    legend_seen[render_info["char"]] = item.name
+            if not self.state.is_in_fov(position):
+                continue
+            render_info = _item_render(item)
+            if not render_info:
+                continue
+            ch = render_info["char"]
+            key = (ch, item.name)
+            if key in seen_items:
+                continue
+            seen_items.add(key)
+            item_entries.append(_entry(ch, item.name, render_info.get("color", "")))
 
-        entries = [f"@玩家"] + [f"{ch}{name}" for ch, name in legend_seen.items() if ch != "@"]
+        entries = [by_char["@"]] + [
+            text for ch, text in by_char.items() if ch != "@"
+        ] + item_entries
 
-        # 排版：每行填满，最多 3 行，超出合并
         MAX_COLS = 40
         lines = []
         cur = ""
         for entry in entries:
             sep = " " if cur else ""
-            if len(cur) + len(sep) + len(entry) <= MAX_COLS:
+            if _visible_len(cur) + _visible_len(sep) + _visible_len(entry) <= MAX_COLS:
                 cur += sep + entry
             else:
                 lines.append(cur)
                 cur = entry
                 if len(lines) == 2:
-                    # 第 3 行：剩余全部塞入，截断
-                    rest = [entry] + [e for e in entries if e not in [x for line in lines for x in line.split()] and e != entry]
-                    # 去重简化：直接用计数
-                    shown = sum(len(line.split()) for line in lines)
+                    shown = sum(len(_MARKUP.sub("", line).split()) for line in lines)
                     remaining = len(entries) - shown
                     if remaining > 0:
                         overflow = entries[shown:]
@@ -90,5 +114,4 @@ class MapLegend(Static):
 
         while len(lines) < 3:
             lines.append("")
-        result = "\n".join(lines[:3])
-        return result
+        return "\n".join(lines[:3])

@@ -65,7 +65,7 @@ def discretize_state(
         keys.add("灼烧")
     if npc.has_status("on_fire"):
         keys.add("status:on_fire")
-    if npc.has_status("poisoned"):
+    if npc.has_status("中毒"):
         keys.add("status:poisoned")
     if npc.has_status("prone"):
         keys.add("status:prone")

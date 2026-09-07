@@ -11,10 +11,19 @@ class BehaviorComponent:
     cost: int = 1                     # 动作耗时（钟摆）
 
 
+GEAR_ITEM_TYPES = frozenset({"weapon", "armor"})
+
+
+def is_gear_item(item) -> bool:
+    types = getattr(item, "item_type", {}) or {}
+    return any(types.get(name) for name in GEAR_ITEM_TYPES)
+
+
 # 全局组件表（执行函数在 game_state.py 中，通过名称分发）
 COMPONENTS = {
     "wander":        BehaviorComponent("wander", 0.2, {}),  # 始终可选，权重低，有更好动作时自动被覆盖
-    "pickup":        BehaviorComponent("pickup", 0.65, {"env": "env:items_nearby"}, 1),
+    "pickup":        BehaviorComponent("pickup", 0.65, {"env": "env:gear_nearby"}, 1),
+    "pickup_misc":   BehaviorComponent("pickup_misc", 0.19, {"env": "env:misc_items_nearby"}, 1),
     "forage":        BehaviorComponent("forage", 0.6, {"needs": "need:hungry", "env": "env:food_visible"}),
     "eat_food":      BehaviorComponent("eat_food", 0.9, {"needs": "need:hungry", "env": "env:food_adjacent"}),
     "hunt":          BehaviorComponent("hunt", 0.8, {"needs": "need:hungry", "env": "env:prey_nearby"}),  # 相邻→攻击，不邻→移动

@@ -78,6 +78,7 @@
       "avoid_fire",
       "wander",
       "pickup",
+      "pickup_misc",
       "hunt",
       "forage",
       "eat_food",

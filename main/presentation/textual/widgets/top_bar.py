@@ -1,13 +1,28 @@
-"""顶栏 —— 地图名、地名、天气、战斗轮次、时间信息。"""
+"""顶栏 —— 地图名、地名、高度、天气、日时段、战斗轮次、时间信息。"""
 
 from rich.text import Text
 from textual.widgets import Static
 
+from domain.calendar import format_clock_right
 from presentation.textual.view_models import GameViewModel
 
-PENDULUMS_PER_DAY = 5000
-PENDULUMS_PER_MONTH = 50000     # 10 天
-PENDULUMS_PER_YEAR = 250000     # 5 月
+
+def location_name(state) -> str:
+    """O(1) 哈希表查询；无受控坐标时用默认地名。"""
+    pos = state.controlled_entity_pos
+    if pos is None:
+        return "平原"
+    return state.location_map.get(pos[:2], "平原")
+
+
+def left_text(state) -> str:
+    map_name = state.current_map or "???"
+    height = getattr(state.controlled_entity, "z", state.active_z)
+    return f" [bold]{map_name}[/] {location_name(state)} 高度{height}"
+
+
+def right_text(state) -> str:
+    return f"晴 {format_clock_right(state.clock.pendulum_count)} "
 
 
 class TopBar(Static):
@@ -22,28 +37,13 @@ class TopBar(Static):
     def state(self):
         return self.view_model.snapshot if self.view_model is not None else None
 
-    @staticmethod
-    def _get_location(s) -> str:
-        """O(1) 哈希表查询，无分支。"""
-        return s.location_map.get(s.controlled_entity_pos[:2], "平原")
-
     def render(self) -> str:
         if self.state is None:
             return ""
         s = self.state
         width = self.size.width
-        pc = s.clock.pendulum_count
-        day = (pc // PENDULUMS_PER_DAY) % 10 + 1
-        month = (pc // PENDULUMS_PER_MONTH) % 5 + 1
-        year = pc // PENDULUMS_PER_YEAR + 1
-        current_pc = pc % PENDULUMS_PER_DAY  # 每天 5000 钟摆后清零
-
-        map_name = s.current_map or "???"
-        location = self._get_location(s)
-        left = f" [bold]{map_name}[/] {location}  晴"
-
-        player_height = getattr(s.controlled_entity, "z", s.active_z)
-        right = f"高度{player_height}  {current_pc}钟摆 第{day}天 {month}月 {year}纪年 "
+        left = left_text(s)
+        right = right_text(s)
 
         def visible_len(t: str) -> int:
             return Text.from_markup(t).cell_len

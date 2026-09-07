@@ -8,5 +8,7 @@
     "sp": 10
   },
   "description": "涂抹伤口或捣碎吞下",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true
+  }
 }

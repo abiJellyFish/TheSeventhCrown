@@ -1,6 +1,8 @@
 {
   "name": "伊芙琳的魔法笔记",
-  "item_type": "spellbook",
+  "item_type": {
+    "spellbook": true
+  },
   "weight": 0.8,
   "description": "用硬木板和柳条装订的法术书。",
   "spellbook": {

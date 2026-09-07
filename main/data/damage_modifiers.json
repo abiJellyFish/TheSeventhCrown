@@ -1,5 +1,5 @@
 {
-  "immunities": {"poison_immune": "poison", "sleep_immune": null},
+  "immunities": {"poison_immune": "poison", "sleep_immune": null, "fire_immune": "fire"},
   "resistances": {
     "piercing_resist": "piercing",
     "bludgeoning_resist": "bludgeoning"

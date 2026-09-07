@@ -5,7 +5,9 @@
     "gp": 2
   },
   "description": "灵巧匕首，轻型，可投掷",
-  "item_type": "weapon",
+  "item_type": {
+    "weapon": true
+  },
   "weapon": {
     "weapon_type": "melee",
     "category": "simple",

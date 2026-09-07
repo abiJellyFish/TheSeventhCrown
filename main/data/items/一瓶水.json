@@ -9,5 +9,8 @@
     "sp": 35
   },
   "becomes": "空玻璃瓶",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true,
+    "fragile": true
+  }
 }

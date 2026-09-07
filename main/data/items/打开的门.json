@@ -1,6 +1,8 @@
 {
   "name": "打开的门",
-  "item_type": "structure",
+  "item_type": {
+    "structure": true
+  },
   "weight": 0,
   "description": "打开的门，不阻挡移动和视线。",
   "durability": 80,

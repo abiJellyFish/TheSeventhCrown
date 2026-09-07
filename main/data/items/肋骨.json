@@ -5,7 +5,9 @@
     "cp": 10
   },
   "description": "风干的骨头，可以投掷",
-  "item_type": "weapon",
+  "item_type": {
+    "weapon": true
+  },
   "weapon": {
     "weapon_type": "ranged",
     "damage": "1d6",

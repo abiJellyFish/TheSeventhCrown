@@ -10,5 +10,8 @@
   },
   "becomes": "空玻璃瓶",
   "description": "喝掉这瓶清澈红色液体的生物恢复 6d4 点生命值",
-  "item_type": "consumable"
+  "item_type": {
+    "consumable": true,
+    "fragile": true
+  }
 }
